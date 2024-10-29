@@ -1457,6 +1457,7 @@ class Llm:
     self._fw_mem_accessed = mult * self._block_fw_mem_accessed
     self._fw_mem_time = mult * self._block_fw_mem_time
     self._fw_time = mult * self._block_fw_time
+    self.log.debug("wxftest: microbatcher: %d, mult: %d, block fw time: %f, fw time: %f", self.exe._num_microbatches, mult, self._block_fw_time, self._fw_time)
     self._re_flops = mult * self._block_re_flops
     self._re_flops_time = mult * self._block_re_flops_time
     self._re_mem_accessed = mult * self._block_re_mem_accessed
@@ -1559,7 +1560,7 @@ class Llm:
     self.log.debug("%s %s", 'PP comm BW time:', pp_bw_comm_time)
 
     # Bubble forms between i-th microbatch FW and BW passes on the 1st GPU.
-    # With no interleaving between blocks, it includes
+    # With no interleaving between blocks, it includesOptim space:
     # L/gpu x microbatch_time x (p-1) x Tcycle, where cycle includes both
     # FW and BW passes, TP and PP communication for FW and BW passes
     # With full interleaving, we only need microbatch_time x (p-1) x Tcycle time
@@ -1923,6 +1924,12 @@ class Llm:
           self._block_weight_grad_space * (self._blocks_per_proc - 1)
       self._optimizer_space = \
         self._block_optimizer_space * self._blocks_per_proc
+      self._extra_embedding_space = \
+        (24*self.app.hidden*self.app.hidden*self.app.num_blocks + 72*self.app.hidden*self.app.num_blocks + 36*self.app.hidden)/(self.exe.tensor_par*self.exe.pipeline_par) +\
+        (18*51200*self.app.hidden)/self.exe.tensor_par - \
+        (64*self.app.hidden*self.app.num_blocks)/self.exe.pipeline_par - \
+        (24*self.app.hidden*self.app.hidden)/self.exe.tensor_par - \
+        8*self.app.hidden
     else:
       self._weight_grad_space = 0
       self._optimizer_space = 0
@@ -2238,6 +2245,12 @@ class Llm:
     else:
       return 0
 
+  def get_extra_embedding_space(self):
+    if self.exe.training:
+      return self._extra_embedding_space
+    else:
+      return 0
+
   def _get_mem_cap_reqs(self):
     tier1 = 0
     tier2 = 0
@@ -2352,6 +2365,7 @@ class Llm:
       f"Act grad: {human_format(self.get_act_grad_space(), 'bytes')};\n" \
       f"Weight grad: {human_format(self.get_weight_grad_space(), 'bytes')};\n" \
       f"Optim space: {human_format(self.get_optimizer_space(), 'bytes')};\n" \
+      f"Extra and embedding space: {human_format(self.get_extra_embedding_space(), 'bytes')};\n" \
       f"Batch FW time: {self.get_fw_time():.4f};\n" \
       f"Batch BW time: {self.get_bw_time():.4f};\n" \
       f"Batch optim time: {self.get_optim_step_time():.4f};\n" \
