@@ -1924,12 +1924,21 @@ class Llm:
           self._block_weight_grad_space * (self._blocks_per_proc - 1)
       self._optimizer_space = \
         self._block_optimizer_space * self._blocks_per_proc
+
       self._extra_embedding_space = \
         (24*self.app.hidden*self.app.hidden*self.app.num_blocks + 72*self.app.hidden*self.app.num_blocks + 36*self.app.hidden)/(self.exe.tensor_par*self.exe.pipeline_par) +\
         (18*51200*self.app.hidden)/self.exe.tensor_par - \
         (64*self.app.hidden*self.app.num_blocks)/self.exe.pipeline_par - \
         (24*self.app.hidden*self.app.hidden)/self.exe.tensor_par - \
         8*self.app.hidden
+
+      extra_embed_layer = Layer(
+        "Extra_Embedding",
+        self.sys,
+        inputs_size=self._extra_embedding_space)
+
+      self._extra_and_embedding_time = extra_embed_layer.compute_processing_time("extra")
+
     else:
       self._weight_grad_space = 0
       self._optimizer_space = 0
@@ -2071,6 +2080,9 @@ class Llm:
   def get_optim_step_time(self):
     return self._optim_time
 
+  def get_extra_and_embedding_time(self):
+    return self._extra_and_embedding_time
+
   def get_bw_offload_time(self):
     if self.exe.training:
       return self.sys.compute_offload_time(self._get_bw_offload_size())
@@ -2146,6 +2158,7 @@ class Llm:
     time += self.get_tp_comm_exposed_time()
     time += self.get_pp_comm_exposed_time()
     time += self.get_dp_comm_exposed_time()
+    time += self.get_extra_and_embedding_time()
     return time
 
   def get_useful_flops(self):
@@ -2369,6 +2382,7 @@ class Llm:
       f"Batch FW time: {self.get_fw_time():.4f};\n" \
       f"Batch BW time: {self.get_bw_time():.4f};\n" \
       f"Batch optim time: {self.get_optim_step_time():.4f};\n" \
+      f"Batch extra and embdding time: {self.get_extra_and_embedding_time():.4f};\n" \
       f"Batch FW offload overhead: {self.get_fw_offload_overhead():.4f};\n" \
       f"Batch BW offload overhead: {self.get_bw_offload_overhead():.4f};\n" \
       f"Batch recompute overhead: {self.get_recompute_time():.4f};\n" \

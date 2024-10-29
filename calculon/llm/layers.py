@@ -161,6 +161,10 @@ class Layer:
     mem_accessed = self.inputs_size + self.output_size + self.weight_space
     mem_accessed *= self.bytes_per_element
     return mem_accessed
+  
+  def get_extra_and_embedding_mem_accessed(self):
+    mem_accessed = self.inputs_size
+    return mem_accessed
 
   def get_fw_arithmetic_intensity(self):
     if self.fw_flops == 0:
@@ -299,6 +303,8 @@ class Layer:
       flops = self.get_wgrad_flops()
     elif stage == "optim":
       flops = self.get_optim_step_flops()
+    elif stage == "extra":
+      flops = 0
     else:
       raise Exception(f'Bad compute stage : {stage}')
     if self.use_matrix_engine() and stage != "optim":
@@ -316,6 +322,8 @@ class Layer:
       mem = self.get_wgrad_mem_accessed()
     elif stage == "optim":
       mem = self.get_optim_step_mem_accessed()
+    elif stage == "extra":
+      mem = self.get_extra_and_embedding_mem_accessed()
     else:
       raise Exception(f'Bad compute stage : {stage}')
     return mem / self.sys.get_mem1_throughput(mem)
