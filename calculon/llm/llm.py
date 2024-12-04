@@ -1047,11 +1047,9 @@ class Llm:
     else:
       self._bubble_reduction_blocks = 0
     if self.exe.pipeline_interleaving > self._blocks_per_proc:
-      raise self.Error('Pipeline interleaving must be less than or equal to '
-                       'the number of blocks per processor')
+      raise self.Error(f'Pipeline interleaving {self.exe.pipeline_interleaving} must be less than or equal to the number of blocks per processor {self._blocks_per_proc})')
     if self._blocks_per_proc % self.exe.pipeline_interleaving != 0:
-      raise self.Error('Pipeline interleaving must be a factor value of the '
-                       'number of blocks per processor')
+      raise self.Error(f'Pipeline interleaving {self.exe.pipeline_interleaving} must be a factor value of the number of blocks per processor {self._blocks_per_proc}')
     self._bytes_per_element = System.TypeSizes[self.exe.datatype]
 
     # Checks that enough blocks per processor exist if offloading is being
