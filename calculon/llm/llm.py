@@ -1477,6 +1477,14 @@ class Llm:
     self._optim_mem_time = self._blocks_per_proc * self._block_optim_mem_time
     self._optim_time = self._blocks_per_proc * self._block_optim_time
 
+    # comm size 
+    tp_fw_comm_size = self._baseblocks_per_chunk * self._baseblock_fw_tp_size + \
+                    self._edgeblocks_per_chunk * self._edgeblock_fw_tp_size
+    tp_bw_comm_size = self._baseblocks_per_chunk * self._baseblock_agrad_tp_size + \
+                      self._edgeblocks_per_chunk * self._edgeblock_agrad_tp_size 
+    pp_fw_comm_size = self._blocks_per_proc * self._block_fw_pp_size
+    pp_bw_comm_size = self._blocks_per_proc * self._block_bw_pp_size
+
     # These TP numbers are for total times for all blocks in all chunks
     tp_fw_comm_time = self.exe._num_microbatches * self._chunks_per_proc * (
       (self._baseblocks_per_chunk * self._baseblock_fw_tp_time) +
@@ -1713,6 +1721,12 @@ class Llm:
                    human_format(self._block_dp_size, 'bytes'))
     self.log.debug('DP block comm time (no overlap): %.3e',
                    self._block_dp_time)
+    dp_comm_size = self._blocks_per_proc * self._block_dp_size
+    self.log.debug("%s %s", 'DP comm size:', dp_comm_size)
+    self.log.debug("%s %s", 'TP comm FW size:', tp_fw_comm_size)
+    self.log.debug("%s %s", 'TP comm BW size:', tp_bw_comm_size)
+    self.log.debug("%s %s", 'PP comm FW size:', pp_fw_comm_size)
+    self.log.debug("%s %s", 'PP comm BW size:', pp_bw_comm_size)
 
     # DP overlap happens if DP time for a previous block(s) is lower than
     # microbatch BW pass time for next pack of consecutive blocks

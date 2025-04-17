@@ -14,7 +14,38 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
+# import ctypes
 
+# lib = ctypes.cdll.LoadLibrary("./libpycallclass.so")
+
+# lib.assign_groups.argtypes = [
+#     ctypes.c_int,   # TP_size
+#     ctypes.c_int,   # PP_size
+#     ctypes.c_int,   # DP_size
+#     ctypes.c_int    # gpus_per_server
+# ]
+# lib.assign_groups.restype = ctypes.c_void_p  # 返回 void 指针（实际为 tuple 地址）
+
+# lib.simulator_main.argtypes = [
+#     ctypes.c_int,    # server_group_num
+#     ctypes.c_int,    # gpu_per_server
+#     ctypes.c_float,  # topo_bw (Gbps)
+#     ctypes.c_float,  # scaled_op_size (Bytes)
+#     ctypes.c_int     # comm_size
+# ]
+# lib.simulator_main.restype = ctypes.c_int
+
+# # 定义函数原型
+# lib.generate_groups.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+# lib.get_tp_data.restype = ctypes.POINTER(ctypes.c_int)
+# lib.get_pp_data.restype = ctypes.POINTER(ctypes.c_int)
+# lib.get_dp_data.restype = ctypes.POINTER(ctypes.c_int)
+# lib.get_tp_group_sizes.restype = ctypes.POINTER(ctypes.c_int)
+# lib.get_pp_group_sizes.restype = ctypes.POINTER(ctypes.c_int)
+# lib.get_dp_group_sizes.restype = ctypes.POINTER(ctypes.c_int)
+# lib.get_tp_group_count.restype = ctypes.c_int
+# lib.get_pp_group_count.restype = ctypes.c_int
+# lib.get_dp_group_count.restype = ctypes.c_int
 
 class Network:
   """Configuration for a network."""
@@ -39,6 +70,30 @@ class Network:
     else:
       assert offset is None, f'Can\'t give offset for {op}'
       return Network.Op(scalar, 0)
+  
+  # def get_parallel_groups(TP, PP, DP, gpus_per_server):
+  #   # 调用 C++ 生成数据
+  #   lib.generate_groups(TP, PP, DP, gpus_per_server)
+
+  #   # 解析 TP 组
+  #   tp_group_count = lib.get_tp_group_count()
+  #   tp_sizes = np.ctypeslib.as_array(lib.get_tp_group_sizes(), shape=(tp_group_count,))
+  #   tp_data = np.ctypeslib.as_array(lib.get_tp_data(), shape=(sum(tp_sizes),))
+  #   tp_groups = np.split(tp_data, np.cumsum(tp_sizes)[:-1])
+
+  #   # 解析 PP 组
+  #   pp_group_count = lib.get_pp_group_count()
+  #   pp_sizes = np.ctypeslib.as_array(lib.get_pp_group_sizes(), shape=(pp_group_count,))
+  #   pp_data = np.ctypeslib.as_array(lib.get_pp_data(), shape=(sum(pp_sizes),))
+  #   pp_groups = np.split(pp_data, np.cumsum(pp_sizes)[:-1])
+
+  #   # 解析 DP 组
+  #   dp_group_count = lib.get_dp_group_count()
+  #   dp_sizes = np.ctypeslib.as_array(lib.get_dp_group_sizes(), shape=(dp_group_count,))
+  #   dp_data = np.ctypeslib.as_array(lib.get_dp_data(), shape=(sum(dp_sizes),))
+  #   dp_groups = np.split(dp_data, np.cumsum(dp_sizes)[:-1])
+
+  #   return tp_groups, pp_groups, dp_groups
 
   def __init__(self, cfg):
     assert Network.kKeys == set(cfg.keys())
@@ -95,5 +150,25 @@ class Network:
     chunk_size = 1 / comm_size * op_size
     op_size += chunk_size * self._ops[op].offset
 
+    # time = lib.simulator_main(
+    #         ctypes.c_int(8),
+    #         ctypes.c_int(8),
+    #         ctypes.c_float(102.4),
+    #         ctypes.c_float(10240000),
+    #         ctypes.c_int(4)
+    #     )
+    # print("network simulator time: %s", time)
+    # return float(time)
+
     # Calculates time based on raw bandwidth,  bandwidth efficiency, and latency
     return self._latency + op_size / (self._bw * self._eff)
+    
+
+
+
+# so = ctypes.cdll.LoadLibrary
+# lib = so("./libpycallclass.so")
+# lib.simulator_main.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_int]
+# lib.simulator_main.restype = ctypes.c_int
+# lib.test(1)
+# lib.simulator_main(8, 8, ctypes.c_float(102.4), ctypes.c_float(10240000), 4)
