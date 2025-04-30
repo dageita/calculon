@@ -14,38 +14,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
-# import ctypes
+from ctypes import CDLL, c_int, c_float
 
-# lib = ctypes.cdll.LoadLibrary("./libpycallclass.so")
+lib = CDLL("./libpycallclass.so")
+pycall_main = lib.pycall_main
+pycall_main.argtypes = [
+    c_int,   # pp
+    c_int,   # dp
+    c_int,   # tp
+    c_float, # inter
+    c_float, # intra
+    c_int,   # microbatches
+    c_int,   # fwdTPSize
+    c_int,   # bwdTPSize
+    c_int,   # fwdPPSize
+    c_int,   # bwdPPSize
+    c_int    # dpSize
+]
+pycall_main.restype = c_float  # 返回值类型
 
-# lib.assign_groups.argtypes = [
-#     ctypes.c_int,   # TP_size
-#     ctypes.c_int,   # PP_size
-#     ctypes.c_int,   # DP_size
-#     ctypes.c_int    # gpus_per_server
-# ]
-# lib.assign_groups.restype = ctypes.c_void_p  # 返回 void 指针（实际为 tuple 地址）
-
-# lib.simulator_main.argtypes = [
-#     ctypes.c_int,    # server_group_num
-#     ctypes.c_int,    # gpu_per_server
-#     ctypes.c_float,  # topo_bw (Gbps)
-#     ctypes.c_float,  # scaled_op_size (Bytes)
-#     ctypes.c_int     # comm_size
-# ]
-# lib.simulator_main.restype = ctypes.c_int
-
-# # 定义函数原型
-# lib.generate_groups.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
-# lib.get_tp_data.restype = ctypes.POINTER(ctypes.c_int)
-# lib.get_pp_data.restype = ctypes.POINTER(ctypes.c_int)
-# lib.get_dp_data.restype = ctypes.POINTER(ctypes.c_int)
-# lib.get_tp_group_sizes.restype = ctypes.POINTER(ctypes.c_int)
-# lib.get_pp_group_sizes.restype = ctypes.POINTER(ctypes.c_int)
-# lib.get_dp_group_sizes.restype = ctypes.POINTER(ctypes.c_int)
-# lib.get_tp_group_count.restype = ctypes.c_int
-# lib.get_pp_group_count.restype = ctypes.c_int
-# lib.get_dp_group_count.restype = ctypes.c_int
 
 class Network:
   """Configuration for a network."""
@@ -148,22 +135,29 @@ class Network:
 
     # Scales the op_size by the op offset
     chunk_size = 1 / comm_size * op_size
-    op_size += chunk_size * self._ops[op].offset
-
-    # time = lib.simulator_main(
-    #         ctypes.c_int(8),
-    #         ctypes.c_int(8),
-    #         ctypes.c_float(102.4),
-    #         ctypes.c_float(10240000),
-    #         ctypes.c_int(4)
-    #     )
-    # print("network simulator time: %s", time)
-    # return float(time)
+    op_size += chunk_size * self._ops[op].offse
 
     # Calculates time based on raw bandwidth,  bandwidth efficiency, and latency
     return self._latency + op_size / (self._bw * self._eff)
     
+  def total_flow_network_time(self, pp, dp, tp, inter, intra, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
+    time = pycall_main(
+    pp=pp, dp=dp, tp=tp,
+    inter=inter, intra=intra,
+    microbatches=microbatches,
+    fwdTPSize=fwdTPSize, bwdTPSize=bwdTPSize,
+    fwdPPSize=fwdPPSize, bwdPPSize=bwdPPSize,
+    dpSize=dpSize
+    )
+    return time
 
+
+
+
+
+
+    
+# float pycall_main(int pp, int dp, int tp, float inter, float intra, int microbatches, int fwdTPSize, int bwdTPSize, int fwdPPSize, int bwdPPSize, int dpSize) {
 
 
 # so = ctypes.cdll.LoadLibrary

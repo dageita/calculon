@@ -292,6 +292,7 @@ class Llm:
     self._tp_net = None
     self._pp_net = None
     self._dp_net = None
+    self._flow_net = None
 
     # metrics collected after run for each microbatch
     self._block_fw_flops = None
@@ -505,6 +506,7 @@ class Llm:
       'dp_comm_exposed_time',
       'fw_offload_exposed_time',
       'bw_offload_exposed_time',
+      'flow_network_comm_time'
       'total_time',
       'act_offload_bw_req',
       'weight_offload_bw_req',
@@ -610,6 +612,7 @@ class Llm:
       self.get_dp_comm_exposed_time(),
       self.get_fw_offload_overhead(),
       self.get_bw_offload_overhead(),
+      self.get_total_flow_network_time(),
       self.get_total_time(),
       self.get_act_offload_bw_req(),
       self.get_weight_offload_bw_req(),
@@ -1113,6 +1116,8 @@ class Llm:
       size[self.exe.data_par_net] *= self.exe.data_par
     self._dp_net = self.sys.get_network(self.exe.data_par_net)
 
+    self._flow_net = self.sys.get_network(0)
+
     for tier_used, tier_size, tier in zip(
         used, size, range(self.sys.num_networks)):
       if tier_used:
@@ -1478,12 +1483,12 @@ class Llm:
     self._optim_time = self._blocks_per_proc * self._block_optim_time
 
     # comm size 
-    tp_fw_comm_size = self._baseblocks_per_chunk * self._baseblock_fw_tp_size + \
+    self._tp_fw_comm_size = self._baseblocks_per_chunk * self._baseblock_fw_tp_size + \
                     self._edgeblocks_per_chunk * self._edgeblock_fw_tp_size
-    tp_bw_comm_size = self._baseblocks_per_chunk * self._baseblock_agrad_tp_size + \
+    self._tp_bw_comm_size = self._baseblocks_per_chunk * self._baseblock_agrad_tp_size + \
                       self._edgeblocks_per_chunk * self._edgeblock_agrad_tp_size 
-    pp_fw_comm_size = self._blocks_per_proc * self._block_fw_pp_size
-    pp_bw_comm_size = self._blocks_per_proc * self._block_bw_pp_size
+    self._pp_fw_comm_size = self._blocks_per_proc * self._block_fw_pp_size
+    self._pp_bw_comm_size = self._blocks_per_proc * self._block_bw_pp_size
 
     # These TP numbers are for total times for all blocks in all chunks
     tp_fw_comm_time = self.exe._num_microbatches * self._chunks_per_proc * (
@@ -1676,6 +1681,7 @@ class Llm:
       extra_interleaving_bubbles * chunk_time - bubble_reduction_time)
 
     self.log.debug("%s %s", 'Block FW time:', self._block_fw_time)
+    self.log.debug("%s %s", 'microbatch FW time:', self._block_fw_time * self._blocks_per_proc)
     self.log.debug("%s %s", 'Baseblock FW time:', self._baseblock_fw_time)
     self.log.debug("%s %s", 'With FW offload overhead time:',
       self._baseblock_fw_offload_overhead)
@@ -1689,6 +1695,7 @@ class Llm:
     self.log.debug("%s %s", 'Block RE time:', self._block_re_time)
     self.log.debug("%s %s", 'Block BW Agrad time:', self._block_agrad_time)
     self.log.debug("%s %s", 'Block BW Wgrad time:', self._block_wgrad_time)
+    self.log.debug("%s %s", 'microbatch BW time:', (self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc)
     self.log.debug("%s %s", 'Block optim time:', self._block_optim_time)
     self.log.debug("%s %s", 'Baseblock BW time:', self._baseblock_bw_time)
     self.log.debug("%s %s", 'With BW offload overhead time:',
@@ -1721,12 +1728,13 @@ class Llm:
                    human_format(self._block_dp_size, 'bytes'))
     self.log.debug('DP block comm time (no overlap): %.3e',
                    self._block_dp_time)
-    dp_comm_size = self._blocks_per_proc * self._block_dp_size
-    self.log.debug("%s %s", 'DP comm size:', dp_comm_size)
-    self.log.debug("%s %s", 'TP comm FW size:', tp_fw_comm_size)
-    self.log.debug("%s %s", 'TP comm BW size:', tp_bw_comm_size)
-    self.log.debug("%s %s", 'PP comm FW size:', pp_fw_comm_size)
-    self.log.debug("%s %s", 'PP comm BW size:', pp_bw_comm_size)
+    self._dp_comm_size = self._blocks_per_proc * self._block_dp_size
+
+    self.log.debug("%s %s", 'DP comm size:', self._dp_comm_size)
+    self.log.debug("%s %s", 'TP comm FW size:', self._tp_fw_comm_size)
+    self.log.debug("%s %s", 'TP comm BW size:', self._tp_bw_comm_size)
+    self.log.debug("%s %s", 'PP comm FW size:', self._pp_fw_comm_size)
+    self.log.debug("%s %s", 'PP comm BW size:', self._pp_bw_comm_size)
 
     # DP overlap happens if DP time for a previous block(s) is lower than
     # microbatch BW pass time for next pack of consecutive blocks
@@ -2139,6 +2147,16 @@ class Llm:
       return self._dp_comm_time_exposed
     else:
       return 0
+  
+  def get_total_flow_network_time(self):
+    return self._flow_net.total_flow_network_time(pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par, 
+                                                   inter=400.0 * 1000000000 / 8, intra=400.0 * 1000000000 / 8, 
+                                                   microbatches=self.exe._num_microbatches, 
+                                                   fwdTPSize=self._tp_fw_comm_size, 
+                                                   bwdTPSize=self._tp_bw_comm_size, 
+                                                   fwdPPSize=self._pp_fw_comm_size, 
+                                                   bwdPPSize=self._pp_bw_comm_size, 
+                                                   dpSize=self._dp_comm_size)
 
   def get_tp_comm_link_time(self):
     return self._tp_comm_time_link
@@ -2167,9 +2185,10 @@ class Llm:
     time += self.get_recompute_time()
     time += self.get_recomm_exposed_time()
     time += self.get_bubble_time()
-    time += self.get_tp_comm_exposed_time()
-    time += self.get_pp_comm_exposed_time()
-    time += self.get_dp_comm_exposed_time()
+    # time += self.get_tp_comm_exposed_time()
+    # time += self.get_pp_comm_exposed_time()
+    # time += self.get_dp_comm_exposed_time()
+    time += self.get_total_flow_network_time()
     time += self.get_extra_and_embedding_time()
     return time
 
@@ -2406,6 +2425,7 @@ class Llm:
       f"Batch TP comm time on link: {self.get_tp_comm_link_time():.4f};\n" \
       f"Batch PP comm time on link: {self.get_pp_comm_link_time():.4f};\n" \
       f"Batch DP comm time on link: {self.get_dp_comm_link_time():.4f};\n" \
+      f"Batch total flow network comm overhead: {self.get_total_flow_network_time():.4f};\n" \
       f"Batch total time: {self.get_total_time():.4f};\n" \
       f"Activation offload required BW: " \
       f"{human_format(self.get_act_offload_bw_req(), 'bandwidth')};\n" \

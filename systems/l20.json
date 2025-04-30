@@ -66,15 +66,12 @@
         "all_reduce": [2.0, -1]
       },
       "must_be_filled": false,
-      "processor_usage": 0.15,
-      "server_group_num": 2,
-      "gpu_per_server": 8
-    },
-    {
+      "processor_usage": 0.15
+    },{
       "bandwidth": 32,
-      "efficiency": 0.7,
+      "efficiency": 0.8,
       "size": 65536,
-      "latency": 0.000002,
+      "latency": 0.002,
       "ops": {
         "p2p": [1.0, null],
         "reduce_scatter": [1.0, -1],

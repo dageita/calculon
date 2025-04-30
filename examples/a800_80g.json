@@ -7,7 +7,7 @@
   "pipeline_par_net": 1,
   "data_par_net": 1,
   "batch_size": 2048,
-  "microbatch_size": 32,
+  "microbatch_size": 64,
   "datatype": "float16",
   "fused_activation": false,
   "attention_type": "multihead",
