@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
-from ctypes import CDLL, c_int, c_float
+from ctypes import CDLL, c_int, c_float, c_double, c_uint64
 
 lib = CDLL("./libpycallclass.so")
 pycall_main = lib.pycall_main
@@ -22,14 +22,14 @@ pycall_main.argtypes = [
     c_int,   # pp
     c_int,   # dp
     c_int,   # tp
-    c_float, # inter
-    c_float, # intra
+    c_double, # inter
+    c_double, # intra
     c_int,   # microbatches
-    c_int,   # fwdTPSize
-    c_int,   # bwdTPSize
-    c_int,   # fwdPPSize
-    c_int,   # bwdPPSize
-    c_int    # dpSize
+    c_uint64,   # fwdTPSize
+    c_uint64,   # bwdTPSize
+    c_uint64,   # fwdPPSize
+    c_uint64,   # bwdPPSize
+    c_uint64    # dpSize
 ]
 pycall_main.restype = c_float  # 返回值类型
 
@@ -57,30 +57,6 @@ class Network:
     else:
       assert offset is None, f'Can\'t give offset for {op}'
       return Network.Op(scalar, 0)
-  
-  # def get_parallel_groups(TP, PP, DP, gpus_per_server):
-  #   # 调用 C++ 生成数据
-  #   lib.generate_groups(TP, PP, DP, gpus_per_server)
-
-  #   # 解析 TP 组
-  #   tp_group_count = lib.get_tp_group_count()
-  #   tp_sizes = np.ctypeslib.as_array(lib.get_tp_group_sizes(), shape=(tp_group_count,))
-  #   tp_data = np.ctypeslib.as_array(lib.get_tp_data(), shape=(sum(tp_sizes),))
-  #   tp_groups = np.split(tp_data, np.cumsum(tp_sizes)[:-1])
-
-  #   # 解析 PP 组
-  #   pp_group_count = lib.get_pp_group_count()
-  #   pp_sizes = np.ctypeslib.as_array(lib.get_pp_group_sizes(), shape=(pp_group_count,))
-  #   pp_data = np.ctypeslib.as_array(lib.get_pp_data(), shape=(sum(pp_sizes),))
-  #   pp_groups = np.split(pp_data, np.cumsum(pp_sizes)[:-1])
-
-  #   # 解析 DP 组
-  #   dp_group_count = lib.get_dp_group_count()
-  #   dp_sizes = np.ctypeslib.as_array(lib.get_dp_group_sizes(), shape=(dp_group_count,))
-  #   dp_data = np.ctypeslib.as_array(lib.get_dp_data(), shape=(sum(dp_sizes),))
-  #   dp_groups = np.split(dp_data, np.cumsum(dp_sizes)[:-1])
-
-  #   return tp_groups, pp_groups, dp_groups
 
   def __init__(self, cfg):
     assert Network.kKeys == set(cfg.keys())
@@ -135,34 +111,24 @@ class Network:
 
     # Scales the op_size by the op offset
     chunk_size = 1 / comm_size * op_size
-    op_size += chunk_size * self._ops[op].offse
+    op_size += chunk_size * self._ops[op].offset
 
     # Calculates time based on raw bandwidth,  bandwidth efficiency, and latency
     return self._latency + op_size / (self._bw * self._eff)
+
+   # 显式转换函数
+  def cast_uint64(self, value):
+      return c_uint64(value & 0xFFFFFFFFFFFFFFFF)  # 强制64位掩码
     
   def total_flow_network_time(self, pp, dp, tp, inter, intra, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
+    parameters = locals()
+    print("wxftest parameters:", parameters)
     time = pycall_main(
-    pp=pp, dp=dp, tp=tp,
-    inter=inter, intra=intra,
-    microbatches=microbatches,
-    fwdTPSize=fwdTPSize, bwdTPSize=bwdTPSize,
-    fwdPPSize=fwdPPSize, bwdPPSize=bwdPPSize,
-    dpSize=dpSize
+    pp, dp, tp,
+    inter, intra,
+    microbatches,
+    self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
+    self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
+    self.cast_uint64(dpSize)
     )
     return time
-
-
-
-
-
-
-    
-# float pycall_main(int pp, int dp, int tp, float inter, float intra, int microbatches, int fwdTPSize, int bwdTPSize, int fwdPPSize, int bwdPPSize, int dpSize) {
-
-
-# so = ctypes.cdll.LoadLibrary
-# lib = so("./libpycallclass.so")
-# lib.simulator_main.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float, ctypes.c_int]
-# lib.simulator_main.restype = ctypes.c_int
-# lib.test(1)
-# lib.simulator_main(8, 8, ctypes.c_float(102.4), ctypes.c_float(10240000), 4)

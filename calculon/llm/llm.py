@@ -522,6 +522,7 @@ class Llm:
 
   def get_stats_values(self):
     assert self._executed
+    print("wxftest get stats values")
     return (
       self._block_fw_flops,
       self._block_fw_flops_time,
@@ -2149,6 +2150,7 @@ class Llm:
       return 0
   
   def get_total_flow_network_time(self):
+    print("wxftest, get flow network time")
     return self._flow_net.total_flow_network_time(pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par, 
                                                    inter=400.0 * 1000000000 / 8, intra=400.0 * 1000000000 / 8, 
                                                    microbatches=self.exe._num_microbatches, 
@@ -2188,6 +2190,7 @@ class Llm:
     # time += self.get_tp_comm_exposed_time()
     # time += self.get_pp_comm_exposed_time()
     # time += self.get_dp_comm_exposed_time()
+    print("wxftest get total time")
     time += self.get_total_flow_network_time()
     time += self.get_extra_and_embedding_time()
     return time
