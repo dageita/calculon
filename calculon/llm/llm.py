@@ -506,7 +506,7 @@ class Llm:
       'dp_comm_exposed_time',
       'fw_offload_exposed_time',
       'bw_offload_exposed_time',
-      'flow_network_comm_time'
+      'flow_network_comm_time',
       'total_time',
       'act_offload_bw_req',
       'weight_offload_bw_req',
@@ -522,7 +522,6 @@ class Llm:
 
   def get_stats_values(self):
     assert self._executed
-    print("wxftest get stats values")
     return (
       self._block_fw_flops,
       self._block_fw_flops_time,
@@ -1118,6 +1117,7 @@ class Llm:
     self._dp_net = self.sys.get_network(self.exe.data_par_net)
 
     self._flow_net = self.sys.get_network(0)
+    self._flow_net.flow_network_init(self._tp_net._bw, self._dp_net._bw)
 
     for tier_used, tier_size, tier in zip(
         used, size, range(self.sys.num_networks)):
@@ -2150,9 +2150,7 @@ class Llm:
       return 0
   
   def get_total_flow_network_time(self):
-    print("wxftest, get flow network time")
     return self._flow_net.total_flow_network_time(pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par, 
-                                                   inter=400.0 * 1000000000 / 8, intra=400.0 * 1000000000 / 8, 
                                                    microbatches=self.exe._num_microbatches, 
                                                    fwdTPSize=self._tp_fw_comm_size, 
                                                    bwdTPSize=self._tp_bw_comm_size, 
@@ -2190,7 +2188,6 @@ class Llm:
     # time += self.get_tp_comm_exposed_time()
     # time += self.get_pp_comm_exposed_time()
     # time += self.get_dp_comm_exposed_time()
-    print("wxftest get total time")
     time += self.get_total_flow_network_time()
     time += self.get_extra_and_embedding_time()
     return time

@@ -43,7 +43,7 @@
   "processing_mode": "no_overlap",
   "networks": [
     {
-      "bandwidth": 300,
+      "bandwidth": 64,
       "efficiency": 0.65,
       "size": 8,
       "latency": 0.00001,

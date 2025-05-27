@@ -119,13 +119,18 @@ class Network:
    # 显式转换函数
   def cast_uint64(self, value):
       return c_uint64(value & 0xFFFFFFFFFFFFFFFF)  # 强制64位掩码
-    
-  def total_flow_network_time(self, pp, dp, tp, inter, intra, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
-    parameters = locals()
-    print("wxftest parameters:", parameters)
+  
+# unit: Bps
+  def flow_network_init(self, inter, intra):
+    self.inter = inter
+    self.intra = intra
+    print("wxftest flow network init", self.inter, self.intra)
+
+  def total_flow_network_time(self, pp, dp, tp, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
+    # parameters = locals()
     time = pycall_main(
     pp, dp, tp,
-    inter, intra,
+    self.inter, self.intra,
     microbatches,
     self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
     self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
