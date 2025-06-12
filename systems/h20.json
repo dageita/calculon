@@ -1,7 +1,7 @@
 {
   "matrix" : {
     "float16": {
-      "tflops": 120,
+      "tflops": 148,
       "gflops_efficiency": [
         [70370, 0.973053],
         [8796, 0.965694],
@@ -17,7 +17,7 @@
   },
   "vector": {
     "float16": {
-      "tflops": 80,
+      "tflops": 120,
       "gflops_efficiency": [
         [4400, 0.72],
         [550, 0.74],
@@ -29,7 +29,7 @@
     }
   },
   "mem1": {
-    "GiB": 150,
+    "GiB": 500,
     "GBps": 4000,
     "MB_efficiency": [
       [128, 0.9],
@@ -55,9 +55,9 @@
   "processing_mode": "roofline",
   "networks": [
     {
-      "bandwidth": 64,
+      "bandwidth": 450,
       "efficiency": 0.75,
-      "size": 65536,
+      "size": 8,
       "latency": 0.0004,
       "ops": {
         "p2p": [1.0, null],

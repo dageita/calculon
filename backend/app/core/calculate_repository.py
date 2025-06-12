@@ -11,6 +11,7 @@ from app.models.calculator_result import MemoryUsage, Computation, Communication
     Parameter, RecommendedConfig
 
 import logging
+from .runner import Runner
 
 
 class OptimizationStrategyType(Enum):
@@ -145,6 +146,18 @@ class CalculateRepository:
         return calculator_result
         '''
     def calculate(self, cluster: Cluster, model: Model, other_config: OtherConfig, input_config: InputConfig):
+        self.logger.info("Starting calculation...")
+
+        args = Namespace(
+            application="models/bert-6.7B.json",  # 应用配置文件路径
+            execution="examples/a100_80g.json",  # 执行配置文件路径
+            system="systems/a100_80g.json",  # 系统配置文件路径
+            stats="-",  # 输出统计信息到 stdout
+            peers=None,  # 可选的 peers 文件路径
+            layers=False  # 是否包含层信息
+        )
+
+        result = Runner.run_command(self.logger, args)
 
 
     def read_file_to_timeline(self, content):

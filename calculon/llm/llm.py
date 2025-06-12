@@ -1117,7 +1117,7 @@ class Llm:
     self._dp_net = self.sys.get_network(self.exe.data_par_net)
 
     self._flow_net = self.sys.get_network(0)
-    self._flow_net.flow_network_init(self._tp_net._bw, self._dp_net._bw)
+    self._flow_net.flow_network_init(self._dp_net._bw, self._tp_net._bw)
 
     for tier_used, tier_size, tier in zip(
         used, size, range(self.sys.num_networks)):
