@@ -7,7 +7,7 @@ class Cluster(BaseModel):
     fp32_processing_power: int = None
     memory: int = None
     memory_bandwidth: int = None
-    bus_bandwidth: int = None
+    bus_bandwidth: int = None  # 单向
     delay: int = None
     launch_msrp: int = None
     network_bandwidth: int = None

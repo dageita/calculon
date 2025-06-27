@@ -2,7 +2,7 @@ import json
 
 import fastapi
 from app.config import settings
-from app.core.calculate_repository import CalculateRepository, OptimizationStrategyType
+from app.core.calculate_repository import CalculateRepository, OptimizationStrategyType, NetworkTopologyType
 from app.models.calculator_input import Cluster, Model, OtherConfig
 from app.models.calculator_input import InputConfig
 from app.models.calculator_result import Parameter, RecommendedConfig, MemoryUsage, \
@@ -17,6 +17,12 @@ router = fastapi.APIRouter()
 def gpu_list():
     return settings.GPU_LIST
 
+@router.get("/network")
+def get_network():
+    return {
+        "network_bandwidth": 0,
+        "network_topology": [type.value for type in NetworkTopologyType]
+    }
 
 @router.get("/model")
 def model_list():

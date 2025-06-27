@@ -19,6 +19,10 @@ class OptimizationStrategyType(Enum):
     NO_RECOMPUTATION = "No recomputation"
     SELECTIVE_RECOMPUTATION = "Selective recomputation"
 
+class NetworkTopologyType(Enum):
+    SINGLE_MACHINE = "Single machine"
+    ONE_BIG_SWITCH= "One big switch"
+    SPINE_LEAF = "Spine-leaf"
 
 class CalculateRepository:
     logger = logging.getLogger("CalculateRepository")
