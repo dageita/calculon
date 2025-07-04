@@ -3,8 +3,8 @@ import json
 import fastapi
 from app.config import settings
 from app.core.calculate_repository import CalculateRepository, OptimizationStrategyType, NetworkTopologyType
-from app.models.calculator_input import Cluster, Model, OtherConfig
-from app.models.calculator_input import InputConfig
+from app.models.calculator_input import Gpu, Model, Network, TrainningConfig
+from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import Parameter, RecommendedConfig, MemoryUsage, \
     Computation, Communication, Timeline, TotalTime
 from fastapi import Body, UploadFile, File
@@ -37,14 +37,14 @@ def calculate_params(model: Model):
 
 
 @router.post("/recommended_tensor")
-def recommended_tensor(cluster: Cluster, model: Model):
+def recommended_tensor(cluster: Gpu, model: Model):
     cr = CalculateRepository()
     recomended_tensor_parallel_degree = cr.recommended_tensor(cluster, model)
     return recomended_tensor_parallel_degree
 
 
 @router.post("/recommended_pipeline")
-def recommended_pipeline(cluster: Cluster,
+def recommended_pipeline(cluster: Gpu,
                          model: Model,
                          optimization_strategy: str = Body("Full recomputation"),
                          tensor_parallel_degree: int = Body(...)):
@@ -62,17 +62,17 @@ def recommended_microbatch(model: Model,
     return recommended_config
 
 
-@router.post("/")
-def create_calculator(cluster: Cluster,
+@router.post("/calculate")
+def create_calculator(gpu: Gpu,
+                      network: Network,
                       model: Model,
-                      other_config: OtherConfig,
-                      input_config: InputConfig):
+                      trainning_config: TrainningConfig):
     cr = CalculateRepository()
-    return cr.calculate(cluster, model, other_config, input_config)
+    return cr.calculate(gpu, network, model, trainning_config)
 
 
 @router.post("/download")
-def create_calculator(cluster: Cluster,
+def create_downloader(cluster: Gpu,
                       model: Model,
                       other_config: OtherConfig,
                       input_config: InputConfig,

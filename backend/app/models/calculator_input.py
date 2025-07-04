@@ -1,10 +1,10 @@
 from pydantic import BaseModel
 
 
-class Cluster(BaseModel):
+class Gpu(BaseModel):
     name: str = None
-    sparse_tensor_fp16_processing_power: int = None
-    fp32_processing_power: int = None
+    sparse_tensor_fp16_processing_power: float = None
+    sparse_tensor_fp32_processing_power: float = None
     memory: int = None
     memory_bandwidth: int = None
     bus_bandwidth: int = None  # 单向
@@ -12,23 +12,34 @@ class Cluster(BaseModel):
     launch_msrp: int = None
     network_bandwidth: int = None
 
+class Network(BaseModel):
+    network_bandwidth: float = None
+    network_topology: str = None  # 网络拓扑类型列表
 
 class Model(BaseModel):
     name: str = None
-    token_length: int = None
-    num_attention_heads: int = None
-    hidden_layer_size: int = None
-    num_layers: int = None
+    seq_size: int = None
+    hidden: int = None
+    feedforward: int = None
+    attn_heads: int = None
+    attn_size: int = None
+    num_blocks: int = None
     vocab_size: int = None
-    minibatch_size: int = None
 
+class TrainningConfig(BaseModel):
+    optimization_strategy: str = None  # 优化策略
+    tensor_par: int = None
+    pipeline_par: int = None
+    data_par: int = None
+    batch_size: int = None
+    microbatch_size: int = None
+    datatype: str = None  # 数据类型
 
 class OtherConfig(BaseModel):
     tensor_parallel_degree: int = None
     pipeline_parallel_degree: int = None
     microbatch_size: int = None
     optimization_strategy: str = None
-
 
 class InputConfig(BaseModel):
     data_parallel_degree: int = None

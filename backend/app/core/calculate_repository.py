@@ -5,19 +5,19 @@ from tempfile import NamedTemporaryFile
 
 import openpyxl
 from app.config import settings
-from app.models.calculator_input import Cluster, Model, OtherConfig
-from app.models.calculator_input import InputConfig
+from app.models.calculator_input import Gpu, Model, Network, TrainningConfig
+from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import MemoryUsage, Computation, Communication, Timeline, TotalTime, CalculatorResult, \
     Parameter, RecommendedConfig
 
 import logging
-from .runner import Runner
+# from .runner import Runner
 
 
 class OptimizationStrategyType(Enum):
     FULL_RECOMPUTATION = "Full recomputation"
-    NO_RECOMPUTATION = "No recomputation"
-    SELECTIVE_RECOMPUTATION = "Selective recomputation"
+    NO_RECOMPUTATION = "None recomputation"
+    SELECTIVE_RECOMPUTATION = "Attention-only recomputation"
 
 class NetworkTopologyType(Enum):
     SINGLE_MACHINE = "Single machine"
@@ -39,11 +39,11 @@ class CalculateRepository:
                 params.self_attention + params.feed_forward) * model.num_layers
         return params
 
-    def recommended_tensor(self, cluster: Cluster, model: Model):
+    def recommended_tensor(self, cluster: Gpu, model: Model):
         return min(8, max(1, math.floor(
             3 * model.hidden_layer_size / cluster.fp32_processing_power * cluster.bus_bandwidth / 2 / 1000)))
 
-    def recommended_pipeline(self, cluster: Cluster, model: Model, optimization_strategy, tensor_parallel_degree):
+    def recommended_pipeline(self, cluster: Gpu, model: Model, optimization_strategy, tensor_parallel_degree):
         params = self.parameter_metrics(model)
         if optimization_strategy == OptimizationStrategyType.FULL_RECOMPUTATION.value:
             return math.ceil((16 * params.total_parameters / tensor_parallel_degree) / (
@@ -60,7 +60,7 @@ class CalculateRepository:
         return max(1, math.floor(model.minibatch_size / 4 / pipeline_parallel_degree))
 
     '''
-    def calculate(self, cluster: Cluster, model: Model, other_config: OtherConfig, input_config: InputConfig):
+    def calculate(self, cluster: Gpu, model: Model, other_config: OtherConfig, input_config: InputConfig):
         params = self.parameter_metrics(model)
         recomended_tensor_parallel_degree = self.recommended_tensor(cluster, model)
         recomended_pipeline_parallel_degree = self.recommended_pipeline(cluster, model,
@@ -149,7 +149,7 @@ class CalculateRepository:
 
         return calculator_result
         '''
-    def calculate(self, cluster: Cluster, model: Model, other_config: OtherConfig, input_config: InputConfig):
+    def calculate(self, gpu: Gpu, network: Network, model: Model, trainning_config: TrainningConfig):
         self.logger.info("Starting calculation...")
 
         args = Namespace(
@@ -161,7 +161,7 @@ class CalculateRepository:
             layers=False  # 是否包含层信息
         )
 
-        result = Runner.run_command(self.logger, args)
+        # result = Runner.run_command(self.logger, args)
 
 
     def read_file_to_timeline(self, content):
@@ -200,7 +200,7 @@ class CalculateRepository:
         other_config.microbatch_size = worksheet1["C15"].value
         return tl, tt, other_config
 
-    def write_result_to_file(self, cluster: Cluster,
+    def write_result_to_file(self, cluster: Gpu,
                              model: Model,
                              other_config: OtherConfig,
                              input_config: InputConfig,
@@ -238,7 +238,7 @@ class CalculateRepository:
         worksheet1 = workbook["Input"]
         worksheet1["B2"] = cluster.name
         worksheet1["C2"] = cluster.sparse_tensor_fp16_processing_power
-        worksheet1["D2"] = cluster.fp32_processing_power
+        worksheet1["D2"] = cluster.sparse_tensor_fp32_processing_power
         worksheet1["E2"] = cluster.memory
         worksheet1["F2"] = cluster.memory_bandwidth
         worksheet1["G2"] = cluster.bus_bandwidth
