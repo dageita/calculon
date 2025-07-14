@@ -11,7 +11,11 @@ from app.models.calculator_result import MemoryUsage, Computation, Communication
     Parameter, RecommendedConfig
 
 import logging
-# from .runner import Runner
+import json
+import os
+from calculon.llm.runner import Runner
+from calculon.llm.llm import Llm
+from calculon.system import System
 
 
 class OptimizationStrategyType(Enum):
@@ -149,20 +153,99 @@ class CalculateRepository:
 
         return calculator_result
         '''
+    def build_app(self, model_dict):
+        app_json = {
+            "name": model_dict.get("name"),
+            "seq_size": model_dict.get("seq_size"),
+            "hidden": model_dict.get("hidden"),
+            "feedforward": model_dict.get("feedforward"),
+            "attn_heads": model_dict.get("attn_heads"),
+            "attn_size": model_dict.get("attn_size"),
+            "num_blocks": model_dict.get("num_blocks"),
+            "vocab_size": model_dict.get("vocab_size"),
+        }
+        return Llm.Application(app_json)
+
+    def build_exe(self, gpu_dict, trainning_config_dict):
+        strategy_map = {
+            "Full recomputation": "full",
+            "None recomputation": "none",
+            "Attention-only recomputation": "attn_only"
+        }
+        activation_recompute = strategy_map.get(trainning_config_dict.get("optimization_strategy"), "none")
+        exe_json = {
+            "num_procs": gpu_dict.get("num_procs"),
+            "tensor_par": trainning_config_dict.get("tensor_par"),
+            "pipeline_par": trainning_config_dict.get("pipeline_par"),
+            "data_par": trainning_config_dict.get("data_par"),
+            "tensor_par_net": 0,
+            "pipeline_par_net": 0,
+            "data_par_net": 1,
+            "batch_size": trainning_config_dict.get("batch_size"),
+            "microbatch_size": trainning_config_dict.get("microbatch_size"),
+            "datatype": trainning_config_dict.get("datatype"),
+            "fused_activation": False,
+            "attention_type": "multihead",
+            "activation_recompute": activation_recompute,
+            "pipeline_interleaving": 1,
+            "optimizer_sharding": False,
+            "tensor_par_comm_type": "ar",
+            "tensor_par_overlap": "none",
+            "seq_par_ag_redo": False,
+            "data_par_overlap": False,
+            "weight_offload": False,
+            "activations_offload": False,
+            "optimizer_offload": False,
+            "training": True
+        }
+        print(exe_json)
+        return Llm.Execution.from_json(exe_json)
+
+    def build_syst(self, gpu_dict, network_dict):
+        
+        # 1. 从gpu_dict中提取name，在calculon/systems下寻找name.json文件
+        name = gpu_dict.get("name")
+        system_json_path = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "systems", f"{name}.json")
+        system_json_path = os.path.abspath(system_json_path)
+        if not os.path.exists(system_json_path):
+            raise FileNotFoundError(f"System config file not found: {system_json_path}")
+        with open(system_json_path, "r") as f:
+            sys_json = json.load(f)
+
+        # 2. 从gpu_dict中提取bus_bandwidth填入sys_json.networks[0].bandwidth
+        if "networks" in sys_json and len(sys_json["networks"]) > 0:
+            sys_json["networks"][0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
+        else:
+            raise ValueError("sys_json['networks'] is missing or empty")
+
+        # 3. 从gpu_dict中提取num_procs填入sys_json.networks[0].size
+        sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
+
+        # 4. 从network_dict中提取network_bandwidth填入sys_json.networks[1].bandwidth
+        if len(sys_json["networks"]) > 1:
+            sys_json["networks"][1]["bandwidth"] = network_dict.get("network_bandwidth")
+        else:
+            # 如果只有一个网络，可以选择添加一个新的网络
+            sys_json["networks"].append({
+                "bandwidth": network_dict.get("network_bandwidth")
+            })
+        print(sys_json)
+        return System(sys_json)
+
     def calculate(self, gpu: Gpu, network: Network, model: Model, trainning_config: TrainningConfig):
         self.logger.info("Starting calculation...")
 
-        args = Namespace(
-            application="models/bert-6.7B.json",  # 应用配置文件路径
-            execution="examples/a100_80g.json",  # 执行配置文件路径
-            system="systems/a100_80g.json",  # 系统配置文件路径
-            stats="-",  # 输出统计信息到 stdout
-            peers=None,  # 可选的 peers 文件路径
-            layers=False  # 是否包含层信息
-        )
+        gpu_dict = gpu.dict()
+        network_dict = network.dict()
+        model_dict = model.dict()
+        trainning_config_dict = trainning_config.dict()
 
-        # result = Runner.run_command(self.logger, args)
+        app = self.build_app(model_dict)
+        exe = self.build_exe(gpu_dict, trainning_config_dict)
+        syst = self.build_syst(gpu_dict, network_dict)
 
+        result = Runner.isinstance_run_command(self.logger, app, exe, syst)
+        return result
 
     def read_file_to_timeline(self, content):
         # 打开Excel文件

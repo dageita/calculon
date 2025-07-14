@@ -1461,7 +1461,7 @@ class Llm:
     self._fw_mem_accessed = mult * self._block_fw_mem_accessed
     self._fw_mem_time = mult * self._block_fw_mem_time
     self._fw_time = mult * self._block_fw_time
-    self.log.debug("wxftest: microbatcher: %d, mult: %d, block fw time: %f, fw time: %f", self.exe._num_microbatches, mult, self._block_fw_time, self._fw_time)
+    self.log.debug("wxftest: num_microbatches: %d, mult: %d, block fw time: %f, fw time: %f", self.exe._num_microbatches, mult, self._block_fw_time, self._fw_time)
     self._re_flops = mult * self._block_re_flops
     self._re_flops_time = mult * self._block_re_flops_time
     self._re_mem_accessed = mult * self._block_re_mem_accessed

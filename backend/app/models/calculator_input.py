@@ -8,9 +8,8 @@ class Gpu(BaseModel):
     memory: int = None
     memory_bandwidth: int = None
     bus_bandwidth: int = None  # 单向
-    delay: int = None
-    launch_msrp: int = None
-    network_bandwidth: int = None
+    support_p2p: bool = None
+    num_procs: int = None  # GPU数量
 
 class Network(BaseModel):
     network_bandwidth: float = None

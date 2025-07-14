@@ -15,37 +15,30 @@
  * limitations under the License.
 """
 
+from setuptools import setup, find_packages
 import codecs
 import re
 import os
 import sys
 
-try:
-  from setuptools import setup
-except:
-  print('please install setuptools via pip:')
-  print('  pip3 install setuptools')
-  sys.exit(-1)
-
 def find_version(*file_paths):
-  version_file = codecs.open(os.path.join(os.path.abspath(
-    os.path.dirname(__file__)), *file_paths), 'r').read()
-  version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]",
-                            version_file, re.M)
-  if version_match:
-    return version_match.group(1)
-  raise RuntimeError("Unable to find version string.")
-
+    version_file = codecs.open(os.path.join(os.path.abspath(
+        os.path.dirname(__file__)), *file_paths), 'r').read()
+    version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]",
+                              version_file, re.M)
+    if version_match:
+        return version_match.group(1)
+    raise RuntimeError("Unable to find version string.")
 
 setup(
-  name='calculon',
-  version=find_version('calculon', '__init__.py'),
-  description='Co-design for large scale parallel applications',
-  author='Michael Isaev',
-  author_email='michael.v.isaev@gmail.com',
-  license='Apache 2',
-  url='http://github.com/calculon-ai/calculon',
-  packages=['calculon', 'calculon.llm'],
-  scripts=['bin/calculon'],
-  install_requires=[],
+    name='calculon',
+    version=find_version('calculon', '__init__.py'),
+    description='Co-design for large scale parallel applications',
+    author='Michael Isaev',
+    author_email='michael.v.isaev@gmail.com',
+    license='Apache 2',
+    url='http://github.com/calculon-ai/calculon',
+    packages=find_packages(include=['calculon*', 'backend*']),
+    scripts=['bin/calculon'],
+    install_requires=[],
 )
