@@ -90,24 +90,29 @@ class Runner(calculon.CommandLine):
       if peers:
           calculon.write_json_file(exe.get_peers_json(), peers)
 
-      return 0
+      res = Runner.get_model_stats_json(model)
+
+      return res
 
   @staticmethod
   def get_model_stats_json(model: Llm):
+    global_time, tp_comm, tp_fw_comm, tp_bw_comm, pp_comm, pp_fw_comm, pp_bw_comm, dp_comm, total_comm = model.get_total_flow_network_time()
     return {
         "memory_usage": {
-            "optimizer": model.get_optimizer_space(),
-            "weights": model.get_weight_space(),
-            "weight_gradients": model.get_weight_grad_space(),
-            "activation": model.get_act_space(),
-            "activation_gradients": model.get_act_grad_space(),
-            "overall_usage": model.get_mem_tier1_cap_req()
+            "optimizer": human_format(model.get_optimizer_space(), 'bytes'),
+            "weights": human_format(model.get_weight_space(), 'bytes'),
+            "weight_gradients": human_format(model.get_weight_grad_space(), 'bytes'),
+            "activation": human_format(model.get_act_space(), 'bytes'),
+            "activation_gradients": human_format(model.get_act_grad_space(), 'bytes'),
+            "overall_usage": human_format(model.get_mem_tier1_cap_req(), 'bytes'),
         },
         "computation": {
+            "per_device_blocks": model._blocks_per_proc,
+            "num_microbatches": model.exe._num_microbatches,
             "batch_forward_computation_time": model.get_fw_time(),
-            "per_block_forward_computation_time": model._block_fw_time,
+            "microbatch_forward_computation_time": model._block_fw_time * model._blocks_per_proc,
             "batch_backward_computation_time": model.get_bw_time(),
-            "per_block_backward_computation_time": model._block_agrad_time + model._block_wgrad_time
+            "microbatch_backward_computation_time": (model._block_agrad_time + model._block_wgrad_time) * model._blocks_per_proc,
         },
         "communication": {
             "dp_comm_size": model._dp_comm_size,
@@ -115,42 +120,43 @@ class Runner(calculon.CommandLine):
             "tp_comm_bw_size": model._tp_bw_comm_size,
             "pp_comm_fw_size": model._pp_fw_comm_size,
             "pp_comm_bw_size": model._pp_bw_comm_size,
-            "batch_tp_comm_time": model.get_tp_comm_link_time(),
-            "batch_tp_fw_comm_time": model._tp_fw_comm_size,  # 可根据实际含义调整
-            "per_block_tp_fw_comm_time": model._baseblock_fw_tp_time,
-            "batch_tp_bw_comm_time": model._tp_bw_comm_size,  # 可根据实际含义调整
-            "per_block_tp_bw_comm_time": model._baseblock_agrad_tp_time,
-            "batch_pp_comm_time": model.get_pp_comm_link_time(),
-            "batch_pp_fw_comm_time": model._pp_fw_comm_size,  # 可根据实际含义调整
-            "per_block_pp_fw_comm_time": model._block_fw_pp_size,
-            "batch_pp_bw_comm_time": model._pp_bw_comm_size,  # 可根据实际含义调整
-            "per_block_pp_bw_comm_time": model._block_bw_pp_size,
-            "batch_dp_comm_time": model.get_dp_comm_link_time(),
+            "batch_dp_comm_time": dp_comm,
+            "batch_tp_comm_time": tp_comm,
+            "batch_tp_fw_comm_time": tp_fw_comm,
+            "microbatch_tp_fw_comm_time": tp_fw_comm / model.exe._num_microbatches,
+            "batch_tp_bw_comm_time": tp_bw_comm,
+            "microbatch_tp_bw_comm_time": tp_bw_comm / model.exe._num_microbatches,
+            "batch_pp_comm_time": pp_comm,
+            "batch_pp_fw_comm_time": pp_fw_comm,
+            "microbatch_pp_fw_comm_time": pp_fw_comm / model.exe._num_microbatches,
+            "batch_pp_bw_comm_time": pp_bw_comm, 
+            "microbatch_pp_bw_comm_time": pp_bw_comm / model.exe._num_microbatches,
         },
         "timeline": {
             "per_device_blocks": model._blocks_per_proc,
             "num_microbatches": model.exe._num_microbatches,
             "batch_forward_computation_time": model.get_fw_time(),
-            "per_block_forward_computation_time": model._block_fw_time,
+            "microbatch_forward_computation_time": model._block_fw_time * model._blocks_per_proc,
             "batch_backward_computation_time": model.get_bw_time(),
-            "per_block_backward_computation_time": model._block_agrad_time + model._block_wgrad_time,
-            "batch_tp_comm_time": model.get_tp_comm_link_time(),
-            "batch_tp_fw_time": model._tp_fw_comm_size,  # 可根据实际含义调整
-            "per_block_tp_fw_time": model._baseblock_fw_tp_time,
-            "batch_tp_bw_time": model._tp_bw_comm_size,  # 可根据实际含义调整
-            "per_block_tp_bw_time": model._baseblock_agrad_tp_time,
-            "batch_pp_comm_time": model.get_pp_comm_link_time(),
-            "batch_pp_fw_time": model._pp_fw_comm_size,  # 可根据实际含义调整
-            "per_block_pp_fw_time": model._block_fw_pp_size,
-            "batch_pp_bw_time": model._pp_bw_comm_size,  # 可根据实际含义调整
-            "per_block_pp_bw_time": model._block_bw_pp_size,
-            "batch_dp_comm_time": model.get_dp_comm_link_time(),
-            "warmup_time": getattr(model, "_baseblock_fw_time", 0),  # 需根据实际含义调整
-            "cooldown_time": getattr(model, "_edgeblock_fw_time", 0),  # 需根据实际含义调整
+            "microbatch_backward_computation_time": (model._block_agrad_time + model._block_wgrad_time) * model._blocks_per_proc,
+            "batch_dp_comm_time": dp_comm,
+            "batch_tp_comm_time": tp_comm,
+            "batch_tp_fw_comm_time": tp_fw_comm,
+            "microbatch_tp_fw_comm_time": tp_fw_comm / model.exe._num_microbatches,
+            "batch_tp_bw_comm_time": tp_bw_comm,
+            "microbatch_tp_bw_comm_time": tp_bw_comm / model.exe._num_microbatches,
+            "batch_pp_comm_time": pp_comm,
+            "batch_pp_fw_comm_time": pp_fw_comm,
+            "microbatch_pp_fw_comm_time": pp_fw_comm / model.exe._num_microbatches,
+            "batch_pp_bw_comm_time": pp_bw_comm, 
+            "microbatch_pp_bw_comm_time": pp_bw_comm / model.exe._num_microbatches,
+            "warmup_time": getattr(model, "_baseblock_fw_time", 0), 
+            "cooldown_time": getattr(model, "_edgeblock_fw_time", 0), 
             "batch_total_time": model.get_total_time()
         },
         "summary": {
-            "global_minibatch_size": model.exe.global_batch_size,
+            "global_batch_size": model.exe.global_batch_size,
+            "local_batch_size": model.exe._local_batch_size,
             "batch_total_time": model.get_total_time(),
             "totoal_number_of_gpus": model.exe.num_procs,
             "total_efficiency": round(model.get_total_efficiency(), 4)

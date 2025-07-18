@@ -14,7 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
-from ctypes import CDLL, c_int, c_float, c_double, c_uint64
+from ctypes import CDLL, c_int, c_float, c_char_p, c_double, c_uint64, POINTER, byref
 
 lib = CDLL("./libpycallclass.so")
 pycall_main = lib.pycall_main
@@ -24,20 +24,33 @@ pycall_main.argtypes = [
     c_int,   # tp
     c_double, # inter
     c_double, # intra
+    c_double, # fwdCompTime
+    c_double, # bwdCompTime
     c_int,   # microbatches
+    c_char_p, # topology_type
     c_uint64,   # fwdTPSize
     c_uint64,   # bwdTPSize
     c_uint64,   # fwdPPSize
     c_uint64,   # bwdPPSize
-    c_uint64    # dpSize
+    c_uint64,   # dpSize 
+    POINTER(c_double),  # globalTime
+    POINTER(c_double),  # tpComm
+    POINTER(c_double),  # tpFwComm
+    POINTER(c_double),  # tpBwComm
+    POINTER(c_double),  # ppComm
+    POINTER(c_double),  # ppFwComm
+    POINTER(c_double),  # ppBwComm
+    POINTER(c_double),  # dpComm
+    POINTER(c_double)   # totalComm
 ]
-pycall_main.restype = c_float  # 返回值类型
+pycall_main.restype = None  # 返回值类型
+
 
 
 class Network:
   """Configuration for a network."""
 
-  kKeys = set(['bandwidth', 'efficiency', 'size', 'latency', 'ops',
+  kKeys = set(['bandwidth', 'topology', 'efficiency', 'size', 'latency', 'ops',
                'must_be_filled', 'processor_usage'])
   kNetOps = set(['p2p', 'reduce_scatter', 'all_gather', 'all_reduce'])
   kCollectives = set(['reduce_scatter', 'all_gather', 'all_reduce'])
@@ -67,6 +80,7 @@ class Network:
     self._size = cfg['size']
     assert self._size >= 0
     self._latency = cfg['latency']
+    self._topology = cfg.get('topology', 'default')  # Default to 'default' if not specified
     self._ops = {}
     for op in cfg['ops']:
       self._ops[op] = Network._parse_op(
@@ -121,19 +135,38 @@ class Network:
       return c_uint64(value & 0xFFFFFFFFFFFFFFFF)  # 强制64位掩码
   
 # unit: Bps
-  def flow_network_init(self, inter, intra):
-    self.inter = inter
-    self.intra = intra
-    print("wxftest flow network init", self.inter, self.intra)
+  def flow_network_init(self, inter, intra, topology):
+    self._inter = inter # 机间网络带宽，单位Bps
+    self._intra = intra # 机内网络带宽，单位Bps
+    self._topology = topology # 网络拓扑类型
+    print("wxftest flow network init", self._inter, self._intra, self._topology)
 
-  def total_flow_network_time(self, pp, dp, tp, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
+  def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
+    topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
     # parameters = locals()
-    time = pycall_main(
-    pp, dp, tp,
-    self.inter, self.intra,
-    microbatches,
-    self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
-    self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
-    self.cast_uint64(dpSize)
+    globalTime = c_double()
+    tpComm = c_double()
+    tpFwComm = c_double()
+    tpBwComm = c_double()
+    ppComm = c_double()
+    ppFwComm = c_double()
+    ppBwComm = c_double()
+    dpComm = c_double()
+    totalComm = c_double()
+
+    pycall_main(
+      pp, dp, tp,
+      self._inter, self._intra, 
+      fwdCompTime, bwdCompTime, microbatches,
+      topology_bytes,
+      self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
+      self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
+      self.cast_uint64(dpSize),
+      byref(globalTime), 
+      byref(tpComm), byref(tpFwComm), byref(tpBwComm), 
+      byref(ppComm), byref(ppFwComm), byref(ppBwComm), 
+      byref(dpComm), byref(totalComm)
     )
-    return time
+
+    print("wxftest", globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value)
+    return globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value

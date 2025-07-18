@@ -203,7 +203,7 @@ class CalculateRepository:
 
     def build_syst(self, gpu_dict, network_dict):
         
-        # 1. 从gpu_dict中提取name，在calculon/systems下寻找name.json文件
+        # 从gpu_dict中提取name，在calculon/systems下寻找name.json文件
         name = gpu_dict.get("name")
         system_json_path = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "systems", f"{name}.json")
         system_json_path = os.path.abspath(system_json_path)
@@ -212,22 +212,23 @@ class CalculateRepository:
         with open(system_json_path, "r") as f:
             sys_json = json.load(f)
 
-        # 2. 从gpu_dict中提取bus_bandwidth填入sys_json.networks[0].bandwidth
+        # 处理sys_json.networks[0]，代表机内网络
         if "networks" in sys_json and len(sys_json["networks"]) > 0:
             sys_json["networks"][0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
+            sys_json["networks"][0]["topology"] = network_dict.get("network_topology")
+            sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
         else:
             raise ValueError("sys_json['networks'] is missing or empty")
 
-        # 3. 从gpu_dict中提取num_procs填入sys_json.networks[0].size
-        sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
-
-        # 4. 从network_dict中提取network_bandwidth填入sys_json.networks[1].bandwidth
+        # 处理sys_json.networks[1]，代表机间网络
         if len(sys_json["networks"]) > 1:
             sys_json["networks"][1]["bandwidth"] = network_dict.get("network_bandwidth")
+            sys_json["networks"][1]["topology"] = network_dict.get("network_topology")
         else:
             # 如果只有一个网络，可以选择添加一个新的网络
             sys_json["networks"].append({
-                "bandwidth": network_dict.get("network_bandwidth")
+                "bandwidth": network_dict.get("network_bandwidth"),
+                "topology": network_dict.get("network_topology")
             })
         print(sys_json)
         return System(sys_json)
