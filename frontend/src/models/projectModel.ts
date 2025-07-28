@@ -1,10 +1,11 @@
 const ProjectModel = ({ set, get }: any = {}) => ({
   curMode: 'guide', // 当前模式， 默认Guide
   curGpu: null as any, // 当前选择的GPU
+  curNetwork: null as any, // 当前选择的GPU
   curModel: null as any, // 当前选择的Model
   modelMetrics: null as any, // Model Metrics，根据所选择的model和minibatch size计算而来
   otherConfig: {
-    optimization_strategy: 'No recomputation'
+    // optimization_strategy: 'No recomputation'
   } as any, // 其他配置
   totalConfig: {
     // data_parallel_degree: 0,

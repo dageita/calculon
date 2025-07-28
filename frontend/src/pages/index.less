@@ -1,3 +1,7 @@
+body {
+  overflow-x: hidden;
+}
+
 .body {
   width: 100%;
   height: 100vh;
@@ -5,114 +9,191 @@
   flex-direction: column;
   overflow-y: scroll;
   justify-content: flex-start;
+
 }
 
-.llm-layout-wrapper{
+.llm-layout-wrapper {
   height: 100vh;
-  .header-wrapper{
+
+  .header-wrapper {
     display: flex;
-    align-items: center;
   }
-  .header-logo, .header-logo1{
+
+  .header-logo,
+  .header-logo1 {
     padding-right: 10px;
-    div{
+
+    div {
       width: 293px;
-      height: 31px;
+      height: 60px;
       background-image: url('./../assets/logo.png');
       background-repeat: no-repeat;
-      background-position: center;
+      background-position: left;
       background-size: 100%;
     }
   }
-  .header-logo1 div{
+
+  .header-logo1 div {
     background-image: url('./../assets/logo-cn.png');
-    height: 35px;
+    height: 60px;
+    background-position:
+      left;
   }
-  .header-tabs{
+
+  .header-tabs {
     padding-left: 10px;
     padding-top: 10px;
   }
-  .header-language{
+
+  .header-language {
     position: absolute;
     right: 20px;
     top: 5px;
-    .ant-switch-inner{
+
+    .ant-switch-inner {
       width: 50px;
     }
   }
-  .header-help{
+
+  .header-help {
     position: absolute;
     right: 105px;
     top: 8px;
-    .anticon{
+
+    .anticon {
       color: rgba(0, 0, 0, 0.85);
       font-size: 16px;
       font-weight: 500;
       padding: 0 15px;
     }
   }
-  .header-history{
+
+  .header-history {
     position: absolute;
     right: 160px;
     top: 5px;
-    .ant-btn{
+
+    .ant-btn {
       font-weight: 500;
       padding: 0 15px;
     }
   }
-  .ant-layout-header{
+
+  .ant-layout-header {
     background: transparent;
     padding: 0 10px;
   }
-  .ant-tabs-tab-active{ 
+
+  .ant-tabs-tab-active {
     font-weight: bold;
   }
 }
-.history-item{
+
+.history-item {
   margin-bottom: 20px;
-  .history-item-header{
+
+  .history-item-header {
     display: flex;
     font-size: 14px;
     font-weight: bold;
     color: #303133;
-    .history-item-header-collapse{
+
+    .history-item-header-collapse {
       padding-left: 10px;
     }
   }
-  .ant-divider-horizontal{
-    margin: 24px 0!important;
+
+  .ant-divider-horizontal {
+    margin: 24px 0 !important;
   }
 }
-.history-select-tips{
+
+.history-select-tips {
   font-size: 16px;
   font-weight: 400;
   color: #909399;
   line-height: 16px;
   margin-bottom: 20px;
 }
-.history-footer{
+
+.history-footer {
   position: absolute;
   bottom: 20px;
   right: 10px;
   display: flex;
-  .ant-btn{
+
+  .ant-btn {
     margin: 0 10px;
   }
 }
-.history-params{
+
+.history-params {
   padding: 10px;
   font-size: 14px;
   min-width: 350px;
-  .history-params-item{
+
+  .history-params-item {
     padding: 3px 0;
     display: flex;
     justify-content: space-between;
-    .history-params-item-title{
+
+    .history-params-item-title {
       font-weight: 400;
       padding-right: 20px;
     }
-    .history-params-item-value{
+
+    .history-params-item-value {
       color: #909399;
+    }
+  }
+}
+
+.customize-des {
+  .ant-descriptions-item-container {
+    position: relative;
+    &::after {
+      position: absolute;
+      top: 32px;
+      left: 0;
+      width: calc(100% - 30px);
+      height: 1px;
+      background-color: #0000000f;
+      content: "";
+    }
+  }
+  .ant-descriptions-item-label {
+    word-break: break-word;
+    overflow-wrap: break-word;
+    font-size: 12px;
+  }
+
+  .ant-descriptions-item-content {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    justify-content: right;
+    font-size: 12px;
+    padding-right: 30px;
+  }
+
+  .ant-descriptions-row {
+    &>td {
+      padding-bottom: 26px;
+      position: relative;
+    }
+  }
+
+  .ant-descriptions-row>td:not(:last-child) {
+    
+
+    &:before {
+      position: absolute;
+      top: 5px;
+      right: 15px;
+      width: 1px;
+      height: 12px;
+      background-color: #0000000f;
+      content: "";
     }
   }
 }

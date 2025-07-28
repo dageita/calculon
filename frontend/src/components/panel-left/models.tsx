@@ -17,18 +17,26 @@ const PARAMS_LIST = [
   },
   {
     title: 'Token length',
-    key: 'token_length'
+    key: 'seq_size'
   }, {
     title: 'Number of attention heads',
-    key: 'num_attention_heads'
+    key: 'attn_size'
+  },
+  {
+    title: 'Attention head size',
+    key: 'attn_heads'
   },
   {
     title: 'Hidden layer size',
-    key: 'hidden_layer_size'
+    key: 'hidden'
+  },
+  {
+    title: 'Feedforward dimension size',
+    key: 'feedforward'
   },
   {
     title: 'Number of layers',
-    key: 'num_layers'
+    key: 'num_blocks'
   },
   {
     title: 'Vocabulary size',
@@ -70,7 +78,7 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
     setProject({
       curModel: {
         ...item,
-        minibatch_size: curModel?.minibatch_size || 32
+        ...item?.obj
       }
     });
   };
@@ -84,17 +92,17 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
   const loadModelList = async () => {
     const localItems = JSON.parse(localStorage.getItem('local_models') || '[]') || []
     const modelRes: any = await getModelList()
-    setState({
-      ...state,
+    setState(prev => ({
+      ...prev,
       MODEL_LIST: [...modelRes.map((item: any) => {
         return {
           key: item.name,
           label: item.name,
           value: item.name,
-          ...item
+          obj: item
         }
       }), ...localItems]
-    })
+    }))
   }
   const showAddModal = () => {
     setState({
@@ -134,27 +142,13 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
     })
     setProject({
       curModel: {
-        ...newItem,
-        minibatch_size: curModel?.minibatch_size || 32
+        ...newItem
       }
     });
     const localItems = JSON.parse(localStorage.getItem('local_models') || '[]') || []
     localStorage.setItem('local_models', JSON.stringify([...localItems, newItem]))
   }
-  const loadMetricsOfModel = async () => {
-    if (!curModel) {
-      return
-    }
-    const metricsRes: any = await getParameterMetrics({
-      ...curModel
-    })
-    setProject({
-      modelMetrics: { ...metricsRes }
-    });
-  }
-  useEffect(() => {
-    loadMetricsOfModel()
-  }, [curModel]);
+
 
   useEffect(() => {
     loadModelList()
@@ -169,6 +163,7 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
       </p>
       <div className={styles.section_content}>
         <Select options={state.MODEL_LIST} value={curModel?.value}
+          placeholder={t('Please select')}
           onChange={handleItemClick}
           dropdownRender={(menu) => (
             <>
@@ -184,27 +179,7 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
         >
         </Select>
       </div>
-      <p className={styles.section_title}>
-        {/* Minibatch size */}
-        {t('minibatch')}
-      </p>
-      <div className={styles.section_content}>
-        <InputNumber
-          className={styles.number_item}
-          precision={0}
-          min={0}
-          value={curModel?.minibatch_size}
-          onChange={(val) => {
-            setChangeLog('Minibatch size', val, curModel?.minibatch_size)
-            setProject({
-              curModel: {
-                ...curModel,
-                minibatch_size: val
-              }
-            })
-          }} >
-        </InputNumber >
-      </div >
+
       <p className={styles.section_title}>
         {/* Parameters */}
         {t('parameters')}
@@ -227,28 +202,8 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
           </div>
         }
       </div>
-      <p className={styles.section_title}>
-        {/* The number of parameters of models */}
-        {t('model params number')}
-      </p>
-      <div>
-        {curModel?.value && modelMetrics ?
-          <div className={styles.gpu_params}>
-            {NUM_PARAMS_LIST.map((pItem, _idx) =>
-              <div key={_idx}>
-                <div className={styles.gpu_params_item}>
-                  <div className={styles.gpu_params_label}>{pItem.title}</div>
-                  <div className={styles.gpu_params_value}>{modelMetrics[pItem.key]}</div>
-                </div>
-                {_idx < NUM_PARAMS_LIST.length - 1 && <Divider />}
-              </div>)}
-          </div>
-          :
-          <div className={styles.to_tips}>
-            <Empty />
-          </div>
-        }
-      </div>
+
+
       <Drawer title={t('add item')} placement="right" width={600}
         // getPopupContainer={(node: any) => {
         //   if (node) {

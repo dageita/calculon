@@ -10,7 +10,7 @@
     "url": ""
   },
   "scripts": {
-    "start": "cross-env PORT=8080 umi dev",
+    "start": "cross-env NODE_OPTIONS=--openssl-legacy-provider PORT=8080 umi dev",
     "build": "umi build",
     "postinstall": "umi generate tmp",
     "prettier": "prettier --write '**/*.{js,jsx,tsx,ts,less,md,json}'",

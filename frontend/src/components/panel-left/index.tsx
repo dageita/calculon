@@ -21,7 +21,7 @@ import styles from './index.less';
 import { debounce, mixin } from 'lodash';
 import LogModel from '@/models/logModel';
 import { useTranslation } from 'react-i18next';
-import dayjs from 'dayjs';
+import model from 'mock/model';
 
 export interface IPanelLeftProps { }
 const PanelLeft: FC<IPanelLeftProps> = (props) => {
@@ -29,7 +29,7 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
   const [state, setState] = useImmer({
     active: 'gpu',
   });
-  const { curMode, curGpu, curModel, autoRecalc, otherConfig, totalConfig, result, setProject,
+  const { curMode, curGpu, curNetwork, curModel, autoRecalc, otherConfig, totalConfig, result, setProject,
     checkSize, checkPipeline, checkTotalConfig, setRecommendConfig } = useModel(ProjectModel);
   // const { changeLog, setAutoCalculated } = useModel(LogModel);
   const { history_results, pushHistory } = useModel(LogModel);
@@ -46,17 +46,17 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     },
     {
       id: 'others',
-      name: t('others'),
+      name: t('input'),
       icon: 'llm-others'
     },
-    {
-      id: 'global',
-      name: t('input'),
-      icon: 'llm-global'
-    },
+    // {
+    //   id: 'global',
+    //   name: t('input'),
+    //   icon: 'llm-global'
+    // },
   ] as any[];
   const handleItemClick = (key: string) => {
-    if (key === 'others' && !curGpu) {
+    if (key === 'others' && !curGpu.value) {
       message.warn(`GPU ${t('shouldset')}!`)
       setState({ active: 'gpu' });
       return
@@ -66,32 +66,30 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
       setState({ active: 'model' });
       return
     }
-    if (key === 'others' && !curGpu.network_bandwidth) {
-      message.warn(`Per-host network bandwidth ${t('shouldset')}!`)
-      setState({ active: 'gpu' });
-      return
-    }
-    if (key === 'others' && !curModel.minibatch_size) {
-      message.warn(`Minibatch size ${t('shouldset')}!`)
-      setState({ active: 'model' });
-      return
-    }
+    // if (key === 'others' && !curNetwork.network_bandwidth) {
+    //   message.warn(`Per-host network bandwidth ${t('shouldset')}!`)
+    //   setState({ active: 'gpu' });
+    //   return
+    // }
     setState({ active: key });
   };
 
   // && otherConfig.per_host_network_bandwidth
   const validateInput = () => {
     if (state.active == 'gpu') {
-      return curGpu && curGpu?.network_bandwidth ? true : false
+      return curGpu && curNetwork && curGpu?.num_procs ? true : false
     }
     if (state.active == 'model') {
-      return curModel && curModel.minibatch_size ? true : false
+      return curModel  ? true : false
     }
     if (state.active == 'others') {
       if (otherConfig && otherConfig.microbatch_size
         && otherConfig.optimization_strategy
-        && otherConfig.tensor_parallel_degree
-        && otherConfig.pipeline_parallel_degree) {
+        && otherConfig.tensor_par
+        && otherConfig.pipeline_par
+        && otherConfig.data_par
+        && otherConfig.datatype
+      ) {
         if (checkSize() && checkPipeline()) {
           return true
         }
@@ -103,7 +101,7 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     return false
   }
   const genHistoryTitle = () => {
-    // return `${curGpu.name}_${curModel.name}_parallel[${totalConfig.data_parallel_degree}, ${otherConfig.pipeline_parallel_degree}, ${otherConfig.tensor_parallel_degree}]
+    // return `${curGpu.name}_${curModel.name}_parallel[${totalConfig.data_parallel_degree}, ${otherConfig.pipeline_par}, ${otherConfig.tensor_par}]
     // _batch_size[${curModel.minibatch_size}, ${otherConfig.microbatch_size}]`
     return `${curGpu.name}_${curModel.name}`
   }
@@ -112,14 +110,41 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
       loading: true
     });
     const params = {
-      cluster: curGpu,
-      model: curModel,
-      other_config: otherConfig,
-      input_config: totalConfig
+      gpu: {
+        "name": curGpu['name'],
+        "sparse_tensor_fp16_processing_power": curGpu['sparse_tensor_fp16_processing_power'],
+        "sparse_tensor_fp32_processing_power": curGpu['sparse_tensor_fp32_processing_power'],
+        "memory": curGpu['memory'],
+        "memory_bandwidth": curGpu['memory_bandwidth'],
+        "bus_bandwidth": curGpu['bus_bandwidth'],
+        "support_p2p": curGpu['support_p2p'],
+        "num_procs": curGpu['num_procs']
+      },
+      "network": {
+        "network_bandwidth": curNetwork['network_bandwidth'],
+        "network_topology": curNetwork['network_topology']
+      },
+      "model": {
+        "name": curModel['name'],
+        "seq_size": curModel['seq_size'],
+        "hidden": curModel['hidden'],
+        "feedforward": curModel['feedforward'],
+        "attn_heads": curModel['attn_heads'],
+        "attn_size": curModel['attn_size'],
+        "num_blocks": curModel['num_blocks'],
+        "vocab_size": curModel['vocab_size']
+      },
+      "trainning_config": {
+        "optimization_strategy": otherConfig['optimization_strategy'],
+        "tensor_par": otherConfig['tensor_par'],
+        "pipeline_par": otherConfig['pipeline_par'],
+        "data_par": otherConfig['data_par'],
+        "batch_size": otherConfig['batch_size'],
+        "microbatch_size": otherConfig['microbatch_size'],
+        "datatype": otherConfig['datatype']
+      }
     }
-    const calcRes: any = await calculate({
-      ...params
-    })
+    const calcRes: any = await calculate(params)
     setProject({
       latest_result: autoRecalc ? { ...result } : null,
       result: calcRes
@@ -136,7 +161,7 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     }, 300)
   }
   const doCalculateOrNext = () => {
-    if (state.active === 'global') {
+    if (state.active === 'others') {
       doCalculate()
     } else {
       const curModeIndex = itemData.findIndex((item: any) => item.id === state.active)
@@ -171,27 +196,27 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         model: curModel,
         optimization_strategy: otherConfig.optimization_strategy
       })
-      setRecommendConfig('recomended_tensor_parallel_degree', recommendRes);
+      setRecommendConfig('recomended_tensor_par', recommendRes);
     }
   }
   const refreshRecommendPipeline = async () => {
-    if (curGpu?.name && curModel?.minibatch_size && otherConfig.tensor_parallel_degree) {
+    if (curGpu?.name && curModel?.minibatch_size && otherConfig.tensor_par) {
       const recommendRes: any = await getRecommendedPipeline({
         cluster: curGpu,
         model: curModel,
         optimization_strategy: otherConfig.optimization_strategy,
-        tensor_parallel_degree: otherConfig.tensor_parallel_degree
+        tensor_par: otherConfig.tensor_par
       })
       setRecommendConfig(
-        'recomended_pipeline_parallel_degree', recommendRes
+        'recomended_pipeline_par', recommendRes
       );
     }
   }
   const refreshRecommendMicrobatch = async () => {
-    if (curModel?.minibatch_size && otherConfig.pipeline_parallel_degree) {
+    if (curModel?.minibatch_size && otherConfig.pipeline_par) {
       const recommendRes: any = await getRecommendedMicrobatch({
         model: curModel,
-        pipeline_parallel_degree: otherConfig.pipeline_parallel_degree
+        pipeline_par: otherConfig.pipeline_par
       })
       setRecommendConfig(
         'recomended_microbatch', recommendRes
@@ -222,8 +247,8 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
             ...res
           },
           // otherConfig: {
-          //   tensor_parallel_degree: res.tensor_parallel_degree,
-          //   pipeline_parallel_degree: res.pipeline_parallel_degree
+          //   tensor_par: res.tensor_par,
+          //   pipeline_par: res.pipeline_par
           // }
         });
         pushHistory('custom', {
@@ -294,17 +319,17 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     },
   };
 
-  useEffect(() => {
-    refreshRecommendTensor()
-    refreshRecommendPipeline()
-    refreshRecommendMicrobatch()
-  }, [curGpu?.name, curGpu?.network_bandwidth, curModel?.name, curModel?.minibatch_size]);
-  useEffect(() => {
-    refreshRecommendPipeline()
-  }, [otherConfig?.optimization_strategy, otherConfig?.tensor_parallel_degree]);
-  useEffect(() => {
-    refreshRecommendMicrobatch()
-  }, [otherConfig?.pipeline_parallel_degree]);
+  // useEffect(() => {
+  //   refreshRecommendTensor()
+  //   refreshRecommendPipeline()
+  //   refreshRecommendMicrobatch()
+  // }, [curGpu?.name, curGpu?.network_bandwidth, curModel?.name, curModel?.minibatch_size]);
+  // useEffect(() => {
+  //   refreshRecommendPipeline()
+  // }, [otherConfig?.optimization_strategy, otherConfig?.tensor_par]);
+  // useEffect(() => {
+  //   refreshRecommendMicrobatch()
+  // }, [otherConfig?.pipeline_par]);
 
   useEffect(() => {
     if (validateInput() && autoRecalc) {
@@ -390,10 +415,10 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
           {state.active === 'gpu' && <GpuSelection />}
           {state.active === 'model' && <ModelSelection />}
           {state.active === 'others' && <OtherSetting />}
-          {state.active === 'global' && <GlobalSetting />}
+          {/* {state.active === 'global' && <GlobalSetting />} */}
         </div>
         <div className={styles.area_btn}>
-          <div className={styles.area_switch}>
+          {/* <div className={styles.area_switch}>
             <Switch checked={autoRecalc}
               onChange={(check: boolean) => {
                 setProject({
@@ -402,12 +427,12 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
               }}></Switch>
             <span style={{ color: autoRecalc ? '#1989FA' : '' }}>
               {t('autocalc')}</span>
-          </div>
+          </div> */}
           <Button type="primary"
             disabled={!validateInput()}
             className={styles.area_btn_btn}
             onClick={doCalculateOrNext}>
-            {state.active === 'global' ? t('calculate') : t('next')}
+            {state.active === 'others' ? t('calculate') : t('next')}
           </Button>
         </div>
       </div>

@@ -3,6 +3,7 @@ import { Divider, Popover } from 'antd'
 import styles from './index.less';
 import PopPanel from './pops'
 import { keys, sum } from 'lodash';
+import { useTranslation } from 'react-i18next';
 const COLOR_MAPPING: any = {
   warmup: {
     label: 'Warmup time',
@@ -28,6 +29,41 @@ const COLOR_MAPPING: any = {
     label: 'All Reduce time',
     color: '#EF6666',
     key: 'allreduce_time'
+  },
+  microbatch_forward_computation_time: {
+    label: 'Forward comp time',
+    color: '#aae7ff',
+    key: 'microbatch_forward_computation_time'
+  },
+  microbatch_backward_computation_time: {
+    label: 'Backward comp time',
+    color: '#72d3af',
+    key: 'microbatch_backward_computation_time'
+  },
+  microbatch_tp_fw_comm_time: {
+    label: 'TP FW comm time',
+    color: '#bbd372',
+    key: 'microbatch_tp_fw_comm_time'
+  },
+  microbatch_tp_bw_comm_time: {
+    label: 'TP BW comm time',
+    color: '#948cd9',
+    key: 'microbatch_tp_bw_comm_time'
+  },
+  microbatch_pp_fw_comm_time: {
+    label: 'PP FW comm time',
+    color: '#d1539e',
+    key: 'microbatch_pp_fw_comm_time'
+  },
+  microbatch_pp_bw_comm_time: {
+    label: 'PP BW comm time',
+    color: '#5d0feeff',
+    key: 'microbatch_pp_bw_comm_time'
+  },
+  batch_dp_comm_time: {
+    label: 'DP comm time',
+    color: '#e60b71ff',
+    key: 'batch_dp_comm_time'
   }
 }
 
@@ -39,7 +75,7 @@ export interface IBaseTLProps {
 }
 const BaseTL: FC<IBaseTLProps> = (props) => {
   const { result, latest_result, curMode } = props;
-
+  const { t } = useTranslation();
   const dataParse = (d: number, toGB?: boolean) => {
     if (!d) return d
     if (toGB) {
@@ -56,12 +92,23 @@ const BaseTL: FC<IBaseTLProps> = (props) => {
     // 小于1的浮点数，保留6位
     return d.toFixed(6)
   }
-  const { warmup_time, forward_time, backward_time, cooldown_time, allreduce_time, num_microbatches } = result?.timeline || {}
-  const totalTime = sum([warmup_time, forward_time * num_microbatches, backward_time * num_microbatches, cooldown_time, allreduce_time])
-  const loopTotalTime = (forward_time + backward_time) * num_microbatches
+  const { warmup_time, forward_time, backward_time, cooldown_time, allreduce_time, num_microbatches, batch_total_time } = result?.timeline || {}
+
+  const totalTime = sum([warmup_time, batch_total_time, cooldown_time, allreduce_time])
+  let period = 0;
+  const colors = ['#aae7ff', '#72d3af', '#bbd372', '#948cd9', '#d1539e', '#e6b20bff', '#5d0feeff', '#e60b71ff']
+  const microBatchPeriods = result?.timeline ? Object.keys(result.timeline).filter(o => o.startsWith('microbatch_')).map((o, n) => {
+    period += result.timeline[o]
+    return { key: o, v: result.timeline[o], color: colors[n] }
+  }) : []
+
+
+  let total =0
   const calcLength = (time: number, isMulti?: boolean) => {
     if (isMulti) {
-      return `${(time / loopTotalTime) * (100 - Math.ceil(num_microbatches / 10))}%`
+      total+=time
+      console.log(total)
+      return `${(time / batch_total_time) * (100 - Math.ceil(num_microbatches / 10))}%`
     }
     return `${(time / totalTime) * 98}%`
   }
@@ -76,16 +123,14 @@ const BaseTL: FC<IBaseTLProps> = (props) => {
   }
   const renderLoopTime = (index: number) => {
     return <Fragment key={index}>
-      <div key={index} className={styles.timeline_inner_block} style={{
-        width: calcLength(forward_time, true),
-        backgroundColor: COLOR_MAPPING['forward'].color
-      }}>
-      </div>
-      <div key={`${index}_1`} className={styles.timeline_inner_block} style={{
-        width: calcLength(backward_time, true),
-        backgroundColor: COLOR_MAPPING['backward'].color
-      }}>
-      </div></Fragment>
+      {microBatchPeriods.map((rowItem: any, idx: number) => {
+        return <div className={styles.light} style={{
+          width: calcLength(rowItem.v, true),
+          backgroundColor: COLOR_MAPPING[rowItem.key].color
+        }}>
+        </div>
+      })}
+    </Fragment>
   }
   const renderMultiLoopTime = () => {
     const numsArray = []
@@ -98,9 +143,9 @@ const BaseTL: FC<IBaseTLProps> = (props) => {
   }
   const renderTip = (time: number, title: string) => {
     return <div className={styles.pop_tip}>
-      <div>{title}(GPU usage)</div>
+      <div>{title}</div>
       {/* <div>{dataParse(time)} ({((time / totalTime) * 100).toFixed(2)}%)</div> */}
-      <div>{dataParse(time)} (0%)</div>
+      <div>{dataParse(time)}</div>
     </div>
   }
   const renderDetail = () => {
@@ -109,27 +154,19 @@ const BaseTL: FC<IBaseTLProps> = (props) => {
 
   return (
     <div>
-      {result.total_time ? <div className={styles.timeline_group_total} style={{ width: props.widthScale || '100%' }}>
+      <div className={styles.timeline_group_total} style={{ width: props.widthScale || '100%' }}>
         {/* {dataParse(totalTime)}s */}
-        <span className={styles.timeline_total_label}>Iteration</span>
-        <span className={checkChanged(result.timeline.per_iter_training_time, latest_result?.timeline?.per_iter_training_time)}>
-          {dataParse(result.timeline.per_iter_training_time)}s
+        <span className={styles.timeline_total_label}>{t('number of microbatches')}</span>
+        <span >
+          {result.timeline?.num_microbatches}
         </span>
         <Divider type="vertical" />
-        <span className={styles.timeline_total_label}> Number of iterations</span>
-        <span className={checkChanged(result.total_time.total_number_of_iters, latest_result?.total_time?.total_number_of_iters)}>
-          {Math.floor(result.total_time.total_number_of_iters)}
+        <span className={styles.timeline_total_label}>{t('global time')}</span>
+        <span >
+          {result.summary?.batch_total_time.toFixed(6)}
         </span>
-        <Divider type="vertical" />
-        <span className={styles.timeline_total_label}> Total duration</span>
-        <span className={checkChanged(result.total_time.total_training_time, latest_result?.total_time?.total_training_time)}>
-          {dataParse(result.total_time.total_training_time)}s
-        </span>
-      </div> :
-        <div className={styles.timeline_group_total} style={{ width: props.widthScale || '100%' }}>
-          {dataParse(result.timeline.per_iter_training_time)}s
-        </div>
-      }
+      </div>
+
       <div className={styles.timeline_group} style={{ width: props.widthScale || '100%' }}>
         <Popover content={renderTip(warmup_time, COLOR_MAPPING['warmup'].label)} title="" trigger="hover">
           <div className={styles.timeline_block} style={{
@@ -138,11 +175,11 @@ const BaseTL: FC<IBaseTLProps> = (props) => {
           }}>
           </div>
         </Popover>
-        <Popover content={renderDetail()} title="" trigger="hover">
-          <div className={styles.timeline_block_loop} style={{ width: calcLength(loopTotalTime) }}>
-            {renderMultiLoopTime()}
-          </div>
-        </Popover>
+
+        <div className={styles.timeline_block_loop} style={{ width: calcLength(batch_total_time) }}>
+          {renderMultiLoopTime()}
+        </div>
+
         <Popover content={renderTip(cooldown_time, COLOR_MAPPING['cooldown'].label)} title="" trigger="hover">
           <div className={styles.timeline_block} style={{
             width: calcLength(cooldown_time),
@@ -150,8 +187,8 @@ const BaseTL: FC<IBaseTLProps> = (props) => {
           }}>
           </div>
         </Popover>
-        <Popover content={renderTip(allreduce_time, COLOR_MAPPING['allReduce'].label)} title="" trigger="hover"
-          placement='left'>
+        <Popover content={renderTip(allreduce_time, COLOR_MAPPING['allReduce'].label)} style={styles.timeline_block_pop} title="" trigger="hover"
+          placement="left">
           <div className={styles.timeline_block} style={{
             width: calcLength(allreduce_time),
             backgroundColor: COLOR_MAPPING['allReduce'].color
@@ -168,7 +205,7 @@ const BaseTL: FC<IBaseTLProps> = (props) => {
           return <Popover content={['forward', 'backward'].indexOf(key) > -1 ? renderDetail() : renderTip(result.timeline[item.key], item.label)
           } title="" trigger="hover" key={key}>
             <div key={key}>
-              <div className={styles.timeline_legend_item} style={{ backgroundColor: item.color }}></div>
+              <div className={styles.timeline_legend_item} style={!item.border ? { backgroundColor: item.color } : { border: `1px ${item.border} ${item.color}` }}></div>
               <span>{item.label}</span>
             </div>
           </Popover>

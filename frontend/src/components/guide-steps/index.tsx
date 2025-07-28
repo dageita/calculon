@@ -42,7 +42,7 @@ export default () => {
       <div className={styles.step_title}>
         <AiIcon type='llm-others' />
         <div className={styles.step_title_text}>
-          {t('others')}
+          {t('input')}
         </div>
       </div >
       <div className={styles.step_desc}>
@@ -74,19 +74,6 @@ export default () => {
           <div>
             <Divider style={{ marginTop: 20 }} />
           </div>
-        </div>
-      </div>
-    </div>
-    <div className={styles.step_item}>
-      <div className={styles.step_title}>
-        <AiIcon type='llm-global' />
-        <div className={styles.step_title_text}>
-          {t('input')}
-        </div>
-      </div >
-      <div className={styles.step_desc}>
-        <div className={styles.step_desc_text_other}>
-          {t('step input')}
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import { FC, Fragment } from 'react';
-import { Space, Divider, Popover, Tag, Button, Alert } from 'antd'
+import { Result, Divider, Button, Alert, Descriptions } from 'antd'
 import { useImmer } from 'use-immer';
 import useModel from 'flooks';
 import styles from './index.less';
@@ -147,6 +147,16 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
   if (loading) {
     return <div className={styles.loading}><LoadingOutlined /></div>
   }
+  if (result && result.error) {
+    return <Result
+      status="error"
+      title={t('Trainning failed')}
+      subTitle={t("Please check , modify the input and try again.")}
+      extra={[
+      ]}
+    >
+    </Result>
+  }
   if (!result && curMode === 'guide') {
     return <div className={styles.content}>
       <div className={styles.empty_steps} >
@@ -196,49 +206,15 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
               </div>
             </div>
             {!state.memoryCollapse && <div className={styles.result_group_content}>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item_border}>
-                  <div>Optimizer States(GB)</div>
-                  <div className={checkChanged(result.memory_usage.optimizer_states, latest_result?.memory_usage?.optimizer_states)}>
-                    {dataParse(result.memory_usage.optimizer_states, true)}
-                  </div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Weights(GB)</div>
-                  <div className={checkChanged(result.memory_usage.weights, latest_result?.memory_usage?.weights)}>
-                    {dataParse(result.memory_usage.weights, true)}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Gradients(GB)</div>
-                  <div className={checkChanged(result.memory_usage.gradients, latest_result?.memory_usage?.gradients)}>
-                    {dataParse(result.memory_usage.gradients, true)}</div>
-                </div>
-              </Space>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item}>
-                  <div>Activation(GB)</div>
-                  <div className={checkChanged(result.memory_usage.activation, latest_result?.memory_usage?.activation)}>
-                    {dataParse(result.memory_usage.activation, true)}</div>
-                </div>
-                <div className={styles.result_item}>
-                  <div>Overall Usage(GB)
-                    {curGpu && checkMemoryOverall()
-                      &&
-                      <span>
-                        <Tag color="#FF4C4C">OUT OF MEMORY</Tag>
-                      </span>
-                    }
-                  </div>
-                  <div className={checkMemoryOverall() ? styles.warning : checkChanged(result.memory_usage.overall_usage, latest_result?.memory_usage?.overall_usage)}>
-                    {dataParse(result.memory_usage.overall_usage, true)}</div>
-                </div>
-                <div className={styles.result_item}>
-                  <div>Totoal number of gpus
-                  </div>
-                  <div className={checkMemoryOverall() ? styles.warning : checkChanged(result.total_time.totoal_number_of_gpus, latest_result?.total_time?.totoal_number_of_gpus)}>
-                    {result.total_time.totoal_number_of_gpus}</div>
-                </div>
-              </Space>
+              <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
+                <Descriptions.Item label="Optimizer States">
+                  {result.memory_usage.optimizer}
+                </Descriptions.Item>
+                <Descriptions.Item label="Weights">{result.memory_usage.weights}</Descriptions.Item>
+                <Descriptions.Item label="Activation">{result.memory_usage.activation}</Descriptions.Item>
+                <Descriptions.Item label="Activation Gradients">{result.memory_usage.activation_gradients}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Overall Usage">{result.memory_usage.overall_usage}</Descriptions.Item>
+              </Descriptions>
             </div>}
             <Divider />
           </>}
@@ -256,40 +232,16 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
               </div>
             </div>
             {!state.computationCollapse && <div className={styles.result_group_content}>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item_border}>
-                  <div>Per_device layers</div>
-                  <div className={checkChanged(result.computation.per_device_layers, latest_result?.computation?.per_device_layers)}>
-                    {result.computation.per_device_layers}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Number of microbatches</div>
-                  <div className={checkChanged(result.computation.num_microbatches, latest_result?.computation?.num_microbatches)}>
-                    {result.computation.num_microbatches}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Total forward computation time(s)</div>
-                  <div className={checkChanged(result.computation.total_forward_computation_time, latest_result?.computation?.total_forward_computation_time)}>
-                    {dataParse(result.computation.total_forward_computation_time)}</div>
-                </div>
-              </Space>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item}>
-                  <div>Total backward computation time(s)</div>
-                  <div className={checkChanged(result.computation.total_backward_computation_time, latest_result?.computation?.total_backward_computation_time)}>
-                    {dataParse(result.computation.total_backward_computation_time)}</div>
-                </div>
-                <div className={styles.result_item}>
-                  <div>Per-loop forward computation time(s)</div>
-                  <div className={checkChanged(result.computation.per_loop_forward_computation_time, latest_result?.computation?.per_loop_forward_computation_time)}>
-                    {dataParse(result.computation.per_loop_forward_computation_time)}</div>
-                </div>
-                <div className={styles.result_item}>
-                  <div>Per-loop backward computation time(s)</div>
-                  <div className={checkChanged(result.computation.per_loop_backward_computation_time, latest_result?.computation?.per_loop_backward_computation_time)}>
-                    {dataParse(result.computation.per_loop_backward_computation_time)}</div>
-                </div>
-              </Space>
+              <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
+                <Descriptions.Item label="Per-device LLM blocks">
+                  {result.computation.per_device_blocks}
+                </Descriptions.Item>
+                <Descriptions.Item label="Number of microbatches">{result.computation.num_microbatches}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch forward computation time(s)">{result.computation.batch_forward_computation_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch forward computation time(s)">{result.computation.microbatch_forward_computation_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch backward computation time(s)">{result.computation.batch_backward_computation_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Per-microbatch backward computation time(s)">{result.computation.microbatch_backward_computation_time.toFixed(6)}</Descriptions.Item>
+              </Descriptions>
             </div>}
             <Divider />
           </>}
@@ -307,74 +259,29 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
               </div>
             </div>
             {!state.communicationCollapse && <div className={styles.result_group_content}>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item_border}>
-                  <div>Per-device layers</div>
-                  <div className={checkChanged(result.timeline.per_device_layers, latest_result?.timeline?.per_device_layers)}>
-                    {result.timeline.per_device_layers}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Number of microbatches</div>
-                  <div className={checkChanged(result.timeline.num_microbatches, latest_result?.timeline?.num_microbatches)}>
-                    {result.timeline.num_microbatches}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Total forward  allgather time(s)</div>
-                  <div className={checkChanged(result.communication.total_forward_allgather_time, latest_result?.communication?.total_forward_allgather_time)}>
-                    {dataParse(result.communication.total_forward_allgather_time)}</div>
-                </div>
-              </Space>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item_border}>
-                  <div>Per-loop forward  allgather time(s)</div>
-                  <div className={checkChanged(result.communication.per_loop_forward_allgather_time, latest_result?.communication?.per_loop_forward_allgather_time)}>
-                    {dataParse(result.communication.per_loop_forward_allgather_time)}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Total backward allgather time(s)</div>
-                  <div className={checkChanged(result.communication.total_backward_allgather_time, latest_result?.communication?.total_backward_allgather_time)}>
-                    {dataParse(result.communication.total_backward_allgather_time)}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Per-loop backward allgather time(s)</div>
-                  <div className={checkChanged(result.communication.per_loop_backward_allgather_time, latest_result?.communication?.per_loop_backward_allgather_time)}>
-                    {dataParse(result.communication.per_loop_backward_allgather_time)}</div>
-                </div>
-              </Space>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item_border}>
-                  <div>Total backward reduce_scatter time(s)</div>
-                  <div className={checkChanged(result.communication.total_backward_reduce_scatter_time, latest_result?.communication?.total_backward_reduce_scatter_time)}>
-                    {dataParse(result.communication.total_backward_reduce_scatter_time)}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Per-loop backward reduce_scatter time(s)</div>
-                  <div className={checkChanged(result.communication.per_loop_backward_reduce_scatter_time, latest_result?.communication?.per_loop_backward_reduce_scatter_time)}>
-                    {dataParse(result.communication.per_loop_backward_reduce_scatter_time)}</div>
-                </div>
-                <div className={styles.result_item_border}>
-                  <div>Total p2p time(s)</div>
-                  <div className={checkChanged(result.communication.total_p2p_time, latest_result?.communication?.total_p2p_time)}>
-                    {dataParse(result.communication.total_p2p_time)}</div>
-                </div>
-              </Space>
-              <Space wrap split={<Divider type="vertical" />}>
-                <div className={styles.result_item}>
-                  <div>Per-loop p2p time(s)</div>
-                  <div className={checkChanged(result.communication.per_loop_p2p_time, latest_result?.communication?.per_loop_p2p_time)}>
-                    {dataParse(result.communication.per_loop_p2p_time)}</div>
-                </div>
-                <div className={styles.result_item}>
-                  <div>Word embedding allreduce time(s)</div>
-                  <div className={checkChanged(result.communication.word_embedding_allreduce_time, latest_result?.communication?.word_embedding_allreduce_time)}>
-                    {dataParse(result.communication.word_embedding_allreduce_time)}</div>
-                </div>
-                <div className={styles.result_item}>
-                  <div>Gradient allreduce time(s)</div>
-                  <div className={checkChanged(result.communication.gradient_allreduce_time, latest_result?.communication?.gradient_allreduce_time)}>
-                    {dataParse(result.communication.gradient_allreduce_time)}</div>
-                </div>
-              </Space>
+              <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
+                <Descriptions.Item label="DP communication size">
+                  {result.communication.dp_comm_size}
+                </Descriptions.Item>
+                <Descriptions.Item label="TP forward communication size">{result.communication.tp_comm_fw_size}</Descriptions.Item>
+                <Descriptions.Item label="TP backward communication size">{result.communication.tp_comm_bw_size}</Descriptions.Item>
+                <Descriptions.Item label="PP forward communication size">{result.communication.pp_comm_fw_size}</Descriptions.Item>
+                <Descriptions.Item label="PP backward communication size">{result.communication.pp_comm_bw_size}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch DP communication time(s)">{result.communication.batch_dp_comm_time.toFixed(6)}</Descriptions.Item>
+
+                <Descriptions.Item label="Per-batch TP communication time(s)">{result.communication.batch_tp_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch TP forward communication time(s)">{result.communication.batch_tp_fw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch TP forward communication time(s)">{result.communication.microbatch_tp_fw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch TP backward communication time(s)">{result.communication.batch_tp_bw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch TP backward communication time(s)">{result.communication.microbatch_tp_bw_comm_time.toFixed(6)}</Descriptions.Item>
+
+                <Descriptions.Item label="Per-batch PP communication time(s)">{result.communication.batch_pp_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch PP forward communication time(s)">{result.communication.batch_pp_fw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch PP forward communication time(s)">{result.communication.microbatch_pp_fw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch PP backward communication time(s)">{result.communication.batch_pp_bw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Per-microbatch PP backward communication time(s)">{result.communication.microbatch_pp_bw_comm_time.toFixed(6)}</Descriptions.Item>
+
+              </Descriptions>
             </div>}
             <Divider />
           </>}
@@ -401,48 +308,23 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
             </div>
           </div>
           {!state.timelineCollapse && <div className={styles.result_group_content}>
-            <Space wrap split={<Divider type="vertical" />}>
-              <div className={styles.result_item_border}>
-                <div>Warmup time(s)</div>
-                <div className={checkChanged(result.timeline.warmup_time, latest_result?.timeline?.warmup_time)}>
-                  {dataParse(result.timeline.warmup_time)}</div>
-              </div>
-              <div className={styles.result_item_border}>
-                <div>Forward time(s)</div>
-                <div className={checkChanged(result.timeline.forward_time, latest_result?.timeline?.forward_time)}>
-                  {dataParse(result.timeline.forward_time)}</div>
-              </div>
-              <div className={styles.result_item_border}>
-                <div>Backward time(s)</div>
-                <div className={checkChanged(result.timeline.backward_time, latest_result?.timeline?.backward_time)}>
-                  {dataParse(result.timeline.backward_time)}</div>
-              </div>
-            </Space>
-            <Space wrap split={<Divider type="vertical" />}>
-              <div className={styles.result_item}>
-                <div>Cooldown time(s)</div>
-                <div className={checkChanged(result.timeline.cooldown_time, latest_result?.timeline?.cooldown_time)}>
-                  {dataParse(result.timeline.cooldown_time)}</div>
-              </div>
-              <div className={styles.result_item}>
-                <div>Per-iter time(s)</div>
-                <div className={checkChanged(result.timeline.per_iter_training_time, latest_result?.timeline?.per_iter_training_time)}>
-                  {dataParse(result.timeline.per_iter_training_time)}</div>
-              </div>
-              <div className={styles.result_item}>
-                <div>All Reduce time(s)</div>
-                <div className={checkChanged(result.timeline.allreduce_time, latest_result?.timeline?.allreduce_time)}>
-                  {dataParse(result.timeline.allreduce_time)}</div>
-              </div>
-            </Space>
+            <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
+              <Descriptions.Item label="Per-device LLM blocks">
+                {result.timeline.per_device_blocks}
+              </Descriptions.Item>
+              <Descriptions.Item label="Number of microbatches">{result.timeline.num_microbatches}</Descriptions.Item>
+              <Descriptions.Item label="Warmup time">{result.timeline.warmup_time.toFixed(6)}</Descriptions.Item>
+              <Descriptions.Item label="Cooldown time">{result.timeline.cooldown_time.toFixed(6)}</Descriptions.Item>
+              <Descriptions.Item span={1} label="Batch total time">{result.timeline.batch_total_time.toFixed(6)}</Descriptions.Item>
+            </Descriptions>
           </div>}
         </div>
         <BaseTL result={{ ...result, other_config: curMode === 'guide' ? otherConfig : result.other_config }} latest_result={latest_result} curMode={curMode}></BaseTL>
-        {curMode === 'guide' && <div className={styles.export_btn}>
+        {/* {curMode === 'guide' && <div className={styles.export_btn}>
           <Button type="primary" icon={<ExportOutlined />} onClick={exportResultFile}>
             {t('export')}
           </Button>
-        </div>}
+        </div>} */}
       </div>
     </div >
   );
