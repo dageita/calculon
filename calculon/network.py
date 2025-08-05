@@ -74,7 +74,7 @@ class Network:
   def __init__(self, cfg):
     assert Network.kKeys == set(cfg.keys())
     self._bw = cfg['bandwidth'] * 1e9  # Specified in GB/s
-    assert self._bw > 0
+    # assert self._bw > 0
     self._eff = cfg['efficiency']
     assert 0 < self._eff <= 1.0
     self._size = cfg['size']

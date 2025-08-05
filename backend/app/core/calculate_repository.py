@@ -180,7 +180,7 @@ class CalculateRepository:
             "data_par": trainning_config_dict.get("data_par"),
             "tensor_par_net": 0,
             "pipeline_par_net": 0,
-            "data_par_net": 1,
+            "data_par_net": 0,
             "batch_size": trainning_config_dict.get("batch_size"),
             "microbatch_size": trainning_config_dict.get("microbatch_size"),
             "datatype": trainning_config_dict.get("datatype"),
@@ -202,36 +202,43 @@ class CalculateRepository:
         return Llm.Execution.from_json(exe_json)
 
     def build_syst(self, gpu_dict, network_dict):
-        
-        # 从gpu_dict中提取name，在calculon/systems下寻找name.json文件
-        name = gpu_dict.get("name")
-        system_json_path = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "systems", f"{name}.json")
-        system_json_path = os.path.abspath(system_json_path)
-        if not os.path.exists(system_json_path):
-            raise FileNotFoundError(f"System config file not found: {system_json_path}")
-        with open(system_json_path, "r") as f:
-            sys_json = json.load(f)
-
-        # 处理sys_json.networks[0]，代表机内网络
-        if "networks" in sys_json and len(sys_json["networks"]) > 0:
-            sys_json["networks"][0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
-            sys_json["networks"][0]["topology"] = network_dict.get("network_topology")
-            sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
-        else:
-            raise ValueError("sys_json['networks'] is missing or empty")
-
-        # 处理sys_json.networks[1]，代表机间网络
-        if len(sys_json["networks"]) > 1:
-            sys_json["networks"][1]["bandwidth"] = network_dict.get("network_bandwidth")
-            sys_json["networks"][1]["topology"] = network_dict.get("network_topology")
-        else:
-            # 如果只有一个网络，可以选择添加一个新的网络
-            sys_json["networks"].append({
-                "bandwidth": network_dict.get("network_bandwidth"),
-                "topology": network_dict.get("network_topology")
-            })
-        print(sys_json)
-        return System(sys_json)
+        try:
+            # 从gpu_dict中提取name，在calculon/systems下寻找name.json文件
+            name = gpu_dict.get("name")
+            system_json_path = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "systems", f"{name}.json")
+            system_json_path = os.path.abspath(system_json_path)
+            print("wxftest 0")
+            if not os.path.exists(system_json_path):
+                raise FileNotFoundError(f"System config file not found: {system_json_path}")
+                return {"status": "error", "error": f"System config file not found: {system_json_path}"}
+            with open(system_json_path, "r") as f:
+                sys_json = json.load(f)
+            print("wxftest 1")
+            # 处理sys_json.networks[0]，代表机内网络
+            if "networks" in sys_json and len(sys_json["networks"]) > 0:
+                sys_json["networks"][0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
+                sys_json["networks"][0]["topology"] = network_dict.get("network_topology")
+                sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
+            else:
+                raise ValueError("sys_json['networks'] is missing or empty")
+            print("wxftest 2")
+            # 处理sys_json.networks[1]，代表机间网络
+            if len(sys_json["networks"]) > 1:
+                sys_json["networks"][1]["bandwidth"] = network_dict.get("network_bandwidth")
+                sys_json["networks"][1]["topology"] = network_dict.get("network_topology")
+            else:
+                # 如果只有一个网络，可以选择添加一个新的网络
+                sys_json["networks"].append({
+                    "bandwidth": network_dict.get("network_bandwidth"),
+                    "topology": network_dict.get("network_topology")
+                })
+            print(sys_json)
+            return System(sys_json)
+        except Llm.Error as e:
+            return {"status": "error", "error": str(e)}
+        except Exception as e:
+            return {"status": "error", "error": f"Internal error: {str(e)}"}
+        return result
 
     def calculate(self, gpu: Gpu, network: Network, model: Model, trainning_config: TrainningConfig):
         self.logger.info("Starting calculation...")
@@ -240,12 +247,16 @@ class CalculateRepository:
         network_dict = network.dict()
         model_dict = model.dict()
         trainning_config_dict = trainning_config.dict()
+        try:
+            app = self.build_app(model_dict)
+            exe = self.build_exe(gpu_dict, trainning_config_dict)
+            syst = self.build_syst(gpu_dict, network_dict)
 
-        app = self.build_app(model_dict)
-        exe = self.build_exe(gpu_dict, trainning_config_dict)
-        syst = self.build_syst(gpu_dict, network_dict)
-
-        result = Runner.isinstance_run_command(self.logger, app, exe, syst)
+            result = Runner.isinstance_run_command(self.logger, app, exe, syst)
+        except Llm.Error as e:
+            return {"status": "error", "error": str(e)}
+        except Exception as e:
+            return {"status": "error", "error": f"Internal error: {str(e)}"}
         return result
 
     def read_file_to_timeline(self, content):

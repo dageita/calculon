@@ -77,8 +77,11 @@ class Runner(calculon.CommandLine):
           model.compile(syst, exe)
           model.run(syst)
       except Llm.Error as error:
-          print(f'ERROR: {error}')
-          return -1
+        logger.error(f'LLM Error: {error}')  # 记录日志
+        return {"status": "error", "error": str(error)} 
+      except Exception as e:
+        logger.error(f'Unexpected error: {e}') 
+        return {"status": "error", "error": f"Internal error: {str(e)}"}
 
       if stats == '-':
           model.display_stats()
@@ -115,11 +118,11 @@ class Runner(calculon.CommandLine):
             "microbatch_backward_computation_time": (model._block_agrad_time + model._block_wgrad_time) * model._blocks_per_proc,
         },
         "communication": {
-            "dp_comm_size": model._dp_comm_size,
-            "tp_comm_fw_size": model._tp_fw_comm_size,
-            "tp_comm_bw_size": model._tp_bw_comm_size,
-            "pp_comm_fw_size": model._pp_fw_comm_size,
-            "pp_comm_bw_size": model._pp_bw_comm_size,
+            "dp_comm_size": human_format(model._dp_comm_size, 'bytes'),
+            "tp_comm_fw_size": human_format(model._tp_fw_comm_size, 'bytes'),
+            "tp_comm_bw_size": human_format(model._tp_bw_comm_size, 'bytes'),
+            "pp_comm_fw_size": human_format(model._pp_fw_comm_size, 'bytes'),
+            "pp_comm_bw_size": human_format(model._pp_bw_comm_size, 'bytes'),
             "batch_dp_comm_time": dp_comm,
             "batch_tp_comm_time": tp_comm,
             "batch_tp_fw_comm_time": tp_fw_comm,
@@ -152,12 +155,12 @@ class Runner(calculon.CommandLine):
             "microbatch_pp_bw_comm_time": pp_bw_comm / model.exe._num_microbatches,
             "warmup_time": getattr(model, "_baseblock_fw_time", 0), 
             "cooldown_time": getattr(model, "_edgeblock_fw_time", 0), 
-            "batch_total_time": model.get_total_time()
+            "batch_total_time": global_time
         },
         "summary": {
             "global_batch_size": model.exe.global_batch_size,
             "local_batch_size": model.exe._local_batch_size,
-            "batch_total_time": model.get_total_time(),
+            "batch_total_time": global_time,
             "totoal_number_of_gpus": model.exe.num_procs,
             "total_efficiency": round(model.get_total_efficiency(), 4)
         }

@@ -29,6 +29,7 @@ output.json
 .coverage
 .tox
 nosetests.xml
+*.png
 
 # Translations
 *.mo

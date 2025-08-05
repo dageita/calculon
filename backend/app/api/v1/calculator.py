@@ -9,6 +9,7 @@ from app.models.calculator_result import Parameter, RecommendedConfig, MemoryUsa
     Computation, Communication, Timeline, TotalTime
 from fastapi import Body, UploadFile, File
 from fastapi.responses import FileResponse
+from fastapi import HTTPException
 
 router = fastapi.APIRouter()
 
@@ -68,7 +69,13 @@ def create_calculator(gpu: Gpu,
                       model: Model,
                       trainning_config: TrainningConfig):
     cr = CalculateRepository()
-    return cr.calculate(gpu, network, model, trainning_config)
+    res = cr.calculate(gpu, network, model, trainning_config)
+    if res.get("status") == "error":
+        raise HTTPException(
+            status_code=400,  # 客户端参数错误
+            detail=res["error"]
+        )
+    return res
 
 
 @router.post("/download")
