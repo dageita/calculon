@@ -7,13 +7,17 @@ import numpy as np
 timeline_data = [
     # 格式: [rank, event_type, microbatch, start_time, end_time]
     [0, "COMPUTE_FWD", 1, 0, 0.00814718],
-    [0, "PP_COMM_FWD", 1, 0.00814718, -1],
-    [1, "PP_COMM_FWD", 1, 0.00814718, 0.00893361],
-    [1, "COMPUTE_FWD", 1, 0.00893361, 0.0170808],
-    [1, "COMPUTE_BWD", -1, 0.0170808, 0.0316296],
-    [1, "PP_COMM_BWD", -1, 0.0316296, -1],
-    [0, "PP_COMM_BWD", -1, 0.0316296, 0.0324161],
-    [0, "COMPUTE_BWD", -1, 0.0324161, 0.0469649]
+    [0, "COMPUTE_FWD", 2, 0.0276853, 0.0358325],
+    [1, "PP_COMM_FWD", 1, 0.0276853, 0.0284717],
+    [1, "COMPUTE_FWD", 1, 0.0284717, 0.0366189],
+    [1, "COMPUTE_BWD", -1, 0.0366189, 0.0511678],
+    [1, "PP_COMM_FWD", 2, 0.0358325, 0.0374053],
+    [0, "PP_COMM_BWD", -1, 0.0511678, 0.0527406],
+    [0, "COMPUTE_BWD", -1, 0.0527406, 0.0672895],
+    [1, "COMPUTE_FWD", 2, 0.0511678, 0.0593149],
+    [1, "COMPUTE_BWD", -2, 0.0593149, 0.0738638],
+    [0, "PP_COMM_BWD", -2, 0.0738638, 0.0746502],
+    [0, "COMPUTE_BWD", -2, 0.0746502, 0.0891991]
 ]
 
 def plot_timeline_with_layers(timeline_data):

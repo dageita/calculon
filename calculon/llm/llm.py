@@ -104,7 +104,11 @@ class Llm:
             f"data_par({self.data_par})"
         )
       self._local_batch_size = self.global_batch_size // self.data_par
-      assert self._local_batch_size % self.microbatch_size == 0
+      if self._local_batch_size % self.microbatch_size != 0:
+        raise Llm.Error(
+            f"local_batch_size({self._local_batch_size}) must be divisible by "
+            f"microbatch_size({self.microbatch_size})"
+        )
       self._num_microbatches = self._local_batch_size // self.microbatch_size
       self.datatype = datatype
       self.fused_activation = fused_activation
