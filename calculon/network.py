@@ -14,7 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
-from ctypes import CDLL, c_int, c_float, c_char_p, c_double, c_uint64, POINTER, byref
+# from ctypes import CDLL, c_int, c_float, c_char_p, c_double, c_uint64, POINTER, byref, create_string_buffer
+import ctypes
+from ctypes import *
+from ctypes import addressof
 
 lib = CDLL("./libpycallclass.so")
 pycall_main = lib.pycall_main
@@ -41,9 +44,15 @@ pycall_main.argtypes = [
     POINTER(c_double),  # ppFwComm
     POINTER(c_double),  # ppBwComm
     POINTER(c_double),  # dpComm
-    POINTER(c_double)   # totalComm
+    POINTER(c_double),  # totalComm
+    POINTER(c_int),     # timelineEventCount
+    POINTER(c_int),     # timelineRanks
+    (c_char_p * 100),   # timelineEventTypes - 修改为数组类型
+    POINTER(c_int),     # timelineMicrobatches
+    POINTER(c_double),  # timelineStartTimes
+    POINTER(c_double)   # timelineEndTimes
 ]
-pycall_main.restype = None  # 返回值类型
+pycall_main.restype = None
 
 
 
@@ -154,19 +163,88 @@ class Network:
     dpComm = c_double()
     totalComm = c_double()
 
+    # 新增时间线相关参数 - 预分配内存避免C++端coredump
+    max_events = 100  # 确保足够大
+
+    # 为每个数组预分配内存
+    timelineEventCount = c_int(0)  # 单个int值，用于返回事件数量
+    timelineRanks = (c_int * max_events)()
+    timelineMicrobatches = (c_int * max_events)()
+    timelineStartTimes = (c_double * max_events)()
+    timelineEndTimes = (c_double * max_events)()
+
+    # 创建字符串指针数组
+    timelineEventTypes = (c_char_p * max_events)()
+    string_buffers = []  # 保存引用，防止垃圾回收
+
+    # 预分配所有字符串缓冲区，确保内存稳定
+    string_buffers = []
+    for i in range(max_events):
+        buffer = create_string_buffer(64)
+        string_buffers.append(buffer)  # 保存引用
+        
+        # 使用cast进行正确的类型转换
+        timelineEventTypes[i] = cast(buffer, c_char_p)
+        
+        # 验证转换是否成功
+        if timelineEventTypes[i]:
+            print(f"Successfully created buffer {i}: {timelineEventTypes[i]}")
+        else:
+            print(f"Failed to create buffer {i}")
+
+    # # 创建指向字符串指针数组的指针，符合C++端char**的期望
+    # timelineEventTypes_ptr = cast(timelineEventTypes, POINTER(c_char_p))
+    
+    # # 验证指针创建是否成功
+    # print(f"Created timelineEventTypes_ptr: {timelineEventTypes_ptr}")
+    # print(f"Pointer address: {addressof(timelineEventTypes_ptr.contents)}")
+
     pycall_main(
-      pp, dp, tp,
-      self._inter, self._intra, 
-      fwdCompTime, bwdCompTime, microbatches,
-      topology_bytes,
-      self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
-      self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
-      self.cast_uint64(dpSize),
-      byref(globalTime), 
-      byref(tpComm), byref(tpFwComm), byref(tpBwComm), 
-      byref(ppComm), byref(ppFwComm), byref(ppBwComm), 
-      byref(dpComm), byref(totalComm)
+        pp, dp, tp,
+        self._inter, self._intra, 
+        fwdCompTime, bwdCompTime, microbatches,
+        topology_bytes,
+        self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
+        self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
+        self.cast_uint64(dpSize),
+        byref(globalTime), 
+        byref(tpComm), byref(tpFwComm), byref(tpBwComm), 
+        byref(ppComm), byref(ppFwComm), byref(ppBwComm), 
+        byref(dpComm), byref(totalComm),
+        byref(timelineEventCount), timelineRanks, timelineEventTypes,
+        timelineMicrobatches, timelineStartTimes, timelineEndTimes
     )
 
     print("wxftest", globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value)
-    return globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value
+    
+    # 打印timeline相关数据用于调试
+    print("Timeline data:")
+    print(f"  Event count: {timelineEventCount.value}")
+    print(f"  First 5 ranks: {list(timelineRanks[:5])}")
+    print(f"  First 5 microbatches: {list(timelineMicrobatches[:5])}")
+    print(f"  First 5 start times: {list(timelineStartTimes[:5])}")
+    print(f"  First 5 end times: {list(timelineEndTimes[:5])}")
+    
+    # 打印字符串缓冲区状态
+    print("String buffers status:")
+    for i in range(min(5, timelineEventCount.value)):
+        if i < len(timelineEventTypes) and timelineEventTypes[i]:
+            try:
+                # 直接使用timelineEventTypes[i]，它已经是bytes对象
+                buffer_content = timelineEventTypes[i]
+                print(f"  Buffer {i}: {buffer_content}")
+                if buffer_content:
+                    try:
+                        decoded = buffer_content.decode('utf-8')
+                    except UnicodeDecodeError as e:
+                        print(f"    Decode error: {e}")
+                else:
+                    print(f"    Empty buffer")
+            except Exception as e:
+                print(f"    Error accessing buffer {i}: {e}")
+        else:
+            print(f"  Buffer {i}: None or invalid")
+    
+    return (globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, 
+            ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value,
+            timelineEventCount.value, timelineRanks, timelineEventTypes, timelineMicrobatches, timelineStartTimes, timelineEndTimes)
