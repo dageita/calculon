@@ -185,19 +185,6 @@ class Network:
         
         # 使用cast进行正确的类型转换
         timelineEventTypes[i] = cast(buffer, c_char_p)
-        
-        # 验证转换是否成功
-        if timelineEventTypes[i]:
-            print(f"Successfully created buffer {i}: {timelineEventTypes[i]}")
-        else:
-            print(f"Failed to create buffer {i}")
-
-    # # 创建指向字符串指针数组的指针，符合C++端char**的期望
-    # timelineEventTypes_ptr = cast(timelineEventTypes, POINTER(c_char_p))
-    
-    # # 验证指针创建是否成功
-    # print(f"Created timelineEventTypes_ptr: {timelineEventTypes_ptr}")
-    # print(f"Pointer address: {addressof(timelineEventTypes_ptr.contents)}")
 
     pycall_main(
         pp, dp, tp,

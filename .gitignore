@@ -38,3 +38,5 @@ nosetests.xml
 .mr.developer.cfg
 .project
 .pydevproject
+
+test/test_ployt_timeline.py
