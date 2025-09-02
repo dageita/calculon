@@ -140,13 +140,13 @@ class Runner(calculon.CommandLine):
                 end_time = float(timeline_end_times[i]) if i < len(timeline_end_times) else 0.0
                 
                 # 添加到事件列表
-                timeline_events.append([
-                    int(rank),           # rank
-                    event_type,          # event_type
-                    int(microbatch),     # microbatch
-                    round(start_time, 6), # start_time，保留6位小数
-                    round(end_time, 6)    # end_time，保留6位小数
-                ])
+                timeline_events.append({
+                    "rank": int(rank),           # rank
+                    "event_type": event_type,          # event_type
+                    "microbatch": int(microbatch),     # microbatch
+                    "start_time": round(start_time, 6), # start_time，保留6位小数
+                    "end_time": round(end_time, 6)    # end_time，保留6位小数
+                })
             except (IndexError, ValueError, TypeError) as e:
                 print(f"Warning: Failed to process timeline event {i}: {e}")
                 continue

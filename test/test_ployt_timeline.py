@@ -5,33 +5,16 @@ import numpy as np
 
 # 示例数据（替换为实际从simulator获取的数据）
 timeline_data = [
-    # 格式: [rank, event_type, microbatch, start_time, end_time]
-    [0, "COMPUTE_FWD", 1, 0, 0.00814718],
-    [1, "COMPUTE_FWD", 1, 0, 0.00814718],
-    [0, "COMPUTE_FWD", 2, 0.00814718, 0.0162944],
-    [1, "COMPUTE_FWD", 2, 0.00814718, 0.0162944],
-    [2, "PP_COMM_FWD", 1, 0.00814718, 0.00893361],
-    [3, "PP_COMM_FWD", 1, 0.00893361, 0.00972005],
-    [2, "COMPUTE_FWD", 1, 0.000786432, 0.00893361],
-    [3, "COMPUTE_FWD", 1, 0.000786432, 0.00893361],
-    [2, "COMPUTE_BWD", -1, 0.00893361, 0.0234825],
-    [3, "COMPUTE_BWD", -1, 0.00893361, 0.0234825],
-    [2, "PP_COMM_FWD", 2, 0.0162944, 0.0178672],
-    [0, "PP_COMM_BWD", -1, 0.0234825, 0.0250553],
-    [3, "PP_COMM_FWD", 2, 0.0178672, 0.0194401],
-    [1, "PP_COMM_BWD", -1, 0.0250553, 0.0266282],
-    [0, "COMPUTE_BWD", -1, 0.0266282, 0.041177],
-    [1, "COMPUTE_BWD", -1, 0.0266282, 0.041177],
-    [2, "COMPUTE_FWD", 2, 0.0234825, 0.0316296],
-    [3, "COMPUTE_FWD", 2, 0.0234825, 0.0316296],
-    [2, "COMPUTE_BWD", -2, 0.0316296, 0.0461785],
-    [3, "COMPUTE_BWD", -2, 0.0316296, 0.0461785],
-    [0, "PP_COMM_BWD", -2, 0.0461785, 0.0485378],
-    [1, "PP_COMM_BWD", -2, 0.0485378, 0.0508971],
-    [0, "COMPUTE_BWD", -2, 0.0508971, 0.0654459],
-    [1, "COMPUTE_BWD", -2, 0.0508971, 0.0654459],
-    [2, "DP_COMM_EVENT", -2, 0.0654459, 0.0682047],
-    [3, "DP_COMM_EVENT", -2, 0.0654459, 0.0682047]
+    [0, "COMPUTE_FWD", 1, 0, 0.0162944],
+    [1, "COMPUTE_FWD", 1, 0, 0.0162944],
+    [0, "COMPUTE_BWD", -1, 0.0162944, 0.0453921],
+    [1, "COMPUTE_BWD", -1, 0.0162944, 0.0453921],
+    [0, "COMPUTE_FWD", 2, 0.0453921, 0.0616864],
+    [1, "COMPUTE_FWD", 2, 0.0453921, 0.0616864],
+    [0, "COMPUTE_BWD", -2, 0.0616864, 0.0907841],
+    [1, "COMPUTE_BWD", -2, 0.0616864, 0.0907841],
+    [0, "DP_COMM_EVENT", -2, 0.0907841, 0.112251],
+    [1, "DP_COMM_EVENT", -2, 0.0907841, 0.112251]
 ]
 
 def plot_timeline_with_layers(timeline_data):
@@ -50,8 +33,9 @@ def plot_timeline_with_layers(timeline_data):
     }
     
     # 获取所有rank并建立y轴位置映射
+    # rank 0在最上面，依次向下递减
     ranks = sorted(set([e[0] for e in timeline_data]))
-    y_pos = {rank: i for i, rank in enumerate(ranks)}
+    y_pos = {rank: len(ranks) - 1 - i for i, rank in enumerate(ranks)}
     
     # 为每个rank维护活跃事件计数
     active_events = {rank: [] for rank in ranks}
