@@ -102,15 +102,32 @@ class Runner(calculon.CommandLine):
     # 获取网络时间数据，包括timeline信息
     network_result = model.get_total_flow_network_time()
     
-    # 解包返回值
+    # 解包返回值 - 新版本有18个返回值
     if len(network_result) == 9:
         # 兼容旧版本，只有9个返回值
         global_time, tp_comm, tp_fw_comm, tp_bw_comm, pp_comm, pp_fw_comm, pp_bw_comm, dp_comm, total_comm = network_result
         timeline_events = []
+        # 设置默认值
+        batch_tp_fw_comm = tp_fw_comm
+        batch_tp_bw_comm = tp_bw_comm
+        batch_pp_fw_comm = pp_fw_comm
+        batch_pp_bw_comm = pp_bw_comm
+        batch_dp_comm = dp_comm
+        microbatch_tp_fw_comm = tp_fw_comm / model.exe._num_microbatches if model.exe._num_microbatches > 0 else 0
+        microbatch_tp_bw_comm = tp_bw_comm / model.exe._num_microbatches if model.exe._num_microbatches > 0 else 0
+        microbatch_pp_fw_comm = pp_fw_comm / model.exe._num_microbatches if model.exe._num_microbatches > 0 else 0
+        microbatch_pp_bw_comm = pp_bw_comm / model.exe._num_microbatches if model.exe._num_microbatches > 0 else 0
+        microbatch_dp_comm = dp_comm / model.exe._num_microbatches if model.exe._num_microbatches > 0 else 0
+        total_comm_time = total_comm
     else:
-        # 新版本，包含timeline数据
-        (global_time, tp_comm, tp_fw_comm, tp_bw_comm, pp_comm, pp_fw_comm, pp_bw_comm, dp_comm, total_comm,
-         timeline_event_count, timeline_ranks, timeline_event_types, timeline_microbatches, timeline_start_times, timeline_end_times) = network_result
+        # 新版本，包含timeline数据和新的通信时间数据
+        (global_time, batch_tp_fw_comm, batch_tp_bw_comm, 
+         batch_pp_fw_comm, batch_pp_bw_comm, batch_dp_comm,
+         microbatch_tp_fw_comm, microbatch_tp_bw_comm, 
+         microbatch_pp_fw_comm, microbatch_pp_bw_comm, 
+         microbatch_dp_comm, total_comm_time,
+         timeline_event_count, timeline_ranks, timeline_event_types, 
+         timeline_microbatches, timeline_start_times, timeline_end_times) = network_result
         
         # 构建timeline事件列表
         timeline_events = []
@@ -178,17 +195,17 @@ class Runner(calculon.CommandLine):
             "tp_comm_bw_size": human_format(model._tp_bw_comm_size, 'bytes'),
             "pp_comm_fw_size": human_format(model._pp_fw_comm_size, 'bytes'),
             "pp_comm_bw_size": human_format(model._pp_bw_comm_size, 'bytes'),
-            "batch_dp_comm_time": dp_comm,
-            "batch_tp_comm_time": tp_comm,
-            "batch_tp_fw_comm_time": tp_fw_comm,
-            "microbatch_tp_fw_comm_time": tp_fw_comm / model.exe._num_microbatches,
-            "batch_tp_bw_comm_time": tp_bw_comm,
-            "microbatch_tp_bw_comm_time": tp_bw_comm / model.exe._num_microbatches,
-            "batch_pp_comm_time": pp_comm,
-            "batch_pp_fw_comm_time": pp_fw_comm,
-            "microbatch_pp_fw_comm_time": pp_fw_comm / model.exe._num_microbatches,
-            "batch_pp_bw_comm_time": pp_bw_comm, 
-            "microbatch_pp_bw_comm_time": pp_bw_comm / model.exe._num_microbatches,
+            "batch_dp_comm_time": batch_dp_comm,
+            "batch_tp_fw_comm_time": batch_tp_fw_comm,
+            "batch_tp_bw_comm_time": batch_tp_bw_comm,
+            "batch_pp_fw_comm_time": batch_pp_fw_comm,
+            "batch_pp_bw_comm_time": batch_pp_bw_comm,
+            "microbatch_tp_fw_comm_time": microbatch_tp_fw_comm,
+            "microbatch_tp_bw_comm_time": microbatch_tp_bw_comm,
+            "microbatch_pp_fw_comm_time": microbatch_pp_fw_comm,
+            "microbatch_pp_bw_comm_time": microbatch_pp_bw_comm,
+            "microbatch_dp_comm_time": microbatch_dp_comm,
+            "total_comm_time": total_comm_time,
         },
         # "timeline": {
         #     "per_device_blocks": model._blocks_per_proc,

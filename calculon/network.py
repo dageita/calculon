@@ -36,21 +36,24 @@ pycall_main.argtypes = [
     c_uint64,   # fwdPPSize
     c_uint64,   # bwdPPSize
     c_uint64,   # dpSize 
-    POINTER(c_double),  # globalTime
-    POINTER(c_double),  # tpComm
-    POINTER(c_double),  # tpFwComm
-    POINTER(c_double),  # tpBwComm
-    POINTER(c_double),  # ppComm
-    POINTER(c_double),  # ppFwComm
-    POINTER(c_double),  # ppBwComm
-    POINTER(c_double),  # dpComm
-    POINTER(c_double),  # totalComm
     POINTER(c_int),     # timelineEventCount
     POINTER(c_int),     # timelineRanks
     (c_char_p * 100),   # timelineEventTypes - 修改为数组类型
     POINTER(c_int),     # timelineMicrobatches
     POINTER(c_double),  # timelineStartTimes
-    POINTER(c_double)   # timelineEndTimes
+    POINTER(c_double),  # timelineEndTimes
+    POINTER(c_double),  # globalTime
+    POINTER(c_double),  # batchTpFwComm
+    POINTER(c_double),  # batchTpBwComm
+    POINTER(c_double),  # batchPpFwComm
+    POINTER(c_double),  # batchPpBwComm
+    POINTER(c_double),  # batchDpComm
+    POINTER(c_double),  # microbatchTpFwComm
+    POINTER(c_double),  # microbatchTpBwComm
+    POINTER(c_double),  # microbatchPpFwComm
+    POINTER(c_double),  # microbatchPpBwComm
+    POINTER(c_double),  # microbatchDpComm
+    POINTER(c_double)   # totalCommTime
 ]
 pycall_main.restype = None
 
@@ -152,17 +155,7 @@ class Network:
 
   def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
     topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
-    # parameters = locals()
-    globalTime = c_double()
-    tpComm = c_double()
-    tpFwComm = c_double()
-    tpBwComm = c_double()
-    ppComm = c_double()
-    ppFwComm = c_double()
-    ppBwComm = c_double()
-    dpComm = c_double()
-    totalComm = c_double()
-
+    
     # 新增时间线相关参数 - 预分配内存避免C++端coredump
     max_events = 100  # 确保足够大
 
@@ -185,6 +178,23 @@ class Network:
         
         # 使用cast进行正确的类型转换
         timelineEventTypes[i] = cast(buffer, c_char_p)
+    
+    # # 创建指向字符串指针数组的指针
+    # timelineEventTypes_ptr = cast(timelineEventTypes, POINTER(c_char_p))
+
+    # 新的返回值变量
+    globalTime = c_double()
+    batchTpFwComm = c_double()
+    batchTpBwComm = c_double()
+    batchPpFwComm = c_double()
+    batchPpBwComm = c_double()
+    batchDpComm = c_double()
+    microbatchTpFwComm = c_double()
+    microbatchTpBwComm = c_double()
+    microbatchPpFwComm = c_double()
+    microbatchPpBwComm = c_double()
+    microbatchDpComm = c_double()
+    totalCommTime = c_double()
 
     pycall_main(
         pp, dp, tp,
@@ -194,15 +204,30 @@ class Network:
         self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
         self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
         self.cast_uint64(dpSize),
-        byref(globalTime), 
-        byref(tpComm), byref(tpFwComm), byref(tpBwComm), 
-        byref(ppComm), byref(ppFwComm), byref(ppBwComm), 
-        byref(dpComm), byref(totalComm),
         byref(timelineEventCount), timelineRanks, timelineEventTypes,
-        timelineMicrobatches, timelineStartTimes, timelineEndTimes
+        timelineMicrobatches, timelineStartTimes, timelineEndTimes,
+        byref(globalTime), 
+        byref(batchTpFwComm), byref(batchTpBwComm), 
+        byref(batchPpFwComm), byref(batchPpBwComm), 
+        byref(batchDpComm),
+        byref(microbatchTpFwComm), byref(microbatchTpBwComm), 
+        byref(microbatchPpFwComm), byref(microbatchPpBwComm), 
+        byref(microbatchDpComm), byref(totalCommTime)
     )
 
-    print("wxftest", globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value)
+    print("wxftest - New return values:")
+    print(f"  globalTime: {globalTime.value}")
+    print(f"  batchTpFwComm: {batchTpFwComm.value}")
+    print(f"  batchTpBwComm: {batchTpBwComm.value}")
+    print(f"  batchPpFwComm: {batchPpFwComm.value}")
+    print(f"  batchPpBwComm: {batchPpBwComm.value}")
+    print(f"  batchDpComm: {batchDpComm.value}")
+    print(f"  microbatchTpFwComm: {microbatchTpFwComm.value}")
+    print(f"  microbatchTpBwComm: {microbatchTpBwComm.value}")
+    print(f"  microbatchPpFwComm: {microbatchPpFwComm.value}")
+    print(f"  microbatchPpBwComm: {microbatchPpBwComm.value}")
+    print(f"  microbatchDpComm: {microbatchDpComm.value}")
+    print(f"  totalCommTime: {totalCommTime.value}")
     
     # 打印timeline相关数据用于调试
     print("Timeline data:")
@@ -232,6 +257,10 @@ class Network:
         else:
             print(f"  Buffer {i}: None or invalid")
     
-    return (globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, 
-            ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value,
-            timelineEventCount.value, timelineRanks, timelineEventTypes, timelineMicrobatches, timelineStartTimes, timelineEndTimes)
+    return (globalTime.value, batchTpFwComm.value, batchTpBwComm.value, 
+            batchPpFwComm.value, batchPpBwComm.value, batchDpComm.value,
+            microbatchTpFwComm.value, microbatchTpBwComm.value, 
+            microbatchPpFwComm.value, microbatchPpBwComm.value, 
+            microbatchDpComm.value, totalCommTime.value,
+            timelineEventCount.value, timelineRanks, timelineEventTypes, 
+            timelineMicrobatches, timelineStartTimes, timelineEndTimes)
