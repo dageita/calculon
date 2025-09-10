@@ -41,7 +41,7 @@
   "tensor recommend": "No larger than recommended value ({{value}}) to balance GPU communication/computation time.",
   "pipeline recommend": "No smaller than recommended value ({{value}}) to avoid OOM",
   "microbatch recommend": "No larger than  recommended value ({{value}}) to reduce pipeline bubble time.",
-  "pp_dp_tp_recommend": "The number of GPU is {{value}} and the number of  × PP × DP should be be equal to GPU numbers.",
+  "pp_dp_tp_recommend": "The number of GPU is {{value}} and the number of TP × PP × DP should be be equal to GPU numbers.",
   "pipeline tips": "Activation out of memory, try to increase tensor parallel degree or decrease minibatch size",
   "pipeline divide tips": "Need to be able to divide number of model layers",
   "microsize tips": "Need to be able to divide minibatch size",

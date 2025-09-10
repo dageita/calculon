@@ -1,0 +1,518 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>时间线图表（分层防重叠）</title>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f7fa;
+            color: #333;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 0, 0, 0.1);
+            padding: 20px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #eaeaea;
+        }
+
+        .header h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #7f8c8d;
+            font-size: 16px;
+            max-width: 800px;
+            margin: 0 auto;
+            line-height: 1.5;
+        }
+
+        .chart-container {
+            width: 100%;
+            height: 700px;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            margin-top: 20px;
+            gap: 15px;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+
+        button:hover {
+            background-color: #2980b9;
+        }
+
+        .legend-info {
+            text-align: center;
+            margin-top: 15px;
+            color: #7f8c8d;
+            font-size: 14px;
+        }
+
+        @media (max-width: 768px) {
+            .chart-container {
+                height: 500px;
+            }
+
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>分布式训练操作时间线（分层防重叠）</h1>
+            <p>此图表展示了不同设备上各种操作类型的时间分布，重叠的操作会自动分层展示以避免重叠。</p>
+        </div>
+        <div id="chart" class="chart-container"></div>
+        <div class="controls">
+            <button id="zoomIn">放大</button>
+            <button id="zoomOut">缩小</button>
+            <button id="resetZoom">重置缩放</button>
+        </div>
+        <div class="legend-info">点击图例可以显示/隐藏对应的操作类型</div>
+    </div>
+
+    <script>
+        // 初始化ECharts实例
+        const chartDom = document.getElementById('chart');
+        const myChart = echarts.init(chartDom);
+
+        // 定义操作类型和颜色
+        const operationTypes = [
+            { name: 'COMPUTE_FWD', color: '#7b9ce1' },
+            { name: 'COMPUTE_BWD', color: '#bd6d6c' },
+            { name: 'TP_COMM_FWD', color: '#75d874' },
+            { name: 'TP_COMM_BWD', color: '#e0bc78' },
+            { name: 'PP_COMM_FWD', color: '#dc77dc' },
+            { name: 'PP_COMM_BWD', color: '#e44fb7' },
+            { name: 'DP_COMM_EVEN', color: '#72b362' }
+        ];
+
+        // 数据
+        const data = [
+            {
+                "deviceId": 'rank 0',
+                "operationType": "COMPUTE_FWD",
+                "layer": 1,
+                "startTime": 0.0,
+                "endTime": 0.015102
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "COMPUTE_FWD",
+                "layer": 1,
+                "startTime": 0.0,
+                "endTime": 0.015102
+            },
+            {
+                "deviceId": 'rank 0',
+                "operationType": "COMPUTE_FWD",
+                "layer": 2,
+                "startTime": 0.014102,
+                "endTime": 0.030205
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "COMPUTE_FWD",
+                "layer": 2,
+                "startTime": 0.021102,
+                "endTime": 0.030205
+            },
+            {
+                "deviceId": 'rank 0',
+                "operationType": "TP_COMM_FWD",
+                "layer": 1,
+                "startTime": 0.015102,
+                "endTime": 0.021394
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "TP_COMM_FWD",
+                "layer": 1,
+                "startTime": 0.015102,
+                "endTime": 0.021394
+            },
+            {
+                "deviceId": 'rank 0',
+                "operationType": "COMPUTE_BWD",
+                "layer": -1,
+                "startTime": 0.028205,
+                "endTime": 0.055307
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "COMPUTE_BWD",
+                "layer": -1,
+                "startTime": 0.034205,
+                "endTime": 0.056307
+            },
+            {
+                "deviceId": 'rank 0',
+                "operationType": "TP_COMM_FWD",
+                "layer": 2,
+                "startTime": 0.026205,
+                "endTime": 0.036496
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "TP_COMM_FWD",
+                "layer": 2,
+                "startTime": 0.030205,
+                "endTime": 0.036496
+            },
+            {
+                "deviceId": 'rank 0',
+                "operationType": "COMPUTE_BWD",
+                "layer": -2,
+                "startTime": 0.055307,
+                "endTime": 0.080409
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "COMPUTE_BWD",
+                "layer": -2,
+                "startTime": 0.055307,
+                "endTime": 0.080409
+            },
+            {
+                "deviceId": 'rank 0',
+                "operationType": "TP_COMM_BWD",
+                "layer": -1,
+                "startTime": 0.055307,
+                "endTime": 0.061598
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "TP_COMM_BWD",
+                "layer": -1,
+                "startTime": 0.055307,
+                "endTime": 0.061598
+            },
+            {
+                "deviceId": 'rank 0',
+                "operationType": "TP_COMM_BWD",
+                "layer": -2,
+                "startTime": 0.080409,
+                "endTime": 0.0867
+            },
+            {
+                "deviceId": 'rank 1',
+                "operationType": "TP_COMM_BWD",
+                "layer": -2,
+                "startTime": 0.080409,
+                "endTime": 0.0867
+            }
+        ];
+
+        // 获取唯一的设备ID
+        const deviceIds = [...new Set(data.map(item => item.deviceId))];
+
+        // 按设备ID分组数据
+        const dataByDevice = {};
+        deviceIds.forEach(deviceId => {
+            dataByDevice[deviceId] = data.filter(item => item.deviceId === deviceId);
+        });
+
+        // 检测时间重叠并分配层级
+        function assignLayers(events) {
+            // 按开始时间排序
+            events.sort((a, b) => a.startTime - b.startTime);
+
+            const layers = [];
+
+            events.forEach(event => {
+                let placed = false;
+
+                // 尝试将事件放入现有层级
+                for (let i = 0; i < layers.length; i++) {
+                    const layer = layers[i];
+                    const canPlace = layer.every(existingEvent =>
+                        event.endTime <= existingEvent.startTime || event.startTime >= existingEvent.endTime
+                    );
+
+                    if (canPlace) {
+                        layer.push(event);
+                        event.visualLayer = i;
+                        placed = true;
+                        break;
+                    }
+                }
+
+                // 如果没有合适的层级，创建新层级
+                if (!placed) {
+                    layers.push([event]);
+                    event.visualLayer = layers.length - 1;
+                }
+            });
+
+            return layers.length; // 返回总层数
+        }
+
+        // 为每个设备的数据分配层级
+        let maxLayers = 1;
+        Object.values(dataByDevice).forEach(deviceEvents => {
+            const layerCount = assignLayers(deviceEvents);
+            maxLayers = Math.max(maxLayers, layerCount);
+        });
+
+        // 创建扩展的Y轴数据，为每个设备ID创建多个虚拟行
+        const extendedDeviceIds = [];
+        const yAxisPositions = {};
+
+        deviceIds.forEach((deviceId, baseIndex) => {
+            yAxisPositions[deviceId] = [];
+            for (let i = 0; i < maxLayers; i++) {
+                const virtualIndex = baseIndex * maxLayers + i;
+                extendedDeviceIds.push(`${deviceId}${i > 0 ? ` L${i + 1}` : ''}`);
+                yAxisPositions[deviceId].push(virtualIndex);
+            }
+        });
+
+        // 按操作类型分类数据
+        const dataByType = {};
+        operationTypes.forEach(type => {
+            dataByType[type.name] = [];
+        });
+
+        // 处理数据格式
+        data.forEach(item => {
+            const type = item.operationType;
+            const deviceId = item.deviceId;
+            const baseIndex = deviceIds.indexOf(deviceId);
+            const visualLayer = item.visualLayer || 0;
+
+            // 计算Y轴位置
+            const yPosition = baseIndex * maxLayers + (maxLayers - visualLayer - 1);
+            const start = item.startTime * 1000; // 转换为毫秒
+            const end = item.endTime * 1000; // 转换为毫秒
+            const duration = end - start;
+
+            dataByType[type].push({
+                name: type,
+                value: [yPosition, start, end, duration],
+                itemStyle: {
+                    color: operationTypes.find(t => t.name === type)?.color || '#ccc'
+                },
+                layer: item.layer,
+                deviceId: item.deviceId,
+                visualLayer: visualLayer
+            });
+        });
+
+        // 渲染函数
+        function renderItem(params, api) {
+            const yPosition = api.value(0);
+            const start = api.coord([api.value(1), yPosition]);
+            const end = api.coord([api.value(2), yPosition]);
+            const height = api.size([0, 1])[1] * 0.8; // 增加高度以填充可用空间
+
+            const rectShape = echarts.graphic.clipRectByRect(
+                {
+                    x: start[0],
+                    y: start[1] - height / 2,
+                    width: end[0] - start[0],
+                    height: height
+                },
+                {
+                    x: params.coordSys.x,
+                    y: params.coordSys.y,
+                    width: params.coordSys.width,
+                    height: params.coordSys.height
+                }
+            );
+
+            return rectShape && {
+                type: 'rect',
+                transition: ['shape'],
+                shape: rectShape,
+                style: api.style()
+            };
+        }
+
+        // 创建系列
+        const series = operationTypes.map(type => ({
+            name: type.name,
+            type: 'custom',
+            renderItem: renderItem,
+            itemStyle: {
+                opacity: 0.8,
+                color: type.color,
+                borderWidth: 1,
+                borderColor: '#333'
+            },
+            encode: {
+                x: [1, 2],
+                y: 0
+            },
+            data: dataByType[type.name]
+        }));
+
+        // 配置选项
+        const option = {
+            tooltip: {
+                trigger: 'item',
+                formatter: function (params) {
+                    const device = params.data.deviceId;
+                    const start = (params.value[1] / 1000).toFixed(3);
+                    const end = (params.value[2] / 1000).toFixed(3);
+                    const duration = (params.value[3] / 1000).toFixed(3);
+                    const layer = params.data.layer;
+                    const visualLayer = params.data.visualLayer + 1;
+
+                    return `
+                        <div style="margin-bottom: 5px;"><b>${params.name}</b></div>
+                        <div>设备: ${device}</div>
+                        <div>模型层级: ${layer}</div>
+                        <div>显示层级: ${visualLayer}</div>
+                        <div>开始: ${start} s</div>
+                        <div>结束: ${end} s</div>
+                        <div>持续时间: ${duration} s</div>
+                    `;
+                }
+            },
+            legend: {
+                data: operationTypes.map(type => type.name),
+                top: 10,
+                textStyle: {
+                    fontSize: 12
+                }
+            },
+            grid: {
+                left: 120,
+                right: 30,
+                top: 60,
+                bottom: 80
+            },
+            xAxis: {
+                type: 'value',
+                scale: true,
+                axisLabel: {
+                    formatter: function (val) {
+                        return (val / 1000).toFixed(3) + ' s';
+                    }
+                },
+                name: '时间',
+                nameLocation: 'middle',
+                nameGap: 30
+            },
+            yAxis: {
+                type: 'category',
+                data: extendedDeviceIds,
+                name: '设备ID与层级',
+                axisLabel: {
+                    fontSize: 12,
+                    formatter: function (value) {
+                        // 简化显示，只显示主要设备ID
+                        if (value.includes(' L')) {
+                            return '';
+                        }
+                        return value;
+                    },
+
+                },
+                axisTick: {
+                    show: true,
+                    alignWithLabel: true,
+                    length: 4
+                },
+                splitLine: {
+                    show: true,
+                    lineStyle: {
+                        type: 'dashed',
+                        color: '#eee'
+                    }
+                }
+            },
+            dataZoom: [
+                {
+                    type: 'slider',
+                    xAxisIndex: 0,
+                    filterMode: 'filter',
+                    bottom: 30,
+                    height: 20,
+                    labelFormatter: function (value) {
+                        return (value / 1000).toFixed(3) + ' s';
+                    }
+                },
+                {
+                    type: 'inside',
+                    xAxisIndex: 0,
+                    filterMode: 'filter'
+                }
+            ],
+            series: series
+        };
+
+        // 设置选项
+        myChart.setOption(option);
+
+        // 响应窗口调整大小
+        window.addEventListener('resize', function () {
+            myChart.resize();
+        });
+
+        // 添加按钮事件
+        document.getElementById('zoomIn').addEventListener('click', function () {
+            myChart.dispatchAction({
+                type: 'dataZoom',
+                xAxisIndex: 0,
+                start: 20,
+                end: 80
+            });
+        });
+
+        document.getElementById('zoomOut').addEventListener('click', function () {
+            myChart.dispatchAction({
+                type: 'dataZoom',
+                xAxisIndex: 0,
+                start: 0,
+                end: 100
+            });
+        });
+
+        document.getElementById('resetZoom').addEventListener('click', function () {
+            myChart.dispatchAction({
+                type: 'dataZoom',
+                xAxisIndex: 0,
+                start: 0,
+                end: 100
+            });
+        });
+    </script>
+</body>
+
+</html>

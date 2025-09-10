@@ -114,7 +114,7 @@ const OtherPanel = (props) => {
       <InputNumber
         className={styles.number_item}
         precision={0}
-        min={0}
+        min={1}
         max={curModel?.minibatch_size}
         value={otherConfig?.microbatch_size}
         onChange={(val) => setParamValue('microbatch_size', val, 'Microbatch size')}
@@ -142,7 +142,7 @@ const OtherPanel = (props) => {
       <InputNumber
         className={styles.number_item}
         precision={0}
-        min={0}
+        min={1}
         max={curModel?.batch_size}
         value={otherConfig?.batch_size}
         onChange={(val) => setParamValue('batch_size', val, 'Batch size')}

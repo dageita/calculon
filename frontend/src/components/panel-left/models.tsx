@@ -92,6 +92,7 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
   const loadModelList = async () => {
     const localItems = JSON.parse(localStorage.getItem('local_models') || '[]') || []
     const modelRes: any = await getModelList()
+    if (modelRes.error) return
     setState(prev => ({
       ...prev,
       MODEL_LIST: [...modelRes.map((item: any) => {

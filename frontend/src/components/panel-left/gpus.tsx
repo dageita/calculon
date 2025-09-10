@@ -83,6 +83,7 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
   const loadGpuList = async () => {
     const localItems = JSON.parse(localStorage.getItem('local_gpus') || '[]') || []
     const gpuRes: any = await getGpuList()
+    if (gpuRes.error) return
     const gpuList = gpuRes.map((item: any) => {
       return {
         key: item.name,
@@ -99,7 +100,8 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
 
   const loadNetwork = async () => {
     const netRes: any = await getNetWork()
-    const topoList = netRes.network_topology.map((item: any) => {
+    if (netRes.error) return
+    const topoList = netRes?.network_topology.map((item: any) => {
       return {
         key: item,
         label: item,

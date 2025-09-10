@@ -13,6 +13,7 @@ import { exportResult } from '@/services';
 import LogModel from '@/models/logModel';
 import { useTranslation } from 'react-i18next';
 import BaseTL from '../timelines/base-timeline';
+import TLEventChart from '../timelines/timeline-events';
 
 const COLOR_MAPPING: any = {
   warmup: {
@@ -234,7 +235,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
             {!state.computationCollapse && <div className={styles.result_group_content}>
               <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
                 <Descriptions.Item label="Per-device LLM blocks">
-                  {result.computation.per_device_blocks}
+                  {/* {result.computation.per_device_blocks} */}
                 </Descriptions.Item>
                 <Descriptions.Item label="Number of microbatches">{result.computation.num_microbatches}</Descriptions.Item>
                 <Descriptions.Item label="Per-batch forward computation time(s)">{result.computation.batch_forward_computation_time.toFixed(6)}</Descriptions.Item>
@@ -279,7 +280,8 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                 <Descriptions.Item label="Per-batch PP forward communication time(s)">{result.communication.batch_pp_fw_comm_time.toFixed(6)}</Descriptions.Item>
                 <Descriptions.Item label="Per-microbatch PP forward communication time(s)">{result.communication.microbatch_pp_fw_comm_time.toFixed(6)}</Descriptions.Item>
                 <Descriptions.Item label="Per-batch PP backward communication time(s)">{result.communication.batch_pp_bw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item span={1} label="Per-microbatch PP backward communication time(s)">{result.communication.microbatch_pp_bw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item  label="Per-microbatch PP backward communication time(s)">{result.communication.microbatch_pp_bw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Total Comm Time">{result.communication.total_comm_time.toFixed(6)}</Descriptions.Item>
 
               </Descriptions>
             </div>}
@@ -295,7 +297,6 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                 </div>
                 <div>
                   {result.total_time.totoal_number_of_gpus}</div>
-                {/* <SyncOutlined className={styles.fresh_icon} onClick={readExcelFile} /> */}
               </div> :
                 <div className={styles.result_group_collapse}>{!state.timelineCollapse ?
                   <CaretDownOutlined onClick={() => {
@@ -307,7 +308,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                 </div>}
             </div>
           </div>
-          {!state.timelineCollapse && <div className={styles.result_group_content}>
+          {/* {!state.timelineCollapse && <div className={styles.result_group_content}>
             <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
               <Descriptions.Item label="Per-device LLM blocks">
                 {result.timeline.per_device_blocks}
@@ -317,9 +318,10 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
               <Descriptions.Item label="Cooldown time">{result.timeline.cooldown_time.toFixed(6)}</Descriptions.Item>
               <Descriptions.Item span={1} label="Batch total time">{result.timeline.batch_total_time.toFixed(6)}</Descriptions.Item>
             </Descriptions>
-          </div>}
+          </div>} */}
         </div>
-        <BaseTL result={{ ...result, other_config: curMode === 'guide' ? otherConfig : result.other_config }} latest_result={latest_result} curMode={curMode}></BaseTL>
+        {/* <BaseTL result={{ ...result, other_config: curMode === 'guide' ? otherConfig : result.other_config }} latest_result={latest_result} curMode={curMode}></BaseTL> */}
+        {!state.timelineCollapse &&<TLEventChart  result={result.timeline_events}></TLEventChart>}
         {/* {curMode === 'guide' && <div className={styles.export_btn}>
           <Button type="primary" icon={<ExportOutlined />} onClick={exportResultFile}>
             {t('export')}
