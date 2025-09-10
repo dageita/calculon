@@ -48,11 +48,12 @@ pycall_main.argtypes = [
     POINTER(c_double),  # batchPpFwComm
     POINTER(c_double),  # batchPpBwComm
     POINTER(c_double),  # batchDpComm
+    POINTER(c_double),  # batchTpComm
+    POINTER(c_double),  # batchPpComm
     POINTER(c_double),  # microbatchTpFwComm
     POINTER(c_double),  # microbatchTpBwComm
     POINTER(c_double),  # microbatchPpFwComm
     POINTER(c_double),  # microbatchPpBwComm
-    POINTER(c_double),  # microbatchDpComm
     POINTER(c_double)   # totalCommTime
 ]
 pycall_main.restype = None
@@ -189,11 +190,12 @@ class Network:
     batchPpFwComm = c_double()
     batchPpBwComm = c_double()
     batchDpComm = c_double()
+    batchTpComm = c_double()
+    batchPpComm = c_double()
     microbatchTpFwComm = c_double()
     microbatchTpBwComm = c_double()
     microbatchPpFwComm = c_double()
     microbatchPpBwComm = c_double()
-    microbatchDpComm = c_double()
     totalCommTime = c_double()
 
     pycall_main(
@@ -209,10 +211,10 @@ class Network:
         byref(globalTime), 
         byref(batchTpFwComm), byref(batchTpBwComm), 
         byref(batchPpFwComm), byref(batchPpBwComm), 
-        byref(batchDpComm),
+        byref(batchDpComm), byref(batchTpComm), byref(batchPpComm),
         byref(microbatchTpFwComm), byref(microbatchTpBwComm), 
         byref(microbatchPpFwComm), byref(microbatchPpBwComm), 
-        byref(microbatchDpComm), byref(totalCommTime)
+        byref(totalCommTime)
     )
 
     print("wxftest - New return values:")
@@ -222,11 +224,12 @@ class Network:
     print(f"  batchPpFwComm: {batchPpFwComm.value}")
     print(f"  batchPpBwComm: {batchPpBwComm.value}")
     print(f"  batchDpComm: {batchDpComm.value}")
+    print(f"  batchTpComm: {batchTpComm.value}")
+    print(f"  batchPpComm: {batchPpComm.value}")
     print(f"  microbatchTpFwComm: {microbatchTpFwComm.value}")
     print(f"  microbatchTpBwComm: {microbatchTpBwComm.value}")
     print(f"  microbatchPpFwComm: {microbatchPpFwComm.value}")
     print(f"  microbatchPpBwComm: {microbatchPpBwComm.value}")
-    print(f"  microbatchDpComm: {microbatchDpComm.value}")
     print(f"  totalCommTime: {totalCommTime.value}")
     
     # 打印timeline相关数据用于调试
@@ -259,8 +262,9 @@ class Network:
     
     return (globalTime.value, batchTpFwComm.value, batchTpBwComm.value, 
             batchPpFwComm.value, batchPpBwComm.value, batchDpComm.value,
+            batchTpComm.value, batchPpComm.value,
             microbatchTpFwComm.value, microbatchTpBwComm.value, 
             microbatchPpFwComm.value, microbatchPpBwComm.value, 
-            microbatchDpComm.value, totalCommTime.value,
+            totalCommTime.value,
             timelineEventCount.value, timelineRanks, timelineEventTypes, 
             timelineMicrobatches, timelineStartTimes, timelineEndTimes)
