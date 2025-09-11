@@ -7,10 +7,18 @@ export async function readFile() {
   });
 }
 export async function getGpuList() {
-  return request(`${service_base_url}/llm_training_calculator/calculator/gpu`, {
+  return request(`${service_base_url}/llm_training_calculator/calculator/gpu?t=` + Date.now(), {
     method: 'GET',
   });
 }
+
+export async function getNetWork() {
+  return request(`${service_base_url}/llm_training_calculator/calculator/network?t=` + Date.now(), {
+    method: 'GET',
+  });
+}
+
+
 export async function getModelList() {
   return request(`${service_base_url}/llm_training_calculator/calculator/model`, {
     method: 'GET',
@@ -58,7 +66,7 @@ export async function getRecommendedMicrobatch(params: any) {
 }
 
 export async function calculate(params: any) {
-  return request(`${service_base_url}/llm_training_calculator/calculator/`, {
+  return request(`${service_base_url}/llm_training_calculator/calculator/calculate`, {
     data: {
       ...params
     },

@@ -37,14 +37,14 @@ const Index: FC<IIndexProps> = (props) => {
       key: 'guide',
       label: t('guide mode')
     },
-    {
-      key: 'custom',
-      label: t('custom mode')
-    },
-    {
-      key: 'benchmark',
-      label: t('benchmark mode')
-    }
+    // {
+    //   key: 'custom',
+    //   label: t('custom mode')
+    // },
+    // {
+    //   key: 'benchmark',
+    //   label: t('benchmark mode')
+    // }
   ];
 
   return (
@@ -63,7 +63,7 @@ const Index: FC<IIndexProps> = (props) => {
                 onChange={onChangeMode}>
               </Tabs>
             </div>
-            <div className="header-history">
+            {/* <div className="header-history">
               <Button type="primary" ghost icon={<HistoryOutlined />}
                 onClick={() => { setState({ showHistory: true }) }}>
                 {t('comparision')}
@@ -73,7 +73,7 @@ const Index: FC<IIndexProps> = (props) => {
               <Tooltip title={t('doc')}>
                 <QuestionCircleOutlined onClick={() => { window.open('/calculator/#/help') }} />
               </Tooltip>
-            </div>
+            </div> */}
             <div className="header-language">
               <Switch checkedChildren="中文" unCheckedChildren="English" onChange={handleLanChange}></Switch>
             </div>

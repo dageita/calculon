@@ -2,9 +2,11 @@
   height: 100%;
   width: 420px;
   display: flex;
+
   .toolbar {
     width: 80px;
     background: transparent;
+
     .item {
       display: flex;
       flex-direction: column;
@@ -15,11 +17,13 @@
       cursor: pointer;
     }
   }
+
   .area {
     width: 100%;
     height: calc(100% - 60px);
   }
-  .area_params{
+
+  .area_params {
     width: 100%;
     height: calc(100% - 50px);
     padding: 15px;
@@ -27,65 +31,79 @@
     background: #fff;
     border-radius: 10px;
   }
-  .area_btn{
+
+  .area_btn {
     // display: flex;
     // justify-content: space-between;
     // align-items: center;
     padding: 10px 0;
-    .area_btn_btn{
+
+    .area_btn_btn {
       width: 100%;
       border-radius: 10px;
+      margin-top: 15px;
     }
-    .area_switch{
+
+    .area_switch {
       padding: 10px 0;
-      span{
+
+      span {
         padding-left: 10px;
       }
     }
   }
 
-  .to_tips{
+  .to_tips {
     padding: 10px 0;
     margin-bottom: 10px;
     color: #86909c;
   }
-  .section_title{
+
+  .section_title {
     font-size: 16px;
     font-weight: bold;
     color: #303133;
     line-height: 16px;
   }
-  .section_content{
+
+  .section_content {
     padding-bottom: 15px;
   }
-  .model_wrapper{
+
+  .model_wrapper {
     // max-height: calc(100vh - 165px);
   }
-  .gpu_params{
+
+  .gpu_params {
     background: #F5F7FA;
     padding: 15px;
     border-radius: 4px;
     font-size: 12px;
     margin-bottom: 20px;
-    .gpu_params_item{
+
+    .gpu_params_item {
       display: flex;
       justify-content: space-between;
       align-items: baseline;
-      .gpu_params_label{
+
+      .gpu_params_label {
         width: 70%;
       }
-      .gpu_params_value{
+
+      .gpu_params_value {
         font-weight: bold;
       }
     }
   }
+
   .group-content {
     display: flex;
     justify-content: space-between;
-    flex-direction:column;
+    flex-direction: column;
     position: relative;
     flex-wrap: wrap;
     align-items: center;
+    margin-bottom: 20px;
   }
 
   .mode-btn {
@@ -96,9 +114,17 @@
     width: 100%;
     margin: 13px 0;
   }
-  .group_slider{
-    padding-top: 20px;
+
+  .cluster_param_item {
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
   }
+
+  .group_slider {
+    margin-bottom: 20px;
+  }
+
   .group-list-item {
     .item-wrapper {
       display: flex;
@@ -111,84 +137,103 @@
       }
     }
 
-    margin-bottom: 20px;
+    
   }
-  .number_item{
-     width: 100%!important;
+
+  .number_item {
+    width: 100% !important;
   }
 }
+
 .active {
   color: #0582FF;
   border-color: #40a9ff;
 }
-.notice{
+
+.notice {
   height: 100%;
   width: 400px;
   padding: 0 20px;
-  .notice_panel, .bm_notice_panel{
+
+  .notice_panel,
+  .bm_notice_panel {
     background: #fff;
     height: calc(100% - 125px);
     padding: 15px;
     border-radius: 10px;
-    .notice_title{
+
+    .notice_title {
       font-size: 16px;
       font-weight: bold;
       color: #303133;
       padding-bottom: 10px;
     }
-    .notice_content{
+
+    .notice_content {
       font-size: 14px;
       font-weight: 400;
       color: #606266;
     }
   }
-  .bm_notice_panel{
+
+  .bm_notice_panel {
     height: calc(100% - 80px);
   }
-  .gen_btn{
+
+  .gen_btn {
     margin-top: 20px;
     width: 100%;
     font-size: 14px;
     border-radius: 10px;
   }
 }
-.error_tip{
-    color: #ff4d4f;
+
+.error_tip {
+  color: #ff4d4f;
 }
-.slider_tip{
+
+.slider_tip {
   font-size: 12px;
   font-weight: 400;
   color: #909399;
   line-height: 18px;
 }
-.number_controls{
-  input{
+
+.number_controls {
+  input {
     text-align: right;
   }
 }
-:global{
+
+:global {
   .ant-select {
     width: 100%;
   }
-  .ant-divider-horizontal{
+
+  .ant-divider-horizontal {
     margin: 10px 0;
   }
-  .ant-layout-sider-light{
+
+  .ant-layout-sider-light {
     background-color: transparent;
   }
-   .ant-input-number {
-      border-radius: 4px;
-      background: #fff;
-      border: none;
-      border: 1px solid #d9d9d9;
+
+  .ant-input-number {
+    border-radius: 4px;
+    background: #fff;
+    border: none;
+    border: 1px solid #d9d9d9;
+  }
+
+  .ant-upload {
+    width: 100%;
+  }
+
+  .ant-input-number-affix-wrapper {
+    flex-direction: row-reverse;
+
+    .ant-input-number-prefix {
+      padding: 0 5px;
     }
-    .ant-upload{
-      width: 100%;
-    }
-    .ant-input-number-affix-wrapper{
-      flex-direction: row-reverse;
-      .ant-input-number-prefix{
-        padding: 0 5px;
-      }
-    }
+  }
 }
