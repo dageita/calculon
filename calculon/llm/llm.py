@@ -87,8 +87,10 @@ class Llm:
       assert self.pipeline_par > 0
       self.data_par = data_par
       assert self.data_par > 0
-      assert self.num_procs == self.tensor_par * self.pipeline_par * \
-        self.data_par, 'tensor * pipeline * data parallelism != num_procs'
+      # assert self.num_procs == self.tensor_par * self.pipeline_par * \
+      #   self.data_par, 'tensor * pipeline * data parallelism != num_procs'
+      if self.num_procs != self.tensor_par * self.pipeline_par * self.data_par:
+        raise Llm.Error('tensor * pipeline * data parallelism != num_procs')
       self.tensor_par_net = tensor_par_net
       self.pipeline_par_net = pipeline_par_net
       self.data_par_net = data_par_net
@@ -96,9 +98,17 @@ class Llm:
       assert self.global_batch_size > 0
       self.microbatch_size = microbatch_size
       assert self.microbatch_size > 0
-      assert self.global_batch_size % self.data_par == 0
+      if self.global_batch_size % self.data_par != 0:
+        raise Llm.Error(
+            f"global_batch_size({self.global_batch_size}) must be divisible by "
+            f"data_par({self.data_par})"
+        )
       self._local_batch_size = self.global_batch_size // self.data_par
-      assert self._local_batch_size % self.microbatch_size == 0
+      if self._local_batch_size % self.microbatch_size != 0:
+        raise Llm.Error(
+            f"local_batch_size({self._local_batch_size}) must be divisible by "
+            f"microbatch_size({self.microbatch_size})"
+        )
       self._num_microbatches = self._local_batch_size // self.microbatch_size
       self.datatype = datatype
       self.fused_activation = fused_activation

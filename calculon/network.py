@@ -14,7 +14,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
 """
-from ctypes import CDLL, c_int, c_float, c_char_p, c_double, c_uint64, POINTER, byref
+# from ctypes import CDLL, c_int, c_float, c_char_p, c_double, c_uint64, POINTER, byref, create_string_buffer
+import ctypes
+from ctypes import *
+from ctypes import addressof
 
 lib = CDLL("./libpycallclass.so")
 pycall_main = lib.pycall_main
@@ -33,17 +36,27 @@ pycall_main.argtypes = [
     c_uint64,   # fwdPPSize
     c_uint64,   # bwdPPSize
     c_uint64,   # dpSize 
+    POINTER(c_int),     # timelineEventCount
+    POINTER(c_int),     # timelineRanks
+    (c_char_p * 100),   # timelineEventTypes - 修改为数组类型
+    POINTER(c_int),     # timelineMicrobatches
+    POINTER(c_double),  # timelineStartTimes
+    POINTER(c_double),  # timelineEndTimes
     POINTER(c_double),  # globalTime
-    POINTER(c_double),  # tpComm
-    POINTER(c_double),  # tpFwComm
-    POINTER(c_double),  # tpBwComm
-    POINTER(c_double),  # ppComm
-    POINTER(c_double),  # ppFwComm
-    POINTER(c_double),  # ppBwComm
-    POINTER(c_double),  # dpComm
-    POINTER(c_double)   # totalComm
+    POINTER(c_double),  # batchTpFwComm
+    POINTER(c_double),  # batchTpBwComm
+    POINTER(c_double),  # batchPpFwComm
+    POINTER(c_double),  # batchPpBwComm
+    POINTER(c_double),  # batchDpComm
+    POINTER(c_double),  # batchTpComm
+    POINTER(c_double),  # batchPpComm
+    POINTER(c_double),  # microbatchTpFwComm
+    POINTER(c_double),  # microbatchTpBwComm
+    POINTER(c_double),  # microbatchPpFwComm
+    POINTER(c_double),  # microbatchPpBwComm
+    POINTER(c_double)   # totalCommTime
 ]
-pycall_main.restype = None  # 返回值类型
+pycall_main.restype = None
 
 
 
@@ -74,7 +87,7 @@ class Network:
   def __init__(self, cfg):
     assert Network.kKeys == set(cfg.keys())
     self._bw = cfg['bandwidth'] * 1e9  # Specified in GB/s
-    assert self._bw > 0
+    # assert self._bw > 0
     self._eff = cfg['efficiency']
     assert 0 < self._eff <= 1.0
     self._size = cfg['size']
@@ -143,30 +156,115 @@ class Network:
 
   def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
     topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
-    # parameters = locals()
+    
+    # 新增时间线相关参数 - 预分配内存避免C++端coredump
+    max_events = 100  # 确保足够大
+
+    # 为每个数组预分配内存
+    timelineEventCount = c_int(0)  # 单个int值，用于返回事件数量
+    timelineRanks = (c_int * max_events)()
+    timelineMicrobatches = (c_int * max_events)()
+    timelineStartTimes = (c_double * max_events)()
+    timelineEndTimes = (c_double * max_events)()
+
+    # 创建字符串指针数组
+    timelineEventTypes = (c_char_p * max_events)()
+    string_buffers = []  # 保存引用，防止垃圾回收
+
+    # 预分配所有字符串缓冲区，确保内存稳定
+    string_buffers = []
+    for i in range(max_events):
+        buffer = create_string_buffer(64)
+        string_buffers.append(buffer)  # 保存引用
+        
+        # 使用cast进行正确的类型转换
+        timelineEventTypes[i] = cast(buffer, c_char_p)
+    
+    # # 创建指向字符串指针数组的指针
+    # timelineEventTypes_ptr = cast(timelineEventTypes, POINTER(c_char_p))
+
+    # 新的返回值变量
     globalTime = c_double()
-    tpComm = c_double()
-    tpFwComm = c_double()
-    tpBwComm = c_double()
-    ppComm = c_double()
-    ppFwComm = c_double()
-    ppBwComm = c_double()
-    dpComm = c_double()
-    totalComm = c_double()
+    batchTpFwComm = c_double()
+    batchTpBwComm = c_double()
+    batchPpFwComm = c_double()
+    batchPpBwComm = c_double()
+    batchDpComm = c_double()
+    batchTpComm = c_double()
+    batchPpComm = c_double()
+    microbatchTpFwComm = c_double()
+    microbatchTpBwComm = c_double()
+    microbatchPpFwComm = c_double()
+    microbatchPpBwComm = c_double()
+    totalCommTime = c_double()
 
     pycall_main(
-      pp, dp, tp,
-      self._inter, self._intra, 
-      fwdCompTime, bwdCompTime, microbatches,
-      topology_bytes,
-      self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
-      self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
-      self.cast_uint64(dpSize),
-      byref(globalTime), 
-      byref(tpComm), byref(tpFwComm), byref(tpBwComm), 
-      byref(ppComm), byref(ppFwComm), byref(ppBwComm), 
-      byref(dpComm), byref(totalComm)
+        pp, dp, tp,
+        self._inter, self._intra, 
+        fwdCompTime, bwdCompTime, microbatches,
+        topology_bytes,
+        self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
+        self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
+        self.cast_uint64(dpSize),
+        byref(timelineEventCount), timelineRanks, timelineEventTypes,
+        timelineMicrobatches, timelineStartTimes, timelineEndTimes,
+        byref(globalTime), 
+        byref(batchTpFwComm), byref(batchTpBwComm), 
+        byref(batchPpFwComm), byref(batchPpBwComm), 
+        byref(batchDpComm), byref(batchTpComm), byref(batchPpComm),
+        byref(microbatchTpFwComm), byref(microbatchTpBwComm), 
+        byref(microbatchPpFwComm), byref(microbatchPpBwComm), 
+        byref(totalCommTime)
     )
 
-    print("wxftest", globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value)
-    return globalTime.value, tpComm.value, tpFwComm.value, tpBwComm.value, ppComm.value, ppFwComm.value, ppBwComm.value, dpComm.value, totalComm.value
+    print("wxftest - New return values:")
+    print(f"  globalTime: {globalTime.value}")
+    print(f"  batchTpFwComm: {batchTpFwComm.value}")
+    print(f"  batchTpBwComm: {batchTpBwComm.value}")
+    print(f"  batchPpFwComm: {batchPpFwComm.value}")
+    print(f"  batchPpBwComm: {batchPpBwComm.value}")
+    print(f"  batchDpComm: {batchDpComm.value}")
+    print(f"  batchTpComm: {batchTpComm.value}")
+    print(f"  batchPpComm: {batchPpComm.value}")
+    print(f"  microbatchTpFwComm: {microbatchTpFwComm.value}")
+    print(f"  microbatchTpBwComm: {microbatchTpBwComm.value}")
+    print(f"  microbatchPpFwComm: {microbatchPpFwComm.value}")
+    print(f"  microbatchPpBwComm: {microbatchPpBwComm.value}")
+    print(f"  totalCommTime: {totalCommTime.value}")
+    
+    # 打印timeline相关数据用于调试
+    print("Timeline data:")
+    print(f"  Event count: {timelineEventCount.value}")
+    print(f"  First 5 ranks: {list(timelineRanks[:5])}")
+    print(f"  First 5 microbatches: {list(timelineMicrobatches[:5])}")
+    print(f"  First 5 start times: {list(timelineStartTimes[:5])}")
+    print(f"  First 5 end times: {list(timelineEndTimes[:5])}")
+    
+    # 打印字符串缓冲区状态
+    print("String buffers status:")
+    for i in range(min(5, timelineEventCount.value)):
+        if i < len(timelineEventTypes) and timelineEventTypes[i]:
+            try:
+                # 直接使用timelineEventTypes[i]，它已经是bytes对象
+                buffer_content = timelineEventTypes[i]
+                print(f"  Buffer {i}: {buffer_content}")
+                if buffer_content:
+                    try:
+                        decoded = buffer_content.decode('utf-8')
+                    except UnicodeDecodeError as e:
+                        print(f"    Decode error: {e}")
+                else:
+                    print(f"    Empty buffer")
+            except Exception as e:
+                print(f"    Error accessing buffer {i}: {e}")
+        else:
+            print(f"  Buffer {i}: None or invalid")
+    
+    return (globalTime.value, batchTpFwComm.value, batchTpBwComm.value, 
+            batchPpFwComm.value, batchPpBwComm.value, batchDpComm.value,
+            batchTpComm.value, batchPpComm.value,
+            microbatchTpFwComm.value, microbatchTpBwComm.value, 
+            microbatchPpFwComm.value, microbatchPpBwComm.value, 
+            totalCommTime.value,
+            timelineEventCount.value, timelineRanks, timelineEventTypes, 
+            timelineMicrobatches, timelineStartTimes, timelineEndTimes)

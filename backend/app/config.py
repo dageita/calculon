@@ -74,15 +74,6 @@ class Settings(BaseSettings):
             num_blocks=24,
             vocab_size=51200,
         ),
-        Model(
-            name="Gpt3",
-            seq_size=2048,
-            num_attention_heads=96,
-            hidden_layer_size=12288,
-            num_layers=96,
-            vocab_size=50257,
-            minibatch_size=0,
-        ),
         # https://huggingface.co/minhtoan/gpt3-small-finetune-cnndaily-news/blob/main/config.json
         Model(
             name="GPT-3 Small",
@@ -197,12 +188,13 @@ class Settings(BaseSettings):
         # https://huggingface.co/huggyllama/llama-65b/blob/main/config.json
         Model(
             name="LLAMA-65B",
-            token_length=4096,
-            num_attention_heads=64,
-            hidden_layer_size=8192,
-            num_layers=80,
+            seq_size=2048,
+            hidden=8192,
+            feedforward=22016,
+            attn_heads=64,
+            attn_size=128,
+            num_blocks=80,
             vocab_size=32000,
-            minibatch_size=0,
         ),
         # https://www.modelscope.cn/models/modelscope/Llama-2-70b-ms/file/view/master/config.json?status=1
         Model(
