@@ -1,0 +1,22 @@
+# 排除不需要的文件
+frontend/node_modules/
+frontend/.next/
+frontend/build/
+.git/
+.gitignore
+*.pyc
+__pycache__/
+.pytest_cache/
+.coverage
+.tox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.DS_Store
+*.log
+node_modules/
+dist/
+build/
+*.egg-info/
