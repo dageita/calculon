@@ -54,12 +54,13 @@ RUN pip3 install -r requirements.txt
 WORKDIR /app/calculon
 RUN pip3 install .
 # 配置nginx
-COPY frontend/default.conf /etc/nginx/nginx.conf
-RUN mkdir -p /var/log/nginx && \
-    nginx -t
+COPY frontend/nginx.conf /etc/nginx/nginx.conf
+COPY frontend/default.conf /etc/nginx/conf.d/default.conf
+
+RUN mkdir -p /var/log/nginx && nginx -t
 
 # 暴露端口（前端nginx端口80，后端Python端口8000）
-EXPOSE 80 8000
+EXPOSE 3000 8000
 
 # 创建启动脚本
 RUN echo '#!/bin/bash\n\

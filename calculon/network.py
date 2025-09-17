@@ -21,41 +21,44 @@ from ctypes import addressof
 
 lib = CDLL("./libpycallclass.so")
 pycall_main = lib.pycall_main
-pycall_main.argtypes = [
-    c_int,   # pp
-    c_int,   # dp
-    c_int,   # tp
-    c_double, # inter
-    c_double, # intra
-    c_double, # fwdCompTime
-    c_double, # bwdCompTime
-    c_int,   # microbatches
-    c_char_p, # topology_type
-    c_uint64,   # fwdTPSize
-    c_uint64,   # bwdTPSize
-    c_uint64,   # fwdPPSize
-    c_uint64,   # bwdPPSize
-    c_uint64,   # dpSize 
-    POINTER(c_int),     # timelineEventCount
-    POINTER(c_int),     # timelineRanks
-    (c_char_p * 100),   # timelineEventTypes - 修改为数组类型
-    POINTER(c_int),     # timelineMicrobatches
-    POINTER(c_double),  # timelineStartTimes
-    POINTER(c_double),  # timelineEndTimes
-    POINTER(c_double),  # globalTime
-    POINTER(c_double),  # batchTpFwComm
-    POINTER(c_double),  # batchTpBwComm
-    POINTER(c_double),  # batchPpFwComm
-    POINTER(c_double),  # batchPpBwComm
-    POINTER(c_double),  # batchDpComm
-    POINTER(c_double),  # batchTpComm
-    POINTER(c_double),  # batchPpComm
-    POINTER(c_double),  # microbatchTpFwComm
-    POINTER(c_double),  # microbatchTpBwComm
-    POINTER(c_double),  # microbatchPpFwComm
-    POINTER(c_double),  # microbatchPpBwComm
-    POINTER(c_double)   # totalCommTime
-]
+# 使用动态函数签名，避免固定数组大小限制
+def create_dynamic_pycall_main(max_events):
+    """动态创建pycall_main函数签名"""
+    pycall_main.argtypes = [
+        c_int,   # pp
+        c_int,   # dp
+        c_int,   # tp
+        c_double, # inter
+        c_double, # intra
+        c_double, # fwdCompTime
+        c_double, # bwdCompTime
+        c_int,   # microbatches
+        c_char_p, # topology_type
+        c_uint64,   # fwdTPSize
+        c_uint64,   # bwdTPSize
+        c_uint64,   # fwdPPSize
+        c_uint64,   # bwdPPSize
+        c_uint64,   # dpSize 
+        POINTER(c_int),     # timelineEventCount
+        POINTER(c_int),     # timelineRanks
+        (c_char_p * max_events),  # timelineEventTypes - 动态大小
+        POINTER(c_int),     # timelineMicrobatches
+        POINTER(c_double),  # timelineStartTimes
+        POINTER(c_double),  # timelineEndTimes
+        POINTER(c_double),  # globalTime
+        POINTER(c_double),  # batchTpFwComm
+        POINTER(c_double),  # batchTpBwComm
+        POINTER(c_double),  # batchPpFwComm
+        POINTER(c_double),  # batchPpBwComm
+        POINTER(c_double),  # batchDpComm
+        POINTER(c_double),  # batchTpComm
+        POINTER(c_double),  # batchPpComm
+        POINTER(c_double),  # microbatchTpFwComm
+        POINTER(c_double),  # microbatchTpBwComm
+        POINTER(c_double),  # microbatchPpFwComm
+        POINTER(c_double),  # microbatchPpBwComm
+        POINTER(c_double)   # totalCommTime
+    ]
 pycall_main.restype = None
 
 
@@ -157,31 +160,24 @@ class Network:
   def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize):
     topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
     
-    # 新增时间线相关参数 - 预分配内存避免C++端coredump
-    max_events = 100  # 确保足够大
-
-    # 为每个数组预分配内存
-    timelineEventCount = c_int(0)  # 单个int值，用于返回事件数量
-    timelineRanks = (c_int * max_events)()
-    timelineMicrobatches = (c_int * max_events)()
-    timelineStartTimes = (c_double * max_events)()
-    timelineEndTimes = (c_double * max_events)()
-
-    # 创建字符串指针数组
-    timelineEventTypes = (c_char_p * max_events)()
-    string_buffers = []  # 保存引用，防止垃圾回收
-
-    # 预分配所有字符串缓冲区，确保内存稳定
-    string_buffers = []
-    for i in range(max_events):
-        buffer = create_string_buffer(64)
-        string_buffers.append(buffer)  # 保存引用
-        
-        # 使用cast进行正确的类型转换
-        timelineEventTypes[i] = cast(buffer, c_char_p)
+    # 使用动态内存分配，避免固定大小限制
+    # 首先调用一次获取事件数量
+    timelineEventCount = c_int(0)
     
-    # # 创建指向字符串指针数组的指针
-    # timelineEventTypes_ptr = cast(timelineEventTypes, POINTER(c_char_p))
+    # 预分配一个较大的缓冲区用于第一次调用
+    initial_max_events = 1000
+    timelineRanks = (c_int * initial_max_events)()
+    timelineMicrobatches = (c_int * initial_max_events)()
+    timelineStartTimes = (c_double * initial_max_events)()
+    timelineEndTimes = (c_double * initial_max_events)()
+    timelineEventTypes = (c_char_p * initial_max_events)()
+    
+    # 预分配字符串缓冲区
+    string_buffers = []
+    for i in range(initial_max_events):
+        buffer = create_string_buffer(64)
+        string_buffers.append(buffer)
+        timelineEventTypes[i] = cast(buffer, c_char_p)
 
     # 新的返回值变量
     globalTime = c_double()
@@ -198,24 +194,80 @@ class Network:
     microbatchPpBwComm = c_double()
     totalCommTime = c_double()
 
-    pycall_main(
-        pp, dp, tp,
-        self._inter, self._intra, 
-        fwdCompTime, bwdCompTime, microbatches,
-        topology_bytes,
-        self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
-        self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
-        self.cast_uint64(dpSize),
-        byref(timelineEventCount), timelineRanks, timelineEventTypes,
-        timelineMicrobatches, timelineStartTimes, timelineEndTimes,
-        byref(globalTime), 
-        byref(batchTpFwComm), byref(batchTpBwComm), 
-        byref(batchPpFwComm), byref(batchPpBwComm), 
-        byref(batchDpComm), byref(batchTpComm), byref(batchPpComm),
-        byref(microbatchTpFwComm), byref(microbatchTpBwComm), 
-        byref(microbatchPpFwComm), byref(microbatchPpBwComm), 
-        byref(totalCommTime)
-    )
+    try:
+        # 设置初始函数签名
+        create_dynamic_pycall_main(initial_max_events)
+        
+        # 第一次调用，获取事件数量
+        pycall_main(
+            pp, dp, tp,
+            self._inter, self._intra, 
+            fwdCompTime, bwdCompTime, microbatches,
+            topology_bytes,
+            self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
+            self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
+            self.cast_uint64(dpSize),
+            byref(timelineEventCount), timelineRanks, timelineEventTypes,
+            timelineMicrobatches, timelineStartTimes, timelineEndTimes,
+            byref(globalTime), 
+            byref(batchTpFwComm), byref(batchTpBwComm), 
+            byref(batchPpFwComm), byref(batchPpBwComm), 
+            byref(batchDpComm), byref(batchTpComm), byref(batchPpComm),
+            byref(microbatchTpFwComm), byref(microbatchTpBwComm), 
+            byref(microbatchPpFwComm), byref(microbatchPpBwComm), 
+            byref(totalCommTime)
+        )
+        
+        # 检查是否需要更大的缓冲区
+        actual_events = timelineEventCount.value
+        if actual_events > initial_max_events:
+            print(f"Warning: Event count ({actual_events}) exceeds buffer size ({initial_max_events})")
+            print("Reallocating larger buffer and retrying...")
+            
+            # 重新分配更大的缓冲区
+            new_max_events = max(actual_events * 2, 2000)  # 至少是实际需要的2倍
+            timelineRanks = (c_int * new_max_events)()
+            timelineMicrobatches = (c_int * new_max_events)()
+            timelineStartTimes = (c_double * new_max_events)()
+            timelineEndTimes = (c_double * new_max_events)()
+            timelineEventTypes = (c_char_p * new_max_events)()
+            
+            # 重新分配字符串缓冲区
+            string_buffers = []
+            for i in range(new_max_events):
+                buffer = create_string_buffer(64)
+                string_buffers.append(buffer)
+                timelineEventTypes[i] = cast(buffer, c_char_p)
+            
+            # 更新函数签名以匹配新的数组大小
+            create_dynamic_pycall_main(new_max_events)
+            
+            # 重新调用C++函数
+            timelineEventCount = c_int(0)
+            pycall_main(
+                pp, dp, tp,
+                self._inter, self._intra, 
+                fwdCompTime, bwdCompTime, microbatches,
+                topology_bytes,
+                self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
+                self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
+                self.cast_uint64(dpSize),
+                byref(timelineEventCount), timelineRanks, timelineEventTypes,
+                timelineMicrobatches, timelineStartTimes, timelineEndTimes,
+                byref(globalTime), 
+                byref(batchTpFwComm), byref(batchTpBwComm), 
+                byref(batchPpFwComm), byref(batchPpBwComm), 
+                byref(batchDpComm), byref(batchTpComm), byref(batchPpComm),
+                byref(microbatchTpFwComm), byref(microbatchTpBwComm), 
+                byref(microbatchPpFwComm), byref(microbatchPpBwComm), 
+                byref(totalCommTime)
+            )
+            print(f"Successfully allocated buffer for {timelineEventCount.value} events")
+        
+    except Exception as e:
+        print(f"Error in pycall_main: {e}")
+        # 返回默认值
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, [], [], [], [], [])
 
     print("wxftest - New return values:")
     print(f"  globalTime: {globalTime.value}")

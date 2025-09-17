@@ -23,6 +23,8 @@ __pycache__
 pip-log.txt
 files.txt
 output.json
+examples/*.json
+systems/*.json
 
 # Unit test / coverage reports
 .coverage

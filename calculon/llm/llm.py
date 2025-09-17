@@ -516,7 +516,7 @@ class Llm:
       'dp_comm_exposed_time',
       'fw_offload_exposed_time',
       'bw_offload_exposed_time',
-      'flow_network_comm_time',
+      'flow_network_total_comm_time',
       'total_time',
       'act_offload_bw_req',
       'weight_offload_bw_req',
@@ -622,7 +622,7 @@ class Llm:
       self.get_dp_comm_exposed_time(),
       self.get_fw_offload_overhead(),
       self.get_bw_offload_overhead(),
-      self.get_total_flow_network_time(),
+      self.get_flow_network_total_comm_time(),
       self.get_total_time(),
       self.get_act_offload_bw_req(),
       self.get_weight_offload_bw_req(),
@@ -2171,6 +2171,38 @@ class Llm:
       bwdPPSize=self._pp_bw_comm_size, 
       dpSize=self._dp_comm_size)
 
+  def get_flow_network_total_comm_time(self):
+    """返回网络通信总时间，只包含totalCommTime值，不包含ctypes数组"""
+    network_result = self._flow_net.total_flow_network_time(
+      pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
+      fwdCompTime=self._block_fw_time * self._blocks_per_proc,
+      bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
+      microbatches=self.exe._num_microbatches, 
+      fwdTPSize=self._tp_fw_comm_size, 
+      bwdTPSize=self._tp_bw_comm_size, 
+      fwdPPSize=self._pp_fw_comm_size, 
+      bwdPPSize=self._pp_bw_comm_size, 
+      dpSize=self._dp_comm_size)
+    
+    # 从返回的元组中提取totalCommTime（第12个元素，索引11）
+    return network_result[11]
+
+  def get_flow_network_global_time(self):
+    """返回C++库计算的全局时间，已考虑计算通信重叠"""
+    network_result = self._flow_net.total_flow_network_time(
+      pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
+      fwdCompTime=self._block_fw_time * self._blocks_per_proc,
+      bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
+      microbatches=self.exe._num_microbatches, 
+      fwdTPSize=self._tp_fw_comm_size, 
+      bwdTPSize=self._tp_bw_comm_size, 
+      fwdPPSize=self._pp_fw_comm_size, 
+      bwdPPSize=self._pp_bw_comm_size, 
+      dpSize=self._dp_comm_size)
+    
+    # 从返回的元组中提取globalTime（第1个元素，索引0）
+    return network_result[0]
+
   def get_tp_comm_link_time(self):
     return self._tp_comm_time_link
 
@@ -2190,18 +2222,13 @@ class Llm:
       return 0
 
   def get_total_time(self):
-    time = self.get_fw_time()
-    time += self.get_bw_time()
+    time = self.get_flow_network_global_time()
     time += self.get_optim_step_time()
     time += self.get_fw_offload_overhead()
     time += self.get_bw_offload_overhead()
     time += self.get_recompute_time()
     time += self.get_recomm_exposed_time()
     time += self.get_bubble_time()
-    time += self.get_tp_comm_exposed_time()
-    time += self.get_pp_comm_exposed_time()
-    time += self.get_dp_comm_exposed_time()
-    # time += self.get_total_flow_network_time()
     time += self.get_extra_and_embedding_time()
     return time
 
@@ -2404,7 +2431,6 @@ class Llm:
 
   def display_stats(self):
     stats = "=" * 80 + "\n"
-    # f"Batch total flow network comm overhead: {self.get_total_flow_network_time():.4f};\n" \
     stats += "" \
       f"blocks={self.app.num_blocks}, " \
       f"hidden={self.app.hidden}, feedforward={self.app.feedforward}\n" \

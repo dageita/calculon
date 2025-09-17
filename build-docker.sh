@@ -41,7 +41,7 @@ rm -rf ./LLMFlowSimulator
 echo "Docker镜像构建完成！"
 echo ""
 echo "运行方式1（自动启动服务）："
-echo "docker run -d -p 3000:80 -p 8001:8000 --name sim simulator"
+echo "docker run -d -p 3000:3000 -p 8001:8000 --name sim simulator"
 echo ""
 echo "访问方式："
 echo "- 前端：http://localhost:3000"
