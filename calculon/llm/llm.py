@@ -276,6 +276,9 @@ class Llm:
     # State of calling compile() and run()
     self._compiled = False
     self._executed = False
+    
+    # 缓存网络计算结果，避免重复调用pycall_main
+    self._flow_network_cache = None
 
     # Holds the layers in a single block
     self._llm_block = []
@@ -637,6 +640,7 @@ class Llm:
       self.get_sample_rate())
 
   def get_stats_json(self, include_layers):
+    self.log.info("wxftest get_stats_json")
     assert self._executed
     keys = Llm.get_stats_fields()
     values = self.get_stats_values()
@@ -2160,7 +2164,16 @@ class Llm:
       return 0
   
   def get_total_flow_network_time(self):
-    return self._flow_net.total_flow_network_time(
+    self.log.info("wxftest get total flow network time")
+    
+    # 检查缓存，如果已经计算过则直接返回
+    if self._flow_network_cache is not None:
+      self.log.info("wxftest using cached flow network result")
+      return self._flow_network_cache
+    
+    # 计算并缓存结果
+    self.log.info("wxftest computing flow network result with timeline")
+    result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
       fwdCompTime=self._block_fw_time * self._blocks_per_proc,
       bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
@@ -2169,10 +2182,25 @@ class Llm:
       bwdTPSize=self._tp_bw_comm_size, 
       fwdPPSize=self._pp_fw_comm_size, 
       bwdPPSize=self._pp_bw_comm_size, 
-      dpSize=self._dp_comm_size)
+      dpSize=self._dp_comm_size,
+      enable_timeline=True)
+    
+    # 缓存结果
+    self._flow_network_cache = result
+    self.log.info("wxftest cached flow network result")
+    return result
 
   def get_flow_network_total_comm_time(self):
-    """返回网络通信总时间，只包含totalCommTime值，不包含ctypes数组"""
+    self.log.info("wxftest get flow network total comm time")
+    
+    # 检查缓存，如果已经计算过则从缓存中提取
+    if self._flow_network_cache is not None:
+      self.log.info("wxftest using cached result for total comm time")
+      # 从缓存的元组中提取totalCommTime（第13个元素，索引12）
+      return self._flow_network_cache[12]
+    
+    # 缓存不存在，需要重新计算
+    self.log.info("wxftest computing flow network result without timeline for total comm time")
     network_result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
       fwdCompTime=self._block_fw_time * self._blocks_per_proc,
@@ -2182,13 +2210,23 @@ class Llm:
       bwdTPSize=self._tp_bw_comm_size, 
       fwdPPSize=self._pp_fw_comm_size, 
       bwdPPSize=self._pp_bw_comm_size, 
-      dpSize=self._dp_comm_size)
+      dpSize=self._dp_comm_size,
+      enable_timeline=False)  # 不需要timeline数据
     
-    # 从返回的元组中提取totalCommTime（第12个元素，索引11）
-    return network_result[11]
+    # 从返回的元组中提取totalCommTime（第13个元素，索引12）
+    return network_result[12]
 
   def get_flow_network_global_time(self):
-    """返回C++库计算的全局时间，已考虑计算通信重叠"""
+    self.log.info("wxftest get flow network global time")
+    
+    # 检查缓存，如果已经计算过则从缓存中提取
+    if self._flow_network_cache is not None:
+      self.log.info("wxftest using cached result for global time")
+      # 从缓存的元组中提取globalTime（第1个元素，索引0）
+      return self._flow_network_cache[0]
+    
+    # 缓存不存在，需要重新计算
+    self.log.info("wxftest computing flow network result without timeline for global time")
     network_result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
       fwdCompTime=self._block_fw_time * self._blocks_per_proc,
@@ -2198,7 +2236,8 @@ class Llm:
       bwdTPSize=self._tp_bw_comm_size, 
       fwdPPSize=self._pp_fw_comm_size, 
       bwdPPSize=self._pp_bw_comm_size, 
-      dpSize=self._dp_comm_size)
+      dpSize=self._dp_comm_size,
+      enable_timeline=False)  # 不需要timeline数据
     
     # 从返回的元组中提取globalTime（第1个元素，索引0）
     return network_result[0]

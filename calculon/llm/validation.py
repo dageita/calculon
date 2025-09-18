@@ -116,7 +116,7 @@ class Validation(calculon.CommandLine):
       return kProfile[model][mode]
 
     syst_file = os.path.join(args.base_dir, 'systems', 'a100_80e.json')
-    syst = System(calculon.io.read_json_file(syst_file))
+    syst = System(calculon.io.read_json_file(syst_file), logger)
     data = {}
     for model in kModels:
       data[model] = {}
@@ -232,7 +232,7 @@ class Validation(calculon.CommandLine):
       return kProfile[model][mode]
 
     syst_file = os.path.join(args.base_dir, 'systems', 'a100_80e.json')
-    syst = System(calculon.io.read_json_file(syst_file))
+    syst = System(calculon.io.read_json_file(syst_file), logger)
     raw = {}
     for model in kModels:
       raw[model] = {}
@@ -317,7 +317,7 @@ class Validation(calculon.CommandLine):
       return kProfile[model][mode]
 
     syst_file = os.path.join(args.base_dir, 'systems', 'a100_80g.json')
-    syst = System(calculon.io.read_json_file(syst_file))
+    syst = System(calculon.io.read_json_file(syst_file), logger)
     data = {}
     for model in kModels:
       data[model] = {}

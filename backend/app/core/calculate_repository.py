@@ -233,7 +233,7 @@ class CalculateRepository:
                     "topology": network_dict.get("network_topology")
                 })
             print(sys_json)
-            return System(sys_json)
+            return System(sys_json, self.logger)
         except Llm.Error as e:
             return {"status": "error", "error": str(e)}
         except Exception as e:
@@ -249,11 +249,11 @@ class CalculateRepository:
         trainning_config_dict = trainning_config.dict()
         try:
             app = self.build_app(model_dict)
-            print("wxftest build 0")
+            self.logger.info("wxftest build 0")
             exe = self.build_exe(gpu_dict, trainning_config_dict)
-            print("wxftest build 1")
+            self.logger.info("wxftest build 1")
             syst = self.build_syst(gpu_dict, network_dict)
-            print("wxftest build 2")
+            self.logger.info("wxftest build 2")
             result = Runner.isinstance_run_command(self.logger, app, exe, syst)
         except Llm.Error as e:
             return {"status": "error", "error": str(e)}

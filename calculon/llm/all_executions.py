@@ -135,7 +135,7 @@ class AllExecutions(calculon.CommandLine):
     assert args.output.endswith('.csv') or args.output.endswith('.csv.gz')
 
     app = Llm.Application(calculon.io.read_json_file(args.application))
-    syst = System(calculon.io.read_json_file(args.system))
+    syst = System(calculon.io.read_json_file(args.system), logger)
 
     executions = list(AllExecutions.all_executions(
       app, syst, args.num_procs, args.max_batch_size, args.datatype,

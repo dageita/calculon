@@ -74,7 +74,7 @@ class OptimalExecution(calculon.CommandLine):
     assert args.top_n > 0, 'top-n must be > 0'
 
     app = Llm.Application(calculon.io.read_json_file(args.application))
-    syst = System(calculon.io.read_json_file(args.system))
+    syst = System(calculon.io.read_json_file(args.system), logger)
 
     params = []
     for tp in Llm.get_all_tensor_parallelisms(
@@ -240,8 +240,7 @@ class OptimalExecution(calculon.CommandLine):
                     curr = (stats['total_time'], exe_json, stats)
                     best = OptimalExecution.update_list(best, curr, top_n)
                 except Exception as ex:
-                    logging.getLogger().debug(
-                        f'JSON:{exe_json}\nERROR:{str(ex)}\n')
+                    logging.getLogger().debug(f'JSON:{exe_json}\nERROR:{str(ex)}\n')
                     bad_exe_count += 1
             if mbs_break and good_exe_count == mbs_break_good:
                 break

@@ -48,7 +48,7 @@ class Runner(calculon.CommandLine):
 
     app = Llm.Application(app_json)
     exe = Llm.Execution.from_json(exe_json)
-    syst = System(sys_json)
+    syst = System(sys_json, logger)
 
     try:
       model = Llm(app, logger)
@@ -83,15 +83,15 @@ class Runner(calculon.CommandLine):
         logger.error(f'Unexpected error: {e}') 
         return {"status": "error", "error": f"Internal error: {str(e)}"}
 
-      if stats == '-':
-          model.display_stats()
-      elif calculon.is_json_extension(stats):
-          calculon.write_json_file(model.get_stats_json(layers), stats)
-      else:
-          assert False, f'unknown stats extension: {stats}'
+      # if stats == '-':
+      #     model.display_stats()
+      # elif calculon.is_json_extension(stats):
+      #     calculon.write_json_file(model.get_stats_json(layers), stats)
+      # else:
+      #     assert False, f'unknown stats extension: {stats}'
 
-      if peers:
-          calculon.write_json_file(exe.get_peers_json(), peers)
+      # if peers:
+      #     calculon.write_json_file(exe.get_peers_json(), peers)
 
       res = Runner.get_simulator_res_json(model)
 

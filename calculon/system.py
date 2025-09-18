@@ -33,7 +33,7 @@ class System:
   def supported_datatypes():
     return list(System.TypeSizes.keys())
 
-  def __init__(self, cfg):
+  def __init__(self, cfg, log=None):
     self.cfg = cfg
     self.matrix = Processor(cfg['matrix'])
     self.vector = Processor(cfg['vector'])
@@ -45,7 +45,7 @@ class System:
     self.proc_mode = cfg['processing_mode']
     assert self.proc_mode in ['roofline', 'no_overlap']
 
-    self.networks = [Network(n) for n in cfg['networks']]
+    self.networks = [Network(n, log) for n in cfg['networks']]
 
   @property
   def num_networks(self):
