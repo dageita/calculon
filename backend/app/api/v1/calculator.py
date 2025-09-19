@@ -3,7 +3,7 @@ import json
 import fastapi
 from app.config import settings
 from app.core.calculate_repository import CalculateRepository, OptimizationStrategyType, NetworkTopologyType
-from app.models.calculator_input import Gpu, Model, Network, TrainningConfig
+from app.models.calculator_input import Gpu, Model, Network, TrainningConfig, OptimalConfig
 from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import Parameter, RecommendedConfig, MemoryUsage, \
     Computation, Communication, Timeline, TotalTime
@@ -70,6 +70,21 @@ def create_calculator(gpu: Gpu,
                       trainning_config: TrainningConfig):
     cr = CalculateRepository()
     res = cr.calculate(gpu, network, model, trainning_config)
+    if res.get("status") == "error":
+        raise HTTPException(
+            status_code=400,  # 客户端参数错误
+            detail=res["error"]
+        )
+    return res
+
+
+@router.post("/optimal")
+def create_optimal(gpu: Gpu,
+                    network: Network,
+                    model: Model,
+                    optimal_config: OptimalConfig):
+    cr = CalculateRepository()
+    res = cr.optimal(gpu, network, model, optimal_config)
     if res.get("status") == "error":
         raise HTTPException(
             status_code=400,  # 客户端参数错误

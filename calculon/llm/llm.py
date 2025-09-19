@@ -2166,12 +2166,12 @@ class Llm:
   def get_total_flow_network_time(self):
     self.log.info("wxftest get total flow network time")
     
-    # 检查缓存，如果已经计算过则直接返回
-    if self._flow_network_cache is not None:
-      self.log.info("wxftest using cached flow network result")
+    # 检查缓存，如果已经计算过且包含timeline数据则直接返回
+    if self._flow_network_cache is not None and len(self._flow_network_cache) >= 18:
+      self.log.info("wxftest using cached flow network result with timeline")
       return self._flow_network_cache
     
-    # 计算并缓存结果
+    # 计算并缓存结果（enable_timeline=True）
     self.log.info("wxftest computing flow network result with timeline")
     result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
@@ -2187,7 +2187,7 @@ class Llm:
     
     # 缓存结果
     self._flow_network_cache = result
-    self.log.info("wxftest cached flow network result")
+    self.log.info("wxftest cached flow network result with timeline")
     return result
 
   def get_flow_network_total_comm_time(self):
@@ -2199,7 +2199,7 @@ class Llm:
       # 从缓存的元组中提取totalCommTime（第13个元素，索引12）
       return self._flow_network_cache[12]
     
-    # 缓存不存在，需要重新计算
+    # 缓存不存在，需要重新计算（enable_timeline=False）
     self.log.info("wxftest computing flow network result without timeline for total comm time")
     network_result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
@@ -2213,6 +2213,10 @@ class Llm:
       dpSize=self._dp_comm_size,
       enable_timeline=False)  # 不需要timeline数据
     
+    # 将结果存入缓存
+    self._flow_network_cache = network_result
+    self.log.info("wxftest cached flow network result without timeline")
+    
     # 从返回的元组中提取totalCommTime（第13个元素，索引12）
     return network_result[12]
 
@@ -2225,7 +2229,7 @@ class Llm:
       # 从缓存的元组中提取globalTime（第1个元素，索引0）
       return self._flow_network_cache[0]
     
-    # 缓存不存在，需要重新计算
+    # 缓存不存在，需要重新计算（enable_timeline=False）
     self.log.info("wxftest computing flow network result without timeline for global time")
     network_result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
@@ -2238,6 +2242,10 @@ class Llm:
       bwdPPSize=self._pp_bw_comm_size, 
       dpSize=self._dp_comm_size,
       enable_timeline=False)  # 不需要timeline数据
+    
+    # 将结果存入缓存
+    self._flow_network_cache = network_result
+    self.log.info("wxftest cached flow network result without timeline")
     
     # 从返回的元组中提取globalTime（第1个元素，索引0）
     return network_result[0]

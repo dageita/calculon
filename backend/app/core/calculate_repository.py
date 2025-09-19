@@ -5,7 +5,7 @@ from tempfile import NamedTemporaryFile
 
 import openpyxl
 from app.config import settings
-from app.models.calculator_input import Gpu, Model, Network, TrainningConfig
+from app.models.calculator_input import Gpu, Model, Network, TrainningConfig, OptimalConfig
 from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import MemoryUsage, Computation, Communication, Timeline, TotalTime, CalculatorResult, \
     Parameter, RecommendedConfig
@@ -15,6 +15,7 @@ import json
 import os
 from calculon.llm.runner import Runner
 from calculon.llm.llm import Llm
+from calculon.llm.optimal_execution import OptimalExecution
 from calculon.system import System
 
 
@@ -255,6 +256,23 @@ class CalculateRepository:
             syst = self.build_syst(gpu_dict, network_dict)
             self.logger.info("wxftest build 2")
             result = Runner.isinstance_run_command(self.logger, app, exe, syst)
+        except Llm.Error as e:
+            return {"status": "error", "error": str(e)}
+        except Exception as e:
+            return {"status": "error", "error": f"Internal error: {str(e)}"}
+        return result
+
+    def optimal(self, gpu: Gpu, network: Network, model: Model, optimal_config: OptimalConfig):
+        self.logger.info("Starting optimal...")
+
+        gpu_dict = gpu.dict()
+        network_dict = network.dict()
+        model_dict = model.dict()
+        optimal_config_dict = optimal_config.dict()
+        try:
+            app = self.build_app(model_dict)
+            syst = self.build_syst(gpu_dict, network_dict)
+            result = OptimalExecution.isinstance_run_command(self.logger, app, syst, optimal_config)
         except Llm.Error as e:
             return {"status": "error", "error": str(e)}
         except Exception as e:
