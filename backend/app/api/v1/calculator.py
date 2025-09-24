@@ -1,4 +1,5 @@
 import json
+import os
 
 import fastapi
 from app.config import settings
@@ -29,6 +30,70 @@ def get_network():
 def model_list():
     return settings.MODEL_LIST
 
+@router.get("/optimization_strategies")
+def get_optimization_strategies():
+    return [strategy.value for strategy in OptimizationStrategyType]
+
+@router.get("/datatype")
+def get_gpu_datatype(gpu_name: str):
+    try:
+        # 构建文件路径 - 从当前文件位置向上查找到calculon根目录，然后进入systems
+        current_dir = os.path.dirname(__file__)  # backend/app/api/v1/
+        backend_dir = os.path.dirname(current_dir)  # backend/app/api/
+        app_dir = os.path.dirname(backend_dir)  # backend/app/
+        backend_root = os.path.dirname(app_dir)  # backend/
+        calculon_root = os.path.dirname(backend_root)  # calculon根目录
+        systems_dir = os.path.join(calculon_root, "systems")
+        gpu_file_path = os.path.join(systems_dir, f"{gpu_name}.json")
+        
+        # 检查文件是否存在
+        if not os.path.exists(gpu_file_path):
+            raise HTTPException(
+                status_code=404,
+                detail=f"GPU配置文件 {gpu_file_path} 未找到"
+            )
+        
+        # 读取JSON文件
+        with open(gpu_file_path, 'r', encoding='utf-8') as f:
+            gpu_config = json.load(f)
+        
+        # 检查是否包含matrix和vector字段
+        if "matrix" not in gpu_config or "vector" not in gpu_config:
+            raise HTTPException(
+                status_code=400,
+                detail=f"GPU配置文件 {gpu_name}.json 格式错误：缺少matrix或vector字段"
+            )
+        
+        # 获取matrix和vector中共同支持的数据类型
+        matrix_datatypes = set(gpu_config["matrix"].keys())
+        vector_datatypes = set(gpu_config["vector"].keys())
+        
+        # 找到交集
+        common_datatypes = list(matrix_datatypes.intersection(vector_datatypes))
+        
+        if not common_datatypes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"GPU {gpu_name} 在matrix和vector中没有共同支持的数据类型"
+            )
+        
+        return {
+            "gpu_name": gpu_name,
+            "datatypes": sorted(common_datatypes)
+        }
+        
+    except json.JSONDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail=f"GPU配置文件 {gpu_name}.json 格式错误：不是有效的JSON文件"
+        )
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        raise HTTPException(
+            status_code=500,
+            detail=f"读取GPU配置时发生错误: {str(e)}"
+        )
 
 @router.post("/parameter_metrics")
 def calculate_params(model: Model):
@@ -127,8 +192,3 @@ async def upload_file(file: UploadFile = File(...)):
 @router.post("/download_result_model")
 def download_template():
     return FileResponse(settings.CALCULATOR_RESULT_TEMPLATE, filename="template.xlsx")
-
-
-@router.get("/optimization_strategies")
-def get_optimization_strategies():
-    return [strategy.value for strategy in OptimizationStrategyType]
