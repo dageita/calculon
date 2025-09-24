@@ -208,13 +208,11 @@ class CalculateRepository:
             name = gpu_dict.get("name")
             system_json_path = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "systems", f"{name}.json")
             system_json_path = os.path.abspath(system_json_path)
-            print("wxftest 0")
             if not os.path.exists(system_json_path):
                 raise FileNotFoundError(f"System config file not found: {system_json_path}")
                 return {"status": "error", "error": f"System config file not found: {system_json_path}"}
             with open(system_json_path, "r") as f:
                 sys_json = json.load(f)
-            print("wxftest 1")
             # 处理sys_json.networks[0]，代表机内网络
             if "networks" in sys_json and len(sys_json["networks"]) > 0:
                 sys_json["networks"][0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
@@ -222,7 +220,6 @@ class CalculateRepository:
                 sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
             else:
                 raise ValueError("sys_json['networks'] is missing or empty")
-            print("wxftest 2")
             # 处理sys_json.networks[1]，代表机间网络
             if len(sys_json["networks"]) > 1:
                 sys_json["networks"][1]["bandwidth"] = network_dict.get("network_bandwidth")

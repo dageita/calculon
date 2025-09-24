@@ -25,6 +25,7 @@ import os
 import calculon
 from calculon.util import pick, arg_true_false_all
 from calculon.llm import *
+from calculon.llm.runner import Runner
 
 
 class OptimalExecution(calculon.CommandLine):
@@ -184,7 +185,6 @@ class OptimalExecution(calculon.CommandLine):
     args = Args(optimal_config)
     
     params = []
-    optimizer_sharding = [False]  # optimizer_sharding用于deepspead
     for tp in Llm.get_all_tensor_parallelisms(
         args.num_procs, app.hidden, app.attn_heads):
       for pp in Llm.get_all_pipeline_parallelisms(
@@ -195,13 +195,14 @@ class OptimalExecution(calculon.CommandLine):
           if batch_size is None:
             continue
           for activation_recompute in ['full', 'attn_only', 'none']:
-            for tensor_par_comm_type in ['ar', 'p2p_rs_ag', 'rs_ag']:
-              params.append(
-                (args.debug, args.top_n, args.layers, args.num_procs,
-                  args.max_batch_size, args.datatype, app, syst, tp, pp, dp,
-                  ppint, batch_size, activation_recompute, optimizer_sharding,
-                  tensor_par_comm_type, args.fused_activation, args.mbs_break,
-                  not args.no_tp_overlap, not args.no_dp_overlap))
+            for optimizer_sharding in [False]:  # 固定为False，不使用ZeRO优化
+              for tensor_par_comm_type in ['ar', 'p2p_rs_ag', 'rs_ag']:
+                params.append(
+                  (args.debug, args.top_n, args.layers, args.num_procs,
+                    args.max_batch_size, args.datatype, app, syst, tp, pp, dp,
+                    ppint, batch_size, activation_recompute, optimizer_sharding,
+                    tensor_par_comm_type, args.fused_activation, args.mbs_break,
+                    not args.no_tp_overlap, not args.no_dp_overlap))
 
     # Runs parallel searches
     start_time = datetime.datetime.now()
@@ -227,32 +228,95 @@ class OptimalExecution(calculon.CommandLine):
     logger.info(f'Calculation rate: {calc_rate:.2f} calcs/sec')
     
     if args.debug:
-      return {"status": "success", "debug": True, "execution_count": exe_count}
+      return {
+        "executions": {
+          "total_executions": exe_count,
+          "good_executions": good_exe_count,
+          "bad_executions": bad_exe_count,
+          "calculation_rate": calc_rate,
+        },
+        "debug": True
+      }
 
     if len(best) == 0:
       logger.info('No acceptable configurations found :(')
-      return {"status": "success", "message": "No acceptable configurations found", "results": []}
+      return {
+        "executions": {
+          "total_executions": exe_count,
+          "good_executions": good_exe_count,
+          "bad_executions": bad_exe_count,
+          "calculation_rate": calc_rate,
+        },
+        "message": "No acceptable configurations found"
+      }
     else:
       logger.info(f'Best sample rate: {best[0][0]}')
 
     # 构建返回结果
-    results = []
-    for index, run in enumerate(best):
-      _, execution, stats = run
-      results.append({
-        'rank': index + 1,
-        'execution': execution,
-        'stats': stats
-      })
-
-    return {
-      "status": "success", 
-      "total_executions": exe_count,
-      "good_executions": good_exe_count,
-      "bad_executions": bad_exe_count,
-      "calculation_rate": calc_rate,
-      "results": results
-    }
+    if len(best) > 0:
+      # 获取最佳配置
+      _, best_execution, best_stats = best[0]
+      
+      # 从best_execution中移除网络相关参数
+      filtered_execution = {k: v for k, v in best_execution.items() 
+                           if k not in ['tensor_par_net', 'pipeline_par_net', 'data_par_net']}
+      
+      # 创建logger用于最佳配置的详细分析
+      best_logger = logging.getLogger('best_config')
+      best_logger.propagate = False
+      if not best_logger.handlers:
+        handler = logging.StreamHandler()
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        handler.setFormatter(formatter)
+        best_logger.addHandler(handler)
+        best_logger.setLevel(logging.INFO)
+      
+      # 使用最佳配置创建模型并获取详细信息
+      try:
+        best_model = Llm(app, best_logger)
+        best_model.compile(syst, Llm.Execution.from_json(best_execution))
+        best_model.run(syst)
+        
+        # 获取详细的模拟结果
+        detailed_result = Runner.get_simulator_res_json(best_model)
+        
+        # 构建最终返回结果
+        return {
+          "executions": {
+            "total_executions": exe_count,
+            "good_executions": good_exe_count,
+            "bad_executions": bad_exe_count,
+            "calculation_rate": calc_rate,
+          },
+          "optimal_result": filtered_execution,
+          "memory_usage": detailed_result["memory_usage"],
+          "computation": detailed_result["computation"],
+          "communication": detailed_result["communication"],
+          "summary": detailed_result["summary"]
+        }
+      except Exception as e:
+        logger.error(f"Failed to generate detailed result for best configuration: {str(e)}")
+        # 如果详细分析失败，返回基本信息
+        return {
+          "executions": {
+            "total_executions": exe_count,
+            "good_executions": good_exe_count,
+            "bad_executions": bad_exe_count,
+            "calculation_rate": calc_rate,
+          },
+          "optimal_result": filtered_execution,
+          "message": f"Failed to generate detailed analysis: {str(e)}"
+        }
+    else:
+      return {
+        "executions": {
+          "total_executions": exe_count,
+          "good_executions": good_exe_count,
+          "bad_executions": bad_exe_count,
+          "calculation_rate": calc_rate,
+        },
+        "message": "No acceptable configurations found"
+      }
 
   @staticmethod
   def get_batch_size(data_par, max_batch_size):
@@ -341,7 +405,19 @@ class OptimalExecution(calculon.CommandLine):
                     curr = (stats['total_time'], exe_json, stats)
                     best = OptimalExecution.update_list(best, curr, top_n)
                 except Exception as ex:
-                    logging.getLogger().debug(f'JSON:{exe_json}\nERROR:{str(ex)}\n')
+                    # 使用更详细的错误日志
+                    error_logger = logging.getLogger('error')
+                    error_logger.setLevel(logging.INFO)
+                    if not error_logger.handlers:
+                        handler = logging.StreamHandler()
+                        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                        handler.setFormatter(formatter)
+                        error_logger.addHandler(handler)
+                    error_logger.error(f'Execution failed for config: {exe_json}')
+                    error_logger.error(f'Error details: {str(ex)}')
+                    error_logger.error(f'Error type: {type(ex).__name__}')
+                    import traceback
+                    error_logger.error(f'Traceback: {traceback.format_exc()}')
                     bad_exe_count += 1
             if mbs_break and good_exe_count == mbs_break_good:
                 break
@@ -422,7 +498,19 @@ class OptimalExecution(calculon.CommandLine):
                     curr = (stats['total_time'], exe_json, stats)
                     best = OptimalExecution.update_list(best, curr, top_n)
                 except Exception as ex:
-                    logging.getLogger().debug(f'JSON:{exe_json}\nERROR:{str(ex)}\n')
+                    # 使用更详细的错误日志
+                    error_logger = logging.getLogger('error')
+                    error_logger.setLevel(logging.INFO)
+                    if not error_logger.handlers:
+                        handler = logging.StreamHandler()
+                        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                        handler.setFormatter(formatter)
+                        error_logger.addHandler(handler)
+                    error_logger.error(f'Execution failed for config: {exe_json}')
+                    error_logger.error(f'Error details: {str(ex)}')
+                    error_logger.error(f'Error type: {type(ex).__name__}')
+                    import traceback
+                    error_logger.error(f'Traceback: {traceback.format_exc()}')
                     bad_exe_count += 1
             if mbs_break and good_exe_count == mbs_break_good:
                 break
