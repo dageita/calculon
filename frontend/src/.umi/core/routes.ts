@@ -12,8 +12,18 @@ export function getRoutes() {
     "exact": true
   },
   {
-    "path": "/",
+    "path": "/optimal",
     "component": require('@/pages/index').default,
+    "exact": true
+  },
+  {
+    "path": "/guide",
+    "component": require('@/pages/index').default,
+    "exact": true
+  },
+  {
+    "path": "/",
+    "redirect": "/guide",
     "exact": true
   }
 ];

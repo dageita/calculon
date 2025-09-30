@@ -1,4 +1,4 @@
-import { defineConfig } from 'umi';
+import { defineConfig, Redirect } from 'umi';
 
 export default defineConfig({
   title: 'LLM Training Calculator',
@@ -14,7 +14,9 @@ export default defineConfig({
   mock:false,
   routes: [
     { path: '/help', component: '@/pages/help/index' },
-    { path: '/', component: '@/pages/index' },
+    { path: '/optimal', component: '@/pages/index' },
+    { path: '/guide', component: '@/pages/index' },
+    { path: '/',  redirect: '/guide'},
   ],
   fastRefresh: {},
   proxy: {

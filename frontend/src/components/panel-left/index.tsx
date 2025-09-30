@@ -7,12 +7,13 @@ import ProjectModel from '@/models/projectModel';
 import GpuSelection from './gpus';
 import ModelSelection from './models';
 import OtherSetting from './others';
+import Optimal from './optimal';
 import GlobalSetting from './globals'
 import FileSaver from 'file-saver'
 import CustomSteps from './../custom-steps'
 import BenchmarkSteps from './../benchmark-steps'
 import {
-  calculate, readFile, getRecommendedTenser, getRecommendedPipeline,
+  calculate, optimal, getRecommendedTenser, getRecommendedPipeline,
   getRecommendedMicrobatch, downloadTemplate
 } from '@/services';
 import type { UploadProps } from 'antd';
@@ -21,7 +22,7 @@ import styles from './index.less';
 import { debounce, mixin } from 'lodash';
 import LogModel from '@/models/logModel';
 import { useTranslation } from 'react-i18next';
-import model from 'mock/model';
+
 
 export interface IPanelLeftProps { }
 const PanelLeft: FC<IPanelLeftProps> = (props) => {
@@ -80,20 +81,22 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
       return curGpu && curNetwork && curGpu?.num_procs ? true : false
     }
     if (state.active == 'model') {
-      return curModel  ? true : false
+      return curModel ? true : false
     }
     if (state.active == 'others') {
-      if (otherConfig && otherConfig.microbatch_size
+      if (curMode === 'guide' && otherConfig && otherConfig.microbatch_size
         && otherConfig.optimization_strategy
         && otherConfig.tensor_par
         && otherConfig.pipeline_par
         && otherConfig.data_par
         && otherConfig.datatype
       ) {
-        if (checkSize() && checkPipeline()) {
-          return true
-        }
+        return true
+      } else if (curMode === 'optimal' && otherConfig && otherConfig.max_batch_size
+        && otherConfig.datatype) {
+        return true
       }
+
     }
     if (state.active == 'global' && checkTotalConfig()) {
       return true
@@ -109,7 +112,7 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     setProject({
       loading: true
     });
-    const params = {
+    const params:any = {
       gpu: {
         "name": curGpu['name'],
         "sparse_tensor_fp16_processing_power": curGpu['sparse_tensor_fp16_processing_power'],
@@ -133,8 +136,11 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         "attn_size": curModel['attn_size'],
         "num_blocks": curModel['num_blocks'],
         "vocab_size": curModel['vocab_size']
-      },
-      "trainning_config": {
+      }
+    }
+    let calcRes: any ;
+    if (curMode ==='guide') {
+      params['trainning_config'] = {
         "optimization_strategy": otherConfig['optimization_strategy'],
         "tensor_par": otherConfig['tensor_par'],
         "pipeline_par": otherConfig['pipeline_par'],
@@ -143,8 +149,17 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         "microbatch_size": otherConfig['microbatch_size'],
         "datatype": otherConfig['datatype']
       }
+      calcRes = await calculate(params)
+    } else {
+      params['optimal_config'] = {
+        "num_procs": curGpu['num_procs'],
+        "max_batch_size": otherConfig['max_batch_size'],
+        "datatype": otherConfig['datatype']
+      }
+      calcRes = await optimal(params)
     }
-    const calcRes: any = await calculate(params)
+
+    
     setProject({
       latest_result: autoRecalc ? { ...result } : null,
       result: calcRes
@@ -414,7 +429,8 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         <div className={styles.area_params}>
           {state.active === 'gpu' && <GpuSelection />}
           {state.active === 'model' && <ModelSelection />}
-          {state.active === 'others' && <OtherSetting />}
+          {state.active === 'others' && curMode === 'guide' && <OtherSetting />}
+          {state.active === 'others' && curMode === 'optimal' && <Optimal />}
           {/* {state.active === 'global' && <GlobalSetting />} */}
         </div>
         <div className={styles.area_btn}>

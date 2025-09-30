@@ -12,6 +12,11 @@ let routes = [
     "exact": true,
     "component": require('../index.tsx').default
   },
+    {
+    "path": "/optimal",
+    "exact": true,
+    "component": require('../index.tsx').default
+  },
   {
     "path": "/demo",
     "exact": true,

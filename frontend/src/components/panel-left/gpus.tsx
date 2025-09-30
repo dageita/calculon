@@ -48,7 +48,7 @@ const SLIDER_LIST = [{
 }]
 export interface IGPUSelectionProps { }
 const GpuSelection: FC<IGPUSelectionProps> = (props) => {
-  const { setProject, curGpu, curNetwork } = useModel(ProjectModel);
+  const { setProject, curGpu, curNetwork,curCouHasChanged } = useModel(ProjectModel);
   const { setChangeLog } = useModel(LogModel);
   const { t } = useTranslation();
 

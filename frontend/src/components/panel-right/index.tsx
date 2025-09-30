@@ -8,6 +8,7 @@ import BenchPanel from './benchmark'
 import { LoadingOutlined, CaretDownOutlined, CaretRightOutlined, ExportOutlined } from '@ant-design/icons';
 import { sum } from 'lodash';
 import Steps from '../guide-steps'
+import OptimalSteps from '../optimal-steps'
 import FileSaver from 'file-saver'
 import { exportResult } from '@/services';
 import LogModel from '@/models/logModel';
@@ -53,7 +54,10 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
     memoryCollapse: false,
     computationCollapse: true,
     communicationCollapse: true,
-    timelineCollapse: false
+    timelineCollapse: false,
+    excutionsCollapse: false,
+    optionalCollapse: false,
+    summaryCollapse: false
   });
   // const readExcelFile = async () => {
   //   setProject({
@@ -158,7 +162,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
     >
     </Result>
   }
-  if (!result && curMode === 'guide') {
+  if (!result && curMode === 'guide' ) {
     return <div className={styles.content}>
       <div className={styles.empty_steps} >
         <div><Steps />
@@ -166,6 +170,15 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
       </div>
     </div>
   }
+  if (!result &&  curMode === 'optimal') {
+    return <div className={styles.content}>
+      <div className={styles.empty_steps} >
+        <div><OptimalSteps />
+        </div>
+      </div>
+    </div>
+  }
+  
   if ((!result && curMode === 'custom') || (!bm_result && curMode === 'benchmark')) {
     return <div className={styles.content}>
       <div className={styles.empty} >
@@ -234,9 +247,9 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
             </div>
             {!state.computationCollapse && <div className={styles.result_group_content}>
               <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
-                <Descriptions.Item label="Per-device LLM blocks">
-                  {/* {result.computation.per_device_blocks} */}
-                </Descriptions.Item>
+                {/* <Descriptions.Item label="Per-device LLM blocks">
+                  {result.computation.per_device_blocks}
+                </Descriptions.Item> */}
                 <Descriptions.Item label="Number of microbatches">{result.computation.num_microbatches}</Descriptions.Item>
                 <Descriptions.Item label="Per-batch forward computation time(s)">{result.computation.batch_forward_computation_time.toFixed(6)}</Descriptions.Item>
                 <Descriptions.Item label="Per-microbatch forward computation time(s)">{result.computation.microbatch_forward_computation_time.toFixed(6)}</Descriptions.Item>
@@ -288,7 +301,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
             <Divider />
           </>}
           {/*  Timeline */}
-          <div className={styles.result_group_header}>
+          {curMode !=='optimal'&&<div className={styles.result_group_header}>
             <div className={styles.result_group_title}>
               Timeline
               {curMode === 'custom' ? <div className={styles.result_group_more}>
@@ -307,7 +320,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                   }} />}
                 </div>}
             </div>
-          </div>
+          </div>}
           {/* {!state.timelineCollapse && <div className={styles.result_group_content}>
             <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
               <Descriptions.Item label="Per-device LLM blocks">
@@ -321,12 +334,113 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
           </div>} */}
         </div>
         {/* <BaseTL result={{ ...result, other_config: curMode === 'guide' ? otherConfig : result.other_config }} latest_result={latest_result} curMode={curMode}></BaseTL> */}
-        {!state.timelineCollapse &&<TLEventChart  result={result.timeline_events}></TLEventChart>}
+        
+        
+        {!state.timelineCollapse && curMode !=='optimal' &&<TLEventChart  result={result.timeline_events}></TLEventChart>}
+
         {/* {curMode === 'guide' && <div className={styles.export_btn}>
           <Button type="primary" icon={<ExportOutlined />} onClick={exportResultFile}>
             {t('export')}
           </Button>
         </div>} */}
+          {result.executions && <>
+            <div className={styles.result_group_header}>
+              <div className={styles.result_group_title}>
+                Executions
+              </div>
+              <div className={styles.result_group_collapse}>{!state.excutionsCollapse ?
+                <CaretDownOutlined onClick={() => {
+                  setState({ ...state, excutionsCollapse: !state.excutionsCollapse })
+                }} /> :
+                <CaretRightOutlined onClick={() => {
+                  setState({ ...state, excutionsCollapse: !state.excutionsCollapse })
+                }} />}
+              </div>
+            </div>
+            {!state.excutionsCollapse && <div className={styles.result_group_content}>
+              <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
+                <Descriptions.Item label="Bad Executions">
+                  {result.executions.bad_executions}
+                </Descriptions.Item>
+                <Descriptions.Item label="Calculation Rate">{result.executions.calculation_rate}</Descriptions.Item>
+                <Descriptions.Item label="Good Executions">{result.executions.good_executions}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Total Executions">{result.executions.total_executions}</Descriptions.Item>
+              </Descriptions>
+            </div>}
+            <Divider />
+          </>}
+
+          {result.optimal_result && <>
+            <div className={styles.result_group_header}>
+              <div className={styles.result_group_title}>
+                Optimal Result
+              </div>
+              <div className={styles.result_group_collapse}>{!state.optionalCollapse ?
+                <CaretDownOutlined onClick={() => {
+                  setState({ ...state, optionalCollapse: !state.optionalCollapse })
+                }} /> :
+                <CaretRightOutlined onClick={() => {
+                  setState({ ...state, optionalCollapse: !state.optionalCollapse })
+                }} />}
+              </div>
+            </div>
+            {!state.optionalCollapse && <div className={styles.result_group_content}>
+              <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
+                <Descriptions.Item label="Gpu Numbers">{result.optimal_result.gpu_numbers}</Descriptions.Item>
+                <Descriptions.Item label="Tensor Parallel">{result.optimal_result.tensor_parallel}</Descriptions.Item>
+                <Descriptions.Item label="Pipeline Parallel">{result.optimal_result.pipeline_parallel}</Descriptions.Item>
+                <Descriptions.Item label="Data Parallel">{result.optimal_result.data_parallel}</Descriptions.Item>
+                <Descriptions.Item  label="Batch Size">{result.optimal_result.batch_size}</Descriptions.Item>
+                <Descriptions.Item label="Microbatch Size">{result.optimal_result.microbatch_size}</Descriptions.Item>
+                <Descriptions.Item label="Datatype">{result.optimal_result.datatype}</Descriptions.Item>
+                <Descriptions.Item label="Fused Activation">{result.optimal_result.fused_activation}</Descriptions.Item>
+                <Descriptions.Item label="Attention Type">{result.optimal_result.attention_type}</Descriptions.Item>
+                <Descriptions.Item label="Activation Recompute">
+                  {result.optimal_result.activation_recompute}
+                </Descriptions.Item>
+                <Descriptions.Item label="Pipeline Interleaving">{result.optimal_result.pipeline_interleaving}</Descriptions.Item>
+                <Descriptions.Item label="Optimizer Sharding">{result.optimal_result.optimizer_sharding.toString()}</Descriptions.Item>
+                <Descriptions.Item label="Tensor Parallel Common Type">{result.optimal_result.tensor_parallel_comm_type}</Descriptions.Item>
+                <Descriptions.Item label="Tensor Parallel Overlap">{result.optimal_result.tensor_parallel_overlap}</Descriptions.Item>
+                <Descriptions.Item label="Sequence Parallel Allgather Redo">{result.optimal_result.sequence_parallel_allgather_redo.toString()}</Descriptions.Item>
+                <Descriptions.Item label="Data Parallel Overlap">{result.optimal_result.data_parallel_overlap.toString()}</Descriptions.Item>
+                <Descriptions.Item  label="Weight Offload">{result.optimal_result.weight_offload.toString()}</Descriptions.Item>               
+                <Descriptions.Item label="Activations Offload">{result.optimal_result.activations_offload.toString()}</Descriptions.Item>              
+                <Descriptions.Item label="Optimizer Offload">{result.optimal_result.optimizer_offload.toString()}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Training">{result.optimal_result.training.toString()}</Descriptions.Item>
+              </Descriptions>
+            </div>}
+            <Divider />
+          </>}
+
+          {result.summary && <>
+            <div className={styles.result_group_header}>
+              <div className={styles.result_group_title}>
+                Summary
+              </div>
+              <div className={styles.result_group_collapse}>{!state.summaryCollapse ?
+                <CaretDownOutlined onClick={() => {
+                  setState({ ...state, summaryCollapse: !state.summaryCollapse })
+                }} /> :
+                <CaretRightOutlined onClick={() => {
+                  setState({ ...state, summaryCollapse: !state.summaryCollapse })
+                }} />}
+              </div>
+            </div>
+            {!state.summaryCollapse && <div className={styles.result_group_content}>
+              <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
+                <Descriptions.Item label="Batch Total Time">
+                  {result.summary.batch_total_time.toFixed(6)}
+                </Descriptions.Item>
+                <Descriptions.Item label="Global Batch Size">{result.summary.global_batch_size}</Descriptions.Item>
+                <Descriptions.Item label="Local Batch Bize">{result.summary.local_batch_size}</Descriptions.Item>
+                <Descriptions.Item  label="Total Efficiency">{result.summary.total_efficiency}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Totoal Number Of Gpus">{result.summary.totoal_number_of_gpus}</Descriptions.Item>
+              </Descriptions>
+            </div>}
+            <Divider />
+          </>}
+
       </div>
     </div >
   );

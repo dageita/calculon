@@ -40,6 +40,12 @@ export async function getStrategies() {
   });
 }
 
+export async function getDataTypes(gpu_name: string) {
+  return request(`${service_base_url}/llm_training_calculator/calculator/datatype?gpu_name=${gpu_name}`, {
+    method: 'GET',
+  });
+}
+
 export async function getRecommendedTenser(params: any) {
   return request(`${service_base_url}/llm_training_calculator/calculator/recommended_tensor`, {
     data: {
@@ -73,6 +79,17 @@ export async function calculate(params: any) {
     method: 'POST',
   });
 }
+
+export async function optimal(params: any) {
+  return request(`${service_base_url}/llm_training_calculator/calculator/optimal`, {
+    data: {
+      ...params
+    },
+    method: 'POST',
+  });
+}
+
+
 export async function exportResult(params: any) {
   return request(`${service_base_url}/llm_training_calculator/calculator/download`, {
     data: {

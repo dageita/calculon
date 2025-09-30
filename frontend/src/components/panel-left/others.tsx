@@ -9,19 +9,11 @@ import styles from './index.less';
 import ProjectModel from '@/models/projectModel';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import LogModel from '@/models/logModel';
-import { getStrategies } from '@/services';
+import { getStrategies, getDataTypes } from '@/services';
 import { useImmer } from 'use-immer';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
-// 策略列表 - 优化命名
-const DEFAULT_STRATEGY_LIST = [];
-
-// 数据类型列表 - 移除不必要的key属性
-const DATATYPE_LIST = [
-  { label: 'float32', value: 'float32' },
-  { label: 'float16', value: 'float16' }
-];
 
 // 参数配置列表
 const PARAMS_LIST = [
@@ -58,8 +50,9 @@ const OtherPanel = (props) => {
   const { setChangeLog } = useModel(LogModel);
 
   const [state, setState] = useImmer({
-    strategyList: DEFAULT_STRATEGY_LIST,
-    dataTypeList: DATATYPE_LIST
+    strategyList: [],
+    dataTypeList: [],
+    lastGpuValue: null,
   });
 
   // 设置参数值并记录变更日志
@@ -90,17 +83,56 @@ const OtherPanel = (props) => {
     }));
   };
 
-  // 关闭错误消息
-  const closeErrorMsg = () => {
-    setProject({
-      errorMsg: null,
-      showError: false
-    });
+
+  const loadDataTypes = async () => {
+      // 注意：这里原代码使用了curGpu.value，可能需要根据实际情况调整
+      const result = await getDataTypes(curGpu.value) as any;
+      const dataTypes = result.datatypes.map((item: any) => ({
+          key: item,
+          label: item,
+          value: item,
+      }));
+      setState(prev => ({
+          ...prev,
+          dataTypeList: dataTypes
+      }));
   };
+
+
+    // 组件卸载时记录当前GPU值
+    useEffect(() => {
+        return () => {
+            // 组件卸载时保存当前GPU值
+            if (curGpu?.value) {
+                setState(prev => ({
+                    ...prev,
+                    lastGpuValue: curGpu.value
+                }));
+            }
+        };
+    }, [curGpu?.value]); // 依赖curGpu.value，确保值变化时能正确记录
+
+    // 组件挂载时比较GPU值
+    useEffect(() => {
+        // 组件挂载时，如果存在上次记录的GPU值，则进行比较
+        if (state.lastGpuValue !== null && curGpu?.value) {
+            const isSame = state.lastGpuValue === curGpu.value;
+            // 这里可以根据实际需求处理比较结果
+            console.log(`GPU值是否与上次相同: ${isSame}`);
+            // 如果需要可以添加其他逻辑，比如触发某些函数
+            if (!isSame) {
+
+                if (otherConfig?.datatype) {
+                    setParamValue('datatype', undefined, 'Data Type');
+                }
+            }
+        }
+    }, []); // 空依赖数组表示只在组件挂载时执行一次
 
   // 组件加载时获取策略列表
   useEffect(() => {
     loadStrategies();
+    loadDataTypes();
   }, []);
 
   // 渲染微批次大小设置组件
@@ -190,30 +222,6 @@ const OtherPanel = (props) => {
                 onChange={(val) => setParamValue(cf.key, val, cf.title)}
               />
             </div>
-
-            {/* {cf.key === 'tensor_par' && (
-              <div className={styles.slider_tip}>
-                {t('tensor recommend', { value: recommendConfig?.recomended_tensor_par })}
-              </div>
-            )} */}
-
-            {/* {cf.key === 'pipeline_par' && otherConfig.tensor_par && (
-              <div className={styles.slider_tip}>
-                {recommendConfig.recomended_pipeline_par > 0 ? (
-                  <span>{t('pipeline recommend', { value: recommendConfig.recomended_pipeline_par })}</span>
-                ) : (
-                  <span style={{ color: '#ff4d4f' }}>{t('pipeline tips')}</span>
-                )}
-              </div>
-            )} */}
-
-            {/* {cf.key === 'data_par' && otherConfig.tensor_par && (
-              <div className={styles.slider_tip}>
-                {t('data parallel tips', {
-                  value: recommendConfig.recomended_data_par || 1
-                })}
-              </div>
-            )} */}
 
             <Slider
               min={cf.min}
