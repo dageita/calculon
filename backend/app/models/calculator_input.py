@@ -34,6 +34,11 @@ class TrainningConfig(BaseModel):
     microbatch_size: int = None
     datatype: str = None  # 数据类型
 
+class OptimalConfig(BaseModel):
+    num_procs: int = None  # 优化策略
+    max_batch_size: int = None
+    datatype: str = None
+
 class OtherConfig(BaseModel):
     tensor_parallel_degree: int = None
     pipeline_parallel_degree: int = None

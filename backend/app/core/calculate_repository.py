@@ -5,7 +5,7 @@ from tempfile import NamedTemporaryFile
 
 import openpyxl
 from app.config import settings
-from app.models.calculator_input import Gpu, Model, Network, TrainningConfig
+from app.models.calculator_input import Gpu, Model, Network, TrainningConfig, OptimalConfig
 from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import MemoryUsage, Computation, Communication, Timeline, TotalTime, CalculatorResult, \
     Parameter, RecommendedConfig
@@ -15,6 +15,7 @@ import json
 import os
 from calculon.llm.runner import Runner
 from calculon.llm.llm import Llm
+from calculon.llm.optimal_execution import OptimalExecution
 from calculon.system import System
 
 
@@ -207,13 +208,11 @@ class CalculateRepository:
             name = gpu_dict.get("name")
             system_json_path = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "systems", f"{name}.json")
             system_json_path = os.path.abspath(system_json_path)
-            print("wxftest 0")
             if not os.path.exists(system_json_path):
                 raise FileNotFoundError(f"System config file not found: {system_json_path}")
                 return {"status": "error", "error": f"System config file not found: {system_json_path}"}
             with open(system_json_path, "r") as f:
                 sys_json = json.load(f)
-            print("wxftest 1")
             # 处理sys_json.networks[0]，代表机内网络
             if "networks" in sys_json and len(sys_json["networks"]) > 0:
                 sys_json["networks"][0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
@@ -221,7 +220,6 @@ class CalculateRepository:
                 sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
             else:
                 raise ValueError("sys_json['networks'] is missing or empty")
-            print("wxftest 2")
             # 处理sys_json.networks[1]，代表机间网络
             if len(sys_json["networks"]) > 1:
                 sys_json["networks"][1]["bandwidth"] = network_dict.get("network_bandwidth")
@@ -255,6 +253,23 @@ class CalculateRepository:
             syst = self.build_syst(gpu_dict, network_dict)
             self.logger.info("wxftest build 2")
             result = Runner.isinstance_run_command(self.logger, app, exe, syst)
+        except Llm.Error as e:
+            return {"status": "error", "error": str(e)}
+        except Exception as e:
+            return {"status": "error", "error": f"Internal error: {str(e)}"}
+        return result
+
+    def optimal(self, gpu: Gpu, network: Network, model: Model, optimal_config: OptimalConfig):
+        self.logger.info("Starting optimal...")
+
+        gpu_dict = gpu.dict()
+        network_dict = network.dict()
+        model_dict = model.dict()
+        optimal_config_dict = optimal_config.dict()
+        try:
+            app = self.build_app(model_dict)
+            syst = self.build_syst(gpu_dict, network_dict)
+            result = OptimalExecution.isinstance_run_command(self.logger, app, syst, optimal_config)
         except Llm.Error as e:
             return {"status": "error", "error": str(e)}
         except Exception as e:

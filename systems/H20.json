@@ -83,6 +83,7 @@
       "efficiency": 0.75,
       "size": 8,
       "latency": 0.0004,
+      "topology": "Single machine",
       "ops": {
         "p2p": [1.0, null],
         "reduce_scatter": [1.5, -1],
@@ -96,6 +97,7 @@
       "efficiency": 0.8,
       "size": 65536,
       "latency": 0.002,
+      "topology": "Single machine",
       "ops": {
         "p2p": [1.0, null],
         "reduce_scatter": [1.0, -1],
