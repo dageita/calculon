@@ -261,6 +261,40 @@ class OptimalExecution(calculon.CommandLine):
       filtered_execution = {k: v for k, v in best_execution.items() 
                            if k not in ['tensor_par_net', 'pipeline_par_net', 'data_par_net']}
       
+      # 字段名映射
+      field_mapping = {
+        'num_procs': 'gpu_numbers',
+        'tensor_par': 'tensor_parallel',
+        'pipeline_par': 'pipeline_parallel',
+        'data_par': 'data_parallel',
+        'tensor_par_comm_type': 'tensor_parallel_comm_type',
+        'tensor_par_overlap': 'tensor_parallel_overlap',
+        'seq_par_ag_redo': 'sequence_parallel_allgather_redo',
+        'data_par_overlap': 'data_parallel_overlap'
+      }
+      
+      # 字段值映射
+      value_mapping = {
+        'tensor_par_comm_type': {
+          'ar': 'allreduce',
+          'p2p_rs_ag': 'p2p_reducescatter_allgather',
+          'rs_ag': 'reducescatter_allgather'
+        }
+      }
+      
+      # 应用字段名和值映射
+      mapped_execution = {}
+      for key, value in filtered_execution.items():
+        new_key = field_mapping.get(key, key)
+        
+        # 检查是否需要映射值
+        if key in value_mapping and value in value_mapping[key]:
+          mapped_value = value_mapping[key][value]
+        else:
+          mapped_value = value
+          
+        mapped_execution[new_key] = mapped_value
+      
       # 创建logger用于最佳配置的详细分析
       best_logger = logging.getLogger('best_config')
       best_logger.propagate = False
@@ -288,7 +322,7 @@ class OptimalExecution(calculon.CommandLine):
             "bad_executions": bad_exe_count,
             "calculation_rate": calc_rate,
           },
-          "optimal_result": filtered_execution,
+          "optimal_result": mapped_execution,
           "memory_usage": detailed_result["memory_usage"],
           "computation": detailed_result["computation"],
           "communication": detailed_result["communication"],
@@ -304,7 +338,7 @@ class OptimalExecution(calculon.CommandLine):
             "bad_executions": bad_exe_count,
             "calculation_rate": calc_rate,
           },
-          "optimal_result": filtered_execution,
+          "optimal_result": mapped_execution,
           "message": f"Failed to generate detailed analysis: {str(e)}"
         }
     else:
