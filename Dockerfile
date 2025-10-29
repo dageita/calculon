@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     nginx \
-    curl \
+    curl vim \
     && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录

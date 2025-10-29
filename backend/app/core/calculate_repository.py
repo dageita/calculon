@@ -17,6 +17,8 @@ from calculon.llm.runner import Runner
 from calculon.llm.llm import Llm
 from calculon.llm.optimal_execution import OptimalExecution
 from calculon.system import System
+from calculon.hybrid_profiler import HybridProfilerConfigs
+from calculon.hybrid_llm import create_hybrid_llm
 
 
 class OptimizationStrategyType(Enum):
@@ -238,6 +240,42 @@ class CalculateRepository:
             return {"status": "error", "error": f"Internal error: {str(e)}"}
         return result
 
+    def build_hybrid_profiler_config(self, gpu_dict):
+        """Build hybrid profiler configuration based on GPU name."""
+        gpu_name = gpu_dict.get("name")
+        
+        # 构建离线数据目录路径，基于GPU名称
+        offline_data_dir = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "calculon_offline_data")
+        offline_data_dir = os.path.abspath(offline_data_dir)
+        
+        # 检查是否存在对应GPU的离线数据
+        offline_data_file = os.path.join(offline_data_dir, f"{gpu_name}.pkl")
+        
+        if os.path.exists(offline_data_file):
+            self.logger.info(f"Found offline profiled data for GPU: {gpu_name}")
+            # 使用离线数据
+            return HybridProfilerConfigs(
+                offline_data_dir=offline_data_dir,
+                offline_data_filename=f"{gpu_name}.pkl",
+                fusion_strategy="offline_only",  # 优先使用离线数据
+                interpolation_enabled=True,
+                fallback_to_calculon=True,
+                min_confidence_threshold=0.01,  # 低阈值以使用更多离线数据
+                max_interpolation_distance=100.0,
+                enable_caching=False  # 禁用缓存以强制使用离线数据
+            )
+        else:
+            self.logger.warning(f"No offline profiled data found for GPU: {gpu_name}, falling back to Calculon theoretical model")
+            # 回退到Calculon理论模型
+            return HybridProfilerConfigs(
+                offline_data_dir=offline_data_dir,
+                offline_data_filename=f"{gpu_name}.pkl",
+                fusion_strategy="calculon_only",  # 只使用Calculon理论模型
+                interpolation_enabled=False,
+                fallback_to_calculon=True,
+                enable_caching=True
+            )
+
     def calculate(self, gpu: Gpu, network: Network, model: Model, trainning_config: TrainningConfig):
         self.logger.info("Starting calculation...")
 
@@ -252,12 +290,64 @@ class CalculateRepository:
             self.logger.info("wxftest build 1")
             syst = self.build_syst(gpu_dict, network_dict)
             self.logger.info("wxftest build 2")
-            result = Runner.isinstance_run_command(self.logger, app, exe, syst)
+            
+            # 构建 hybrid profiler 配置
+            hybrid_config = self.build_hybrid_profiler_config(gpu_dict)
+            self.logger.info(f"Using hybrid profiler with strategy: {hybrid_config.fusion_strategy}")
+            
+            # 使用 hybrid profiler 运行计算
+            result = self.run_with_hybrid_profiler(app, exe, syst, hybrid_config)
         except Llm.Error as e:
             return {"status": "error", "error": str(e)}
         except Exception as e:
             return {"status": "error", "error": f"Internal error: {str(e)}"}
         return result
+
+    def run_with_hybrid_profiler(self, app, exe, syst, hybrid_config):
+        """Run calculation using hybrid profiler."""
+        try:
+            # 创建 hybrid LLM
+            hybrid_llm = create_hybrid_llm(app, self.logger, hybrid_config)
+            hybrid_llm.compile(syst, exe)
+            hybrid_llm.run(syst)
+            
+            # 获取结果，使用与原始 Runner 相同的方法
+            result = Runner.get_simulator_res_json(hybrid_llm)
+            
+            # 添加 hybrid profiler 统计信息
+            if hasattr(hybrid_llm, 'print_hybrid_profiling_summary'):
+                # 获取统计信息
+                stats = hybrid_llm.hybrid_profiler.get_statistics()
+                result["hybrid_profiling_stats"] = {
+                    "total_queries": stats.get("total_queries", 0),
+                    "offline_hits": stats.get("offline_hits", 0),
+                    "interpolation_hits": stats.get("interpolation_hits", 0),
+                    "calculon_fallback": stats.get("calculon_fallback", 0),
+                    "cache_hits": stats.get("cache_hits", 0),
+                    "fusion_strategy": hybrid_config.fusion_strategy
+                }
+                
+                # 计算命中率
+                total_queries = stats.get("total_queries", 0)
+                if total_queries > 0:
+                    result["hybrid_profiling_stats"]["offline_hit_rate"] = stats.get("offline_hits", 0) / total_queries
+                    result["hybrid_profiling_stats"]["interpolation_hit_rate"] = stats.get("interpolation_hits", 0) / total_queries
+                    result["hybrid_profiling_stats"]["calculon_fallback_rate"] = stats.get("calculon_fallback", 0) / total_queries
+                    result["hybrid_profiling_stats"]["cache_hit_rate"] = stats.get("cache_hits", 0) / total_queries
+                else:
+                    result["hybrid_profiling_stats"]["offline_hit_rate"] = 0.0
+                    result["hybrid_profiling_stats"]["interpolation_hit_rate"] = 0.0
+                    result["hybrid_profiling_stats"]["calculon_fallback_rate"] = 0.0
+                    result["hybrid_profiling_stats"]["cache_hit_rate"] = 0.0
+            
+            self.logger.info("Hybrid profiler calculation completed successfully")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error in hybrid profiler calculation: {e}")
+            # 如果 hybrid profiler 失败，回退到原始方法
+            self.logger.warning("Falling back to original Calculon method")
+            return Runner.isinstance_run_command(self.logger, app, exe, syst)
 
     def optimal(self, gpu: Gpu, network: Network, model: Model, optimal_config: OptimalConfig):
         self.logger.info("Starting optimal...")
