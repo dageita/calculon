@@ -433,7 +433,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                   {result.summary.batch_total_time.toFixed(6)}
                 </Descriptions.Item>
                 <Descriptions.Item label="Global Batch Size">{result.summary.global_batch_size}</Descriptions.Item>
-                <Descriptions.Item label="Local Batch Bize">{result.summary.local_batch_size}</Descriptions.Item>
+                <Descriptions.Item label="Local Batch Size">{result.summary.local_batch_size}</Descriptions.Item>
                 <Descriptions.Item  label="Total Efficiency">{result.summary.total_efficiency}</Descriptions.Item>
                 <Descriptions.Item span={1} label="Totoal Number Of Gpus">{result.summary.totoal_number_of_gpus}</Descriptions.Item>
               </Descriptions>

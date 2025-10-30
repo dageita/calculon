@@ -102,7 +102,7 @@ const OptimalPanel = (props) => {
                 value={otherConfig?.max_batch_size}
                 onChange={(val) => setParamValue('max_batch_size', val, 'Max Batch size')}
                 addonAfter={(
-                    <Popover content={<div>Need to be able to divide data parallel degree.</div>}>
+                    <Popover content={<div>Need to be able to divide (data parallel degree * microbatch size).</div>}>
                         <InfoCircleOutlined style={{ cursor: 'pointer' }} />
                     </Popover>
                 )}

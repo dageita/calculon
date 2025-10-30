@@ -179,7 +179,7 @@ const OtherPanel = (props) => {
         value={otherConfig?.batch_size}
         onChange={(val) => setParamValue('batch_size', val, 'Batch size')}
         addonAfter={(
-          <Popover content={<div>Need to be able to divide data parallel degree.</div>}>
+          <Popover content={<div>Need to be able to divide (data parallel degree * microbatch size).</div>}>
             <InfoCircleOutlined style={{ cursor: 'pointer' }} />
           </Popover>
         )}
@@ -225,7 +225,7 @@ const OtherPanel = (props) => {
 
             <Slider
               min={cf.min}
-              max={cf.key === 'pipeline_par' ? curModel?.num_layers : cf.max}
+              max={calcMax()}
               onChange={(val) => setParamValue(cf.key, val, cf.title)}
               value={otherConfig[cf.key]}
               step={cf.step}
@@ -241,6 +241,9 @@ const OtherPanel = (props) => {
       </div>
 
       <p className={styles.section_title}>{t('batch size')}</p>
+      <div className={styles.batch_size}>
+        <span style={{color: otherConfig['microbatch_size'] *otherConfig['data_par'] <= otherConfig['batch_size']? '': '#ff4d4f'}} >{t('batch_recommend')}</span>
+      </div>
       <div className={styles.section_content}>
         {renderBatchSize()}
       </div>

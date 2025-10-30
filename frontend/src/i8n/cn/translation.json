@@ -42,6 +42,7 @@
   "pipeline recommend": "请设置不小于推荐值（{{value}}），以避免内存溢出（OOM）",
   "microbatch recommend": "请设置不大于推荐值（{{value}}）以减少管道泡沫时间.",
   "pp_dp_tp_recommend": "GPU的数量是{{value}}, TP × PP × DP 的数值需要跟GPU数目相等.",
+  "batch_recommend": "批量大小的值应>=DP*微批量大小。",
   "pipeline tips": "激活内存不足，请尝试增加Tensor parallel degree或减小minibatch size",
   "pipeline divide tips": "需要能整除the number of model layers",
   "microsize tips": "需要能整除minibatch size.",
