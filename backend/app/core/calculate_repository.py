@@ -241,35 +241,96 @@ class CalculateRepository:
         return result
 
     def build_hybrid_profiler_config(self, gpu_dict):
-        """Build hybrid profiler configuration based on GPU name."""
+        """Build hybrid profiler configuration based on GPU name.
+        
+        This method automatically matches the GPU name (e.g., L20) to the corresponding
+        offline profiled data file (e.g., calculon_offline_data/L20.pkl).
+        
+        Args:
+            gpu_dict: Dictionary containing GPU configuration, must include 'name' field
+            
+        Returns:
+            HybridProfilerConfigs: Configured hybrid profiler with GPU-specific offline data
+        """
         gpu_name = gpu_dict.get("name")
         
-        # 构建离线数据目录路径，基于GPU名称
-        offline_data_dir = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "calculon_offline_data")
-        offline_data_dir = os.path.abspath(offline_data_dir)
-        
-        # 检查是否存在对应GPU的离线数据
-        offline_data_file = os.path.join(offline_data_dir, f"{gpu_name}.pkl")
-        
-        if os.path.exists(offline_data_file):
-            self.logger.info(f"Found offline profiled data for GPU: {gpu_name}")
-            # 使用离线数据
+        if not gpu_name:
+            self.logger.warning("GPU name not provided, falling back to Calculon theoretical model")
+            # 如果没有GPU名称，使用默认配置
+            offline_data_dir = os.path.join(os.path.dirname(__file__), "../../../..", "calculon_offline_data")
+            offline_data_dir = os.path.abspath(offline_data_dir)
             return HybridProfilerConfigs(
                 offline_data_dir=offline_data_dir,
-                offline_data_filename=f"{gpu_name}.pkl",
+                fusion_strategy="calculon_only",
+                interpolation_enabled=False,
+                fallback_to_calculon=True,
+                enable_caching=True
+            )
+        
+        # 构建离线数据目录路径，支持多个可能的路径
+        # 从 backend/app/core/calculate_repository.py 到项目根目录需要向上3级
+        repo_file = os.path.dirname(os.path.abspath(__file__))  # backend/app/core
+        project_root = os.path.abspath(os.path.join(repo_file, "../../.."))  # 项目根目录
+        offline_data_dir = os.path.join(project_root, "calculon_offline_data")
+        offline_data_dir = os.path.abspath(offline_data_dir)
+        
+        # 如果第一个路径不存在，尝试其他可能的路径
+        if not os.path.exists(offline_data_dir):
+            self.logger.warning(f"Primary offline data directory not found: {offline_data_dir}")
+            # 尝试从当前工作目录或其他位置查找
+            alt_paths = [
+                os.path.join(project_root, "calculon", "calculon_offline_data"),  # 如果在calculon子目录下
+                "./calculon_offline_data",  # 当前工作目录
+                "../calculon_offline_data",  # 上级目录
+                os.path.join(os.getcwd(), "calculon_offline_data"),  # 当前工作目录（绝对路径）
+            ]
+            
+            for alt_path in alt_paths:
+                abs_path = os.path.abspath(alt_path)
+                if os.path.exists(abs_path):
+                    offline_data_dir = abs_path
+                    self.logger.info(f"Found offline data directory at: {offline_data_dir}")
+                    break
+            else:
+                # 如果所有路径都不存在，仍然使用项目根目录下的路径
+                self.logger.warning(f"Offline data directory not found in any alternative paths, using: {offline_data_dir}")
+        
+        # 构建GPU特定的离线数据文件路径
+        offline_data_filename = f"{gpu_name}.pkl"
+        offline_data_file = os.path.join(offline_data_dir, offline_data_filename)
+        
+        # 检查是否存在对应GPU的离线数据
+        if os.path.exists(offline_data_file):
+            self.logger.info(f"Found offline profiled data for GPU '{gpu_name}': {offline_data_file}")
+            
+            # 使用离线数据进行混合分析
+            return HybridProfilerConfigs(
+                offline_data_dir=offline_data_dir,
+                offline_data_filename=offline_data_filename,
                 fusion_strategy="offline_only",  # 优先使用离线数据
                 interpolation_enabled=True,
-                fallback_to_calculon=True,
+                fallback_to_calculon=True,  # 如果离线数据不可用，回退到理论模型
                 min_confidence_threshold=0.01,  # 低阈值以使用更多离线数据
-                max_interpolation_distance=100.0,
+                max_interpolation_distance=2000.0,  # 增大插值距离阈值以支持K近邻插值
+                k_neighbors=5,  # 使用5个最近邻进行加权插值
                 enable_caching=False  # 禁用缓存以强制使用离线数据
             )
         else:
-            self.logger.warning(f"No offline profiled data found for GPU: {gpu_name}, falling back to Calculon theoretical model")
+            # 列出目录中可用的pkl文件以便调试
+            available_files = []
+            if os.path.exists(offline_data_dir):
+                available_files = [f for f in os.listdir(offline_data_dir) if f.endswith('.pkl')]
+            
+            self.logger.warning(
+                f"No offline profiled data found for GPU '{gpu_name}': {offline_data_file}\n"
+                f"Available offline data files: {available_files}\n"
+                f"Falling back to Calculon theoretical model"
+            )
+            
             # 回退到Calculon理论模型
             return HybridProfilerConfigs(
                 offline_data_dir=offline_data_dir,
-                offline_data_filename=f"{gpu_name}.pkl",
+                offline_data_filename=offline_data_filename,  # 仍然设置文件名，但会使用理论模型
                 fusion_strategy="calculon_only",  # 只使用Calculon理论模型
                 interpolation_enabled=False,
                 fallback_to_calculon=True,

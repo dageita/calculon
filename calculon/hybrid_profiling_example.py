@@ -58,7 +58,7 @@ def run_offline_profiling():
         max_batch_size=16,
         min_seq_len=1,
         max_seq_len=model_config.get('seq_size', 1024),
-        gemm_hidden_dims=[128, 256, 512, 1024, 2048, model_config.get('hidden', 1024)],
+        gemm_hidden_dims=[128, 256, 512, 1024, 2048, 4096, 8192, 16384],
         dtype="float16",
         device="cuda:0" if torch and torch.cuda.is_available() else "cpu",
         num_warmup_steps=3,
@@ -78,6 +78,26 @@ def run_offline_profiling():
     attn_heads = model_config.get('attn_heads', 16)
     profiler.profile_attention_operators(num_heads_list=[8, 16, 32, attn_heads])
     
+    # Profile LayerNorm operators
+    print("Profiling LayerNorm operators...")
+    profiler.profile_layernorm_operators()
+    
+    # Profile GeLU operators
+    print("Profiling GeLU operators...")
+    profiler.profile_gelu_operators()
+    
+    # Profile SoftMax operators
+    print("Profiling SoftMax operators...")
+    profiler.profile_softmax_operators()
+    
+    # Profile DropOut operators
+    print("Profiling DropOut operators...")
+    profiler.profile_dropout_operators()
+    
+    # Profile BatchMatMul operators
+    print("Profiling BatchMatMul operators...")
+    profiler.profile_bmm_operators()
+    
     print("Offline profiling completed!")
     print(f"Profiled data saved to: {configs.data_dir}")
     print(f"Total profiled operators: {len(profiler.profiled_data)}")
@@ -92,6 +112,9 @@ def create_sample_model():
     
     if not os.path.exists(system_config_path):
         raise FileNotFoundError(f"System configuration not found: {system_config_path}")
+    
+    # Extract GPU name from system config file path (e.g., "systems/L20.json" -> "L20")
+    system_name = os.path.splitext(os.path.basename(system_config_path))[0]
     
     # Load system
     with open(system_config_path, 'r') as f:
@@ -143,7 +166,7 @@ def create_sample_model():
     # Create logger
     log = logging.getLogger('hybrid_profiling')
     
-    return sys, exe, app, log
+    return sys, exe, app, log, system_name
 
 
 def run_hybrid_profiling_comparison():
@@ -153,16 +176,39 @@ def run_hybrid_profiling_comparison():
     print("="*60)
     
     # Create system, execution, app, and log configs
-    sys, exe, app, log = create_sample_model()
+    sys, exe, app, log, system_name = create_sample_model()
+    
+    # Determine offline data filename based on system name (e.g., L20 -> L20.pkl)
+    offline_data_filename = f"{system_name}.pkl"
+    offline_data_path = os.path.join("./calculon_offline_data", offline_data_filename)
+    
+    # Check if the system-specific data file exists
+    if not os.path.exists(offline_data_path):
+        # Try alternative path
+        alt_path = os.path.join("../calculon_offline_data", offline_data_filename)
+        if os.path.exists(alt_path):
+            offline_data_dir = "../calculon_offline_data"
+        else:
+            # Fall back to default filename if system-specific file doesn't exist
+            log.warning(f"System-specific offline data file not found: {offline_data_path} or {alt_path}")
+            log.warning(f"Falling back to default filename: operator_profiles.pkl")
+            offline_data_filename = "operator_profiles.pkl"
+            offline_data_dir = "./calculon_offline_data"
+    else:
+        offline_data_dir = "./calculon_offline_data"
+    
+    log.info(f"Using offline data file: {os.path.join(offline_data_dir, offline_data_filename)}")
     
     # Create hybrid profiler configuration
     hybrid_configs = HybridProfilerConfigs(
-        offline_data_dir="./calculon_offline_data",
+        offline_data_dir=offline_data_dir,
+        offline_data_filename=offline_data_filename,  # Use system-specific filename (e.g., L20.pkl)
         fusion_strategy="offline_only",  # Force use of offline data only
         interpolation_enabled=True,
         fallback_to_calculon=True,
         min_confidence_threshold=0.01,  # Very low threshold
-        max_interpolation_distance=100.0,  # Lower distance threshold for more interpolation
+        max_interpolation_distance=2000.0,  # Increased threshold for better interpolation coverage
+        k_neighbors=5,  # Use 5 nearest neighbors for weighted interpolation
         enable_caching=False  # Disable cache to force offline data usage
     )
     
@@ -294,11 +340,33 @@ def run_flow_network_comparison():
     print("="*60)
     
     # Create system, execution, app, and log configs
-    sys, exe, app, log = create_sample_model()
+    sys, exe, app, log, system_name = create_sample_model()
+    
+    # Determine offline data filename based on system name (e.g., L20 -> L20.pkl)
+    offline_data_filename = f"{system_name}.pkl"
+    offline_data_path = os.path.join("./calculon_offline_data", offline_data_filename)
+    
+    # Check if the system-specific data file exists
+    if not os.path.exists(offline_data_path):
+        # Try alternative path
+        alt_path = os.path.join("../calculon_offline_data", offline_data_filename)
+        if os.path.exists(alt_path):
+            offline_data_dir = "../calculon_offline_data"
+        else:
+            # Fall back to default filename if system-specific file doesn't exist
+            log.warning(f"System-specific offline data file not found: {offline_data_path} or {alt_path}")
+            log.warning(f"Falling back to default filename: operator_profiles.pkl")
+            offline_data_filename = "operator_profiles.pkl"
+            offline_data_dir = "./calculon_offline_data"
+    else:
+        offline_data_dir = "./calculon_offline_data"
+    
+    log.info(f"Using offline data file: {os.path.join(offline_data_dir, offline_data_filename)}")
     
     # Create hybrid profiler configuration
     hybrid_configs = HybridProfilerConfigs(
-        offline_data_dir="./calculon_offline_data",
+        offline_data_dir=offline_data_dir,
+        offline_data_filename=offline_data_filename,  # Use system-specific filename (e.g., L20.pkl)
         fusion_strategy="hybrid",
         interpolation_enabled=True,
         fallback_to_calculon=True

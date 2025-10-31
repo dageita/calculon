@@ -22,6 +22,7 @@ import csv
 import json
 import time
 import gc
+import logging
 from typing import Dict, List, Optional, Tuple, Union, Any
 from dataclasses import dataclass, field
 import numpy as np
@@ -50,8 +51,8 @@ class OfflineProfileConfigs:
     max_seq_len: int = 1024
     seq_len_step: Union[int, str] = "power-of-2"
     
-    # GEMM profiling dimensions
-    gemm_hidden_dims: List[int] = field(default_factory=lambda: [128, 256, 512, 1024, 2048, 4096])
+    # GEMM profiling dimensions - Expanded to include larger dimensions for better coverage
+    gemm_hidden_dims: List[int] = field(default_factory=lambda: [128, 256, 512, 1024, 2048, 4096, 8192, 16384])
     
     # Data type and device
     dtype: str = "float16"  # "float16", "float32", "bfloat16"
@@ -82,6 +83,7 @@ class CalculonOfflineProfiler:
         self.system = system
         self.data_path = os.path.join(configs.data_dir, configs.data_filename)
         self.csv_path = os.path.join(configs.data_dir, configs.csv_filename)
+        self.log = logging.getLogger(__name__)
         
         # Profiled data storage
         self.profiled_data = {}
@@ -89,15 +91,25 @@ class CalculonOfflineProfiler:
     
     def _load_existing_data(self):
         """Load existing profiled data from storage."""
+        self.log.info(f"[数据加载] 尝试加载离线数据: data_path={self.data_path}")
         if os.path.exists(self.data_path):
             try:
                 with open(self.data_path, 'rb') as f:
                     self.profiled_data = pickle.load(f)
+                self.log.info(f"[数据加载] 成功加载 {len(self.profiled_data)} 个离线标定算子条目")
                 print(f"Loaded {len(self.profiled_data)} profiled operator entries")
             except Exception as e:
+                self.log.warning(f"[数据加载] 加载失败: {e}")
                 print(f"Failed to load existing data: {e}")
                 self.profiled_data = {}
         else:
+            self.log.warning(f"[数据加载] 数据文件不存在: data_path={self.data_path}")
+            # 检查是否有其他可能的数据文件
+            data_dir = os.path.dirname(self.data_path)
+            if os.path.exists(data_dir):
+                files = [f for f in os.listdir(data_dir) if f.endswith('.pkl')]
+                if files:
+                    self.log.info(f"[数据加载] 发现目录中存在其他pkl文件: {files}")
             self.profiled_data = {}
     
     def _save_data(self):
@@ -401,12 +413,652 @@ class CalculonOfflineProfiler:
         self._save_data()
         print("Attention operator profiling completed!")
     
+    def _benchmark_layernorm_operator(self, batch_size: int, seq_len: int,
+                                      hidden_dim1: int, hidden_dim2: int) -> Dict[str, float]:
+        """Benchmark a LayerNorm operator using PyTorch."""
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for benchmarking")
+        
+        device = torch.device(self.configs.device)
+        dtype = getattr(torch, self.configs.dtype)
+        
+        # LayerNorm: act_size = batch_size * seq_len * hidden_dim1
+        act_size = batch_size * seq_len * hidden_dim1
+        input_tensor = torch.randn(batch_size, seq_len, hidden_dim1,
+                                 dtype=dtype, device=device)
+        
+        # LayerNorm with normalized_shape = hidden_dim1
+        layernorm = nn.LayerNorm(hidden_dim1, eps=1e-5).to(device).to(dtype)
+        
+        # Warmup
+        for _ in range(self.configs.num_warmup_steps):
+            _ = layernorm(input_tensor)
+        torch.cuda.synchronize()
+        
+        # Benchmark
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        for _ in range(self.configs.num_profile_steps):
+            result = layernorm(input_tensor)
+        end_event.record()
+        torch.cuda.synchronize()
+        
+        # Calculate metrics
+        latency_ms = start_event.elapsed_time(end_event) / self.configs.num_profile_steps
+        
+        # Calculate FLOPs (forward: 9*act_size, backward: 14*act_size, average: ~11.5*act_size)
+        flops = 11 * act_size
+        
+        # Calculate memory footprint
+        input_memory = input_tensor.numel() * input_tensor.element_size()
+        weight_memory = layernorm.weight.numel() * layernorm.weight.element_size()
+        bias_memory = layernorm.bias.numel() * layernorm.bias.element_size()
+        output_memory = result.numel() * result.element_size()
+        total_memory = input_memory + weight_memory + bias_memory + output_memory
+        memory_footprint_mb = total_memory / (1024 * 1024)
+        
+        # Calculate arithmetic intensity
+        arithmetic_intensity = flops / total_memory if total_memory > 0 else 0
+        
+        return {
+            'latency_ms': latency_ms,
+            'memory_footprint_mb': memory_footprint_mb,
+            'flops': flops,
+            'arithmetic_intensity': arithmetic_intensity
+        }
+    
+    def _benchmark_gelu_operator(self, batch_size: int, seq_len: int,
+                                 hidden_dim1: int, hidden_dim2: int) -> Dict[str, float]:
+        """Benchmark a GeLU operator using PyTorch."""
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for benchmarking")
+        
+        device = torch.device(self.configs.device)
+        dtype = getattr(torch, self.configs.dtype)
+        
+        # GeLU: act_size = batch_size * seq_len * hidden_dim1
+        input_tensor = torch.randn(batch_size, seq_len, hidden_dim1,
+                                 dtype=dtype, device=device)
+        gelu = nn.GELU().to(device)
+        
+        # Warmup
+        for _ in range(self.configs.num_warmup_steps):
+            _ = gelu(input_tensor)
+        torch.cuda.synchronize()
+        
+        # Benchmark
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        for _ in range(self.configs.num_profile_steps):
+            result = gelu(input_tensor)
+        end_event.record()
+        torch.cuda.synchronize()
+        
+        # Calculate metrics
+        latency_ms = start_event.elapsed_time(end_event) / self.configs.num_profile_steps
+        
+        # Calculate FLOPs (forward: 8*act_size, backward: 13*act_size, average: ~10.5*act_size)
+        act_size = batch_size * seq_len * hidden_dim1
+        flops = 10 * act_size
+        
+        # Calculate memory footprint
+        input_memory = input_tensor.numel() * input_tensor.element_size()
+        output_memory = result.numel() * result.element_size()
+        total_memory = input_memory + output_memory
+        memory_footprint_mb = total_memory / (1024 * 1024)
+        
+        # Calculate arithmetic intensity
+        arithmetic_intensity = flops / total_memory if total_memory > 0 else 0
+        
+        return {
+            'latency_ms': latency_ms,
+            'memory_footprint_mb': memory_footprint_mb,
+            'flops': flops,
+            'arithmetic_intensity': arithmetic_intensity
+        }
+    
+    def _benchmark_softmax_operator(self, batch_size: int, seq_len: int,
+                                   hidden_dim1: int, hidden_dim2: int) -> Dict[str, float]:
+        """Benchmark a SoftMax operator using PyTorch."""
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for benchmarking")
+        
+        device = torch.device(self.configs.device)
+        dtype = getattr(torch, self.configs.dtype)
+        
+        # SoftMax: act_size = batch_size * seq_len * hidden_dim1 (or seq_len * seq_len for attention)
+        # Use hidden_dim1 as the dimension for softmax
+        # If hidden_dim2 > hidden_dim1, it might be for attention matrix (seq_len x seq_len)
+        if hidden_dim2 > hidden_dim1 and hidden_dim2 == hidden_dim1 * hidden_dim1:
+            # This might be attention matrix softmax: (batch, heads, seq_len, seq_len)
+            # For simplicity, use seq_len x seq_len
+            input_tensor = torch.randn(batch_size, 1, hidden_dim1, hidden_dim1,
+                                     dtype=dtype, device=device)
+        else:
+            input_tensor = torch.randn(batch_size, seq_len, hidden_dim1,
+                                     dtype=dtype, device=device)
+        
+        softmax = nn.Softmax(dim=-1).to(device)
+        
+        # Warmup
+        for _ in range(self.configs.num_warmup_steps):
+            _ = softmax(input_tensor)
+        torch.cuda.synchronize()
+        
+        # Benchmark
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        for _ in range(self.configs.num_profile_steps):
+            result = softmax(input_tensor)
+        end_event.record()
+        torch.cuda.synchronize()
+        
+        # Calculate metrics
+        latency_ms = start_event.elapsed_time(end_event) / self.configs.num_profile_steps
+        
+        # Calculate FLOPs (forward: 5*act_size, backward: 8*act_size, average: ~6.5*act_size)
+        act_size = input_tensor.numel()
+        flops = 6 * act_size
+        
+        # Calculate memory footprint
+        input_memory = input_tensor.numel() * input_tensor.element_size()
+        output_memory = result.numel() * result.element_size()
+        total_memory = input_memory + output_memory
+        memory_footprint_mb = total_memory / (1024 * 1024)
+        
+        # Calculate arithmetic intensity
+        arithmetic_intensity = flops / total_memory if total_memory > 0 else 0
+        
+        return {
+            'latency_ms': latency_ms,
+            'memory_footprint_mb': memory_footprint_mb,
+            'flops': flops,
+            'arithmetic_intensity': arithmetic_intensity
+        }
+    
+    def _benchmark_dropout_operator(self, batch_size: int, seq_len: int,
+                                   hidden_dim1: int, hidden_dim2: int) -> Dict[str, float]:
+        """Benchmark a DropOut operator using PyTorch."""
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for benchmarking")
+        
+        device = torch.device(self.configs.device)
+        dtype = getattr(torch, self.configs.dtype)
+        
+        # DropOut: act_size = batch_size * seq_len * hidden_dim1
+        input_tensor = torch.randn(batch_size, seq_len, hidden_dim1,
+                                 dtype=dtype, device=device)
+        dropout = nn.Dropout(p=0.1).to(device)
+        
+        # Warmup
+        dropout.train()  # Enable dropout
+        for _ in range(self.configs.num_warmup_steps):
+            _ = dropout(input_tensor)
+        torch.cuda.synchronize()
+        
+        # Benchmark
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        for _ in range(self.configs.num_profile_steps):
+            result = dropout(input_tensor)
+        end_event.record()
+        torch.cuda.synchronize()
+        
+        # Calculate metrics
+        latency_ms = start_event.elapsed_time(end_event) / self.configs.num_profile_steps
+        
+        # Calculate FLOPs (forward: act_size, backward: act_size, average: act_size)
+        act_size = batch_size * seq_len * hidden_dim1
+        flops = act_size
+        
+        # Calculate memory footprint (includes mask for training)
+        input_memory = input_tensor.numel() * input_tensor.element_size()
+        output_memory = result.numel() * result.element_size()
+        mask_memory = input_tensor.numel() * 1  # bool mask, 1 byte per element
+        total_memory = input_memory + output_memory + mask_memory
+        memory_footprint_mb = total_memory / (1024 * 1024)
+        
+        # Calculate arithmetic intensity
+        arithmetic_intensity = flops / total_memory if total_memory > 0 else 0
+        
+        return {
+            'latency_ms': latency_ms,
+            'memory_footprint_mb': memory_footprint_mb,
+            'flops': flops,
+            'arithmetic_intensity': arithmetic_intensity
+        }
+    
+    def _benchmark_bmm_operator(self, batch_size: int, seq_len: int,
+                               hidden_dim1: int, hidden_dim2: int) -> Dict[str, float]:
+        """Benchmark a BatchMatMul operator using PyTorch."""
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available for benchmarking")
+        
+        device = torch.device(self.configs.device)
+        dtype = getattr(torch, self.configs.dtype)
+        
+        # BatchMatMul: batch matmul between (batch, m, n) and (batch, n, k)
+        # For attention: typically (batch, seq_len, hidden_dim1) @ (batch, hidden_dim1, hidden_dim2)
+        # Or (batch, heads, seq_len, head_dim) @ (batch, heads, head_dim, seq_len)
+        # Use hidden_dim1 as seq_len or head_dim, hidden_dim2 as the other dimension
+        
+        # If hidden_dim2 is much larger, it might be seq_len^2 (attention matrix)
+        if hidden_dim2 > hidden_dim1 * 10:
+            # This might be attention: (batch, heads, seq_len, head_dim) @ (batch, heads, head_dim, seq_len)
+            # Assume hidden_dim1 = head_dim, hidden_dim2 / hidden_dim1 = seq_len
+            seq_dim = max(seq_len, hidden_dim2 // hidden_dim1)
+            tensor_a = torch.randn(batch_size, 1, seq_dim, hidden_dim1,
+                                  dtype=dtype, device=device)
+            tensor_b = torch.randn(batch_size, 1, hidden_dim1, seq_dim,
+                                  dtype=dtype, device=device)
+        else:
+            # Standard batch matmul: (batch, m, n) @ (batch, n, k)
+            tensor_a = torch.randn(batch_size, seq_len, hidden_dim1,
+                                  dtype=dtype, device=device)
+            tensor_b = torch.randn(batch_size, hidden_dim1, hidden_dim2,
+                                  dtype=dtype, device=device)
+        
+        # Warmup
+        for _ in range(self.configs.num_warmup_steps):
+            _ = torch.bmm(tensor_a, tensor_b)
+        torch.cuda.synchronize()
+        
+        # Benchmark
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        start_event.record()
+        for _ in range(self.configs.num_profile_steps):
+            result = torch.bmm(tensor_a, tensor_b)
+        end_event.record()
+        torch.cuda.synchronize()
+        
+        # Calculate metrics
+        latency_ms = start_event.elapsed_time(end_event) / self.configs.num_profile_steps
+        
+        # Calculate FLOPs: batch * 2 * m * n * k
+        m, n, k = tensor_a.shape[-2], tensor_a.shape[-1], tensor_b.shape[-1]
+        batch = tensor_a.shape[0] * (tensor_a.shape[1] if len(tensor_a.shape) > 3 else 1)
+        flops = batch * 2 * m * n * k
+        
+        # Calculate memory footprint
+        a_memory = tensor_a.numel() * tensor_a.element_size()
+        b_memory = tensor_b.numel() * tensor_b.element_size()
+        result_memory = result.numel() * result.element_size()
+        total_memory = a_memory + b_memory + result_memory
+        memory_footprint_mb = total_memory / (1024 * 1024)
+        
+        # Calculate arithmetic intensity
+        arithmetic_intensity = flops / total_memory if total_memory > 0 else 0
+        
+        return {
+            'latency_ms': latency_ms,
+            'memory_footprint_mb': memory_footprint_mb,
+            'flops': flops,
+            'arithmetic_intensity': arithmetic_intensity
+        }
+    
+    def profile_layernorm_operators(self):
+        """Profile all LayerNorm operators."""
+        print("Starting LayerNorm operator profiling...")
+        
+        # Generate batch sizes and sequence lengths
+        if self.configs.batch_size_step == "power-of-2":
+            batch_sizes = [2**i for i in range(
+                int(np.log2(self.configs.min_batch_size)),
+                int(np.log2(self.configs.max_batch_size)) + 1
+            )]
+        else:
+            batch_sizes = list(range(self.configs.min_batch_size,
+                                   self.configs.max_batch_size + 1,
+                                   self.configs.batch_size_step))
+        
+        if self.configs.seq_len_step == "power-of-2":
+            seq_lens = [2**i for i in range(
+                int(np.log2(self.configs.min_seq_len)),
+                int(np.log2(self.configs.max_seq_len)) + 1
+            )]
+        else:
+            seq_lens = list(range(self.configs.min_seq_len,
+                                self.configs.max_seq_len + 1,
+                                self.configs.seq_len_step))
+        
+        total_ops = len(batch_sizes) * len(seq_lens) * len(self.configs.gemm_hidden_dims)
+        current_op = 0
+        
+        for batch_size in batch_sizes:
+            for seq_len in seq_lens:
+                for hidden_dim in self.configs.gemm_hidden_dims:
+                    current_op += 1
+                    query_key = self._generate_query_key("layernorm", batch_size, seq_len, hidden_dim, hidden_dim)
+                    
+                    if query_key in self.profiled_data and not self.configs.force_overwrite:
+                        print(f"[{current_op}/{total_ops}] Skipping cached LayerNorm: {query_key}")
+                        continue
+                    
+                    print(f"[{current_op}/{total_ops}] Profiling LayerNorm: batch_size={batch_size}, seq_len={seq_len}, hidden_dim={hidden_dim}")
+                    
+                    try:
+                        gc.collect()
+                        if TORCH_AVAILABLE:
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        
+                        metrics = self._benchmark_layernorm_operator(batch_size, seq_len, hidden_dim, hidden_dim)
+                        self.profiled_data[query_key] = metrics
+                        
+                        print(f"  Latency: {metrics['latency_ms']:.3f}ms, "
+                              f"Memory: {metrics['memory_footprint_mb']:.2f}MB, "
+                              f"FLOPs: {metrics['flops']:.0f}")
+                        
+                    except Exception as e:
+                        print(f"  Error profiling {query_key}: {e}")
+                        continue
+        
+        self._save_data()
+        print("LayerNorm operator profiling completed!")
+    
+    def profile_gelu_operators(self):
+        """Profile all GeLU operators."""
+        print("Starting GeLU operator profiling...")
+        
+        if self.configs.batch_size_step == "power-of-2":
+            batch_sizes = [2**i for i in range(
+                int(np.log2(self.configs.min_batch_size)),
+                int(np.log2(self.configs.max_batch_size)) + 1
+            )]
+        else:
+            batch_sizes = list(range(self.configs.min_batch_size,
+                                   self.configs.max_batch_size + 1,
+                                   self.configs.batch_size_step))
+        
+        if self.configs.seq_len_step == "power-of-2":
+            seq_lens = [2**i for i in range(
+                int(np.log2(self.configs.min_seq_len)),
+                int(np.log2(self.configs.max_seq_len)) + 1
+            )]
+        else:
+            seq_lens = list(range(self.configs.min_seq_len,
+                                self.configs.max_seq_len + 1,
+                                self.configs.seq_len_step))
+        
+        total_ops = len(batch_sizes) * len(seq_lens) * len(self.configs.gemm_hidden_dims)
+        current_op = 0
+        
+        for batch_size in batch_sizes:
+            for seq_len in seq_lens:
+                for hidden_dim in self.configs.gemm_hidden_dims:
+                    current_op += 1
+                    query_key = self._generate_query_key("gelu", batch_size, seq_len, hidden_dim, hidden_dim)
+                    
+                    if query_key in self.profiled_data and not self.configs.force_overwrite:
+                        print(f"[{current_op}/{total_ops}] Skipping cached GeLU: {query_key}")
+                        continue
+                    
+                    print(f"[{current_op}/{total_ops}] Profiling GeLU: batch_size={batch_size}, seq_len={seq_len}, hidden_dim={hidden_dim}")
+                    
+                    try:
+                        gc.collect()
+                        if TORCH_AVAILABLE:
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        
+                        metrics = self._benchmark_gelu_operator(batch_size, seq_len, hidden_dim, hidden_dim)
+                        self.profiled_data[query_key] = metrics
+                        
+                        print(f"  Latency: {metrics['latency_ms']:.3f}ms, "
+                              f"Memory: {metrics['memory_footprint_mb']:.2f}MB, "
+                              f"FLOPs: {metrics['flops']:.0f}")
+                        
+                    except Exception as e:
+                        print(f"  Error profiling {query_key}: {e}")
+                        continue
+        
+        self._save_data()
+        print("GeLU operator profiling completed!")
+    
+    def profile_softmax_operators(self):
+        """Profile all SoftMax operators."""
+        print("Starting SoftMax operator profiling...")
+        
+        if self.configs.batch_size_step == "power-of-2":
+            batch_sizes = [2**i for i in range(
+                int(np.log2(self.configs.min_batch_size)),
+                int(np.log2(self.configs.max_batch_size)) + 1
+            )]
+        else:
+            batch_sizes = list(range(self.configs.min_batch_size,
+                                   self.configs.max_batch_size + 1,
+                                   self.configs.batch_size_step))
+        
+        if self.configs.seq_len_step == "power-of-2":
+            seq_lens = [2**i for i in range(
+                int(np.log2(self.configs.min_seq_len)),
+                int(np.log2(self.configs.max_seq_len)) + 1
+            )]
+        else:
+            seq_lens = list(range(self.configs.min_seq_len,
+                                self.configs.max_seq_len + 1,
+                                self.configs.seq_len_step))
+        
+        # For SoftMax in attention, we need to handle both regular and attention matrix shapes
+        # Regular: (batch, seq_len, hidden_dim)
+        # Attention matrix: (batch, heads, seq_len, seq_len) where hidden_dim2 might be seq_len^2
+        total_ops = 0
+        current_op = 0
+        
+        # Regular softmax shapes
+        regular_ops = len(batch_sizes) * len(seq_lens) * len(self.configs.gemm_hidden_dims)
+        # Attention matrix softmax: seq_len x seq_len
+        attention_matrix_shapes = [(seq, seq) for seq in seq_lens if seq <= 1024]  # Limit to reasonable sizes
+        attention_ops = len(batch_sizes) * len(attention_matrix_shapes) * min(4, len(self.configs.gemm_hidden_dims))  # Limit heads
+        
+        total_ops = regular_ops + attention_ops
+        
+        for batch_size in batch_sizes:
+            for seq_len in seq_lens:
+                for hidden_dim in self.configs.gemm_hidden_dims:
+                    current_op += 1
+                    query_key = self._generate_query_key("softmax", batch_size, seq_len, hidden_dim, hidden_dim)
+                    
+                    if query_key in self.profiled_data and not self.configs.force_overwrite:
+                        print(f"[{current_op}/{total_ops}] Skipping cached SoftMax: {query_key}")
+                        continue
+                    
+                    print(f"[{current_op}/{total_ops}] Profiling SoftMax: batch_size={batch_size}, seq_len={seq_len}, hidden_dim={hidden_dim}")
+                    
+                    try:
+                        gc.collect()
+                        if TORCH_AVAILABLE:
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        
+                        metrics = self._benchmark_softmax_operator(batch_size, seq_len, hidden_dim, hidden_dim)
+                        self.profiled_data[query_key] = metrics
+                        
+                        print(f"  Latency: {metrics['latency_ms']:.3f}ms, "
+                              f"Memory: {metrics['memory_footprint_mb']:.2f}MB, "
+                              f"FLOPs: {metrics['flops']:.0f}")
+                        
+                    except Exception as e:
+                        print(f"  Error profiling {query_key}: {e}")
+                        continue
+            
+            # Profile attention matrix softmax shapes
+            for seq_shape in attention_matrix_shapes[:4]:  # Limit to first 4
+                for hidden_dim in self.configs.gemm_hidden_dims[:4]:  # Limit dimensions
+                    current_op += 1
+                    seq_len_attn = seq_shape[0]
+                    hidden_dim2_attn = seq_len_attn * seq_len_attn  # seq_len^2 for attention matrix
+                    query_key = self._generate_query_key("softmax", batch_size, seq_len_attn, hidden_dim, hidden_dim2_attn)
+                    
+                    if query_key in self.profiled_data and not self.configs.force_overwrite:
+                        continue
+                    
+                    print(f"[{current_op}/{total_ops}] Profiling SoftMax (attention): batch_size={batch_size}, "
+                          f"seq_len={seq_len_attn}, hidden_dim1={hidden_dim}, hidden_dim2={hidden_dim2_attn}")
+                    
+                    try:
+                        gc.collect()
+                        if TORCH_AVAILABLE:
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        
+                        metrics = self._benchmark_softmax_operator(batch_size, seq_len_attn, hidden_dim, hidden_dim2_attn)
+                        self.profiled_data[query_key] = metrics
+                        
+                        print(f"  Latency: {metrics['latency_ms']:.3f}ms, "
+                              f"Memory: {metrics['memory_footprint_mb']:.2f}MB")
+                        
+                    except Exception as e:
+                        print(f"  Error profiling {query_key}: {e}")
+                        continue
+        
+        self._save_data()
+        print("SoftMax operator profiling completed!")
+    
+    def profile_dropout_operators(self):
+        """Profile all DropOut operators."""
+        print("Starting DropOut operator profiling...")
+        
+        if self.configs.batch_size_step == "power-of-2":
+            batch_sizes = [2**i for i in range(
+                int(np.log2(self.configs.min_batch_size)),
+                int(np.log2(self.configs.max_batch_size)) + 1
+            )]
+        else:
+            batch_sizes = list(range(self.configs.min_batch_size,
+                                   self.configs.max_batch_size + 1,
+                                   self.configs.batch_size_step))
+        
+        if self.configs.seq_len_step == "power-of-2":
+            seq_lens = [2**i for i in range(
+                int(np.log2(self.configs.min_seq_len)),
+                int(np.log2(self.configs.max_seq_len)) + 1
+            )]
+        else:
+            seq_lens = list(range(self.configs.min_seq_len,
+                                self.configs.max_seq_len + 1,
+                                self.configs.seq_len_step))
+        
+        total_ops = len(batch_sizes) * len(seq_lens) * len(self.configs.gemm_hidden_dims)
+        current_op = 0
+        
+        for batch_size in batch_sizes:
+            for seq_len in seq_lens:
+                for hidden_dim in self.configs.gemm_hidden_dims:
+                    current_op += 1
+                    query_key = self._generate_query_key("dropout", batch_size, seq_len, hidden_dim, hidden_dim)
+                    
+                    if query_key in self.profiled_data and not self.configs.force_overwrite:
+                        print(f"[{current_op}/{total_ops}] Skipping cached DropOut: {query_key}")
+                        continue
+                    
+                    print(f"[{current_op}/{total_ops}] Profiling DropOut: batch_size={batch_size}, seq_len={seq_len}, hidden_dim={hidden_dim}")
+                    
+                    try:
+                        gc.collect()
+                        if TORCH_AVAILABLE:
+                            torch.cuda.empty_cache()
+                            torch.cuda.synchronize()
+                        
+                        metrics = self._benchmark_dropout_operator(batch_size, seq_len, hidden_dim, hidden_dim)
+                        self.profiled_data[query_key] = metrics
+                        
+                        print(f"  Latency: {metrics['latency_ms']:.3f}ms, "
+                              f"Memory: {metrics['memory_footprint_mb']:.2f}MB, "
+                              f"FLOPs: {metrics['flops']:.0f}")
+                        
+                    except Exception as e:
+                        print(f"  Error profiling {query_key}: {e}")
+                        continue
+        
+        self._save_data()
+        print("DropOut operator profiling completed!")
+    
+    def profile_bmm_operators(self):
+        """Profile all BatchMatMul operators."""
+        print("Starting BatchMatMul operator profiling...")
+        
+        if self.configs.batch_size_step == "power-of-2":
+            batch_sizes = [2**i for i in range(
+                int(np.log2(self.configs.min_batch_size)),
+                int(np.log2(self.configs.max_batch_size)) + 1
+            )]
+        else:
+            batch_sizes = list(range(self.configs.min_batch_size,
+                                   self.configs.max_batch_size + 1,
+                                   self.configs.batch_size_step))
+        
+        if self.configs.seq_len_step == "power-of-2":
+            seq_lens = [2**i for i in range(
+                int(np.log2(self.configs.min_seq_len)),
+                int(np.log2(self.configs.max_seq_len)) + 1
+            )]
+        else:
+            seq_lens = list(range(self.configs.min_seq_len,
+                                self.configs.max_seq_len + 1,
+                                self.configs.seq_len_step))
+        
+        # BMM can have various shapes, profile common combinations
+        total_ops = len(batch_sizes) * len(seq_lens) * len(self.configs.gemm_hidden_dims) * len(self.configs.gemm_hidden_dims)
+        current_op = 0
+        
+        for batch_size in batch_sizes:
+            for seq_len in seq_lens:
+                for hidden_dim1 in self.configs.gemm_hidden_dims:
+                    for hidden_dim2 in self.configs.gemm_hidden_dims:
+                        current_op += 1
+                        query_key = self._generate_query_key("bmm", batch_size, seq_len, hidden_dim1, hidden_dim2)
+                        
+                        if query_key in self.profiled_data and not self.configs.force_overwrite:
+                            print(f"[{current_op}/{total_ops}] Skipping cached BMM: {query_key}")
+                            continue
+                        
+                        print(f"[{current_op}/{total_ops}] Profiling BMM: batch_size={batch_size}, seq_len={seq_len}, "
+                              f"hidden_dim1={hidden_dim1}, hidden_dim2={hidden_dim2}")
+                        
+                        try:
+                            gc.collect()
+                            if TORCH_AVAILABLE:
+                                torch.cuda.empty_cache()
+                                torch.cuda.synchronize()
+                            
+                            metrics = self._benchmark_bmm_operator(batch_size, seq_len, hidden_dim1, hidden_dim2)
+                            self.profiled_data[query_key] = metrics
+                            
+                            print(f"  Latency: {metrics['latency_ms']:.3f}ms, "
+                                  f"Memory: {metrics['memory_footprint_mb']:.2f}MB, "
+                                  f"FLOPs: {metrics['flops']:.0f}")
+                            
+                        except Exception as e:
+                            print(f"  Error profiling {query_key}: {e}")
+                            continue
+        
+        self._save_data()
+        print("BatchMatMul operator profiling completed!")
+    
     def get_operator_latency(self, op_type: str, batch_size: int, seq_len: int, 
                            hidden_dim1: int, hidden_dim2: int) -> Optional[float]:
         """Get the profiled latency for an operator."""
         query_key = self._generate_query_key(op_type, batch_size, seq_len, hidden_dim1, hidden_dim2)
+        self.log.info(f"[离线标定查询] op_type={op_type}, batch_size={batch_size}, seq_len={seq_len}, "
+                      f"hidden_dim1={hidden_dim1}, hidden_dim2={hidden_dim2}, query_key={query_key}")
+        
         if query_key in self.profiled_data:
-            return self.profiled_data[query_key]['latency_ms']
+            latency_ms = self.profiled_data[query_key]['latency_ms']
+            self.log.info(f"[离线标定命中] query_key={query_key}, latency_ms={latency_ms:.3f}")
+            return latency_ms
+        
+        self.log.info(f"[离线标定未命中] query_key={query_key}")
         return None
     
     def get_operator_metrics(self, op_type: str, batch_size: int, seq_len: int, 
@@ -418,18 +1070,30 @@ class CalculonOfflineProfiler:
         return None
     
     def interpolate_latency(self, op_type: str, batch_size: int, seq_len: int, 
-                          hidden_dim1: int, hidden_dim2: int, max_distance: float = 1000.0) -> Optional[float]:
-        """Interpolate latency for an operator using nearest neighbors."""
-        # Find the closest profiled operators
-        best_match = None
-        min_distance = float('inf')
+                          hidden_dim1: int, hidden_dim2: int, max_distance: float = 1000.0, 
+                          k_neighbors: int = 5) -> Optional[float]:
+        """Interpolate latency using K-nearest neighbors with weighted averaging."""
+        self.log.info(f"[插值开始] op_type={op_type}, batch_size={batch_size}, seq_len={seq_len}, "
+                      f"hidden_dim1={hidden_dim1}, hidden_dim2={hidden_dim2}, max_distance={max_distance}, k={k_neighbors}")
+        
+        # Calculate adaptive threshold based on query dimensions
+        adaptive_threshold = max_distance
+        if max_distance > 0:
+            max_dim = max(hidden_dim1, hidden_dim2, 1)
+            if max_dim > 1024:
+                scale_factor = 1.0 + np.log10(max_dim / 1024.0) * 0.5
+                adaptive_threshold = max_distance * scale_factor
+        
+        # Collect all candidate operators with their distances
+        candidates = []
+        candidates_count = 0
         
         for key, data in self.profiled_data.items():
             if not key.startswith(op_type):
                 continue
             
             parts = key.split('_')
-            if len(parts) < 6:
+            if len(parts) < 5:
                 continue
             
             try:
@@ -438,26 +1102,94 @@ class CalculonOfflineProfiler:
                 profiled_h1 = int(parts[3][1:])
                 profiled_h2 = int(parts[4][1:])
                 
-                # Calculate distance (weighted by importance)
+                # Improved distance calculation using relative error for large values
+                batch_diff = abs(profiled_batch - batch_size)
+                seq_diff = abs(profiled_seq - seq_len)
+                
+                # For hidden dimensions, use relative error (percentage-based)
+                h1_relative = abs(profiled_h1 - hidden_dim1) / max(hidden_dim1, profiled_h1, 1)
+                h2_relative = abs(profiled_h2 - hidden_dim2) / max(hidden_dim2, profiled_h2, 1)
+                
+                # Also include absolute difference for small values
+                h1_absolute = abs(profiled_h1 - hidden_dim1)
+                h2_absolute = abs(profiled_h2 - hidden_dim2)
+                
+                # Combine relative and absolute: use relative for large values, absolute for small
+                avg_h1 = (hidden_dim1 + profiled_h1) / 2.0
+                avg_h2 = (hidden_dim2 + profiled_h2) / 2.0
+                
+                h1_distance = max(h1_absolute, h1_relative * avg_h1)
+                h2_distance = max(h2_absolute, h2_relative * avg_h2)
+                
+                # Weighted distance: batch and seq have lower weight
                 distance = (
-                    abs(profiled_batch - batch_size) * 0.1 +
-                    abs(profiled_seq - seq_len) * 0.1 +
-                    abs(profiled_h1 - hidden_dim1) * 1.0 +
-                    abs(profiled_h2 - hidden_dim2) * 1.0
+                    batch_diff * 0.1 +
+                    seq_diff * 0.1 +
+                    h1_distance * 1.0 +
+                    h2_distance * 1.0
                 )
                 
-                if distance < min_distance:
-                    min_distance = distance
-                    best_match = data['latency_ms']
+                candidates_count += 1
+                candidates.append({
+                    'key': key,
+                    'latency_ms': data['latency_ms'],
+                    'distance': distance,
+                    'batch': profiled_batch,
+                    'seq': profiled_seq,
+                    'h1': profiled_h1,
+                    'h2': profiled_h2
+                })
                     
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, ZeroDivisionError):
                 continue
         
-        # Only return interpolation if distance is within threshold
-        if min_distance <= max_distance:
-            return best_match
-        else:
+        if not candidates:
+            self.log.info(f"[插值失败] 未找到任何候选算子")
             return None
+        
+        # Sort by distance and get K nearest neighbors
+        candidates.sort(key=lambda x: x['distance'])
+        k_neighbors_actual = min(k_neighbors, len(candidates))
+        k_nearest = candidates[:k_neighbors_actual]
+        
+        min_distance = k_nearest[0]['distance'] if k_nearest else float('inf')
+        
+        self.log.info(f"[插值搜索] 搜索到 {candidates_count} 个候选算子, 使用前 {k_neighbors_actual} 个近邻, "
+                      f"最小距离={min_distance:.3f}, 自适应阈值={adaptive_threshold:.3f}")
+        
+        # Check if the nearest neighbor is within threshold
+        if min_distance > adaptive_threshold:
+            self.log.info(f"[插值失败] 最小距离 {min_distance:.3f} 超过自适应阈值 {adaptive_threshold:.3f}")
+            return None
+        
+        # Weighted interpolation using inverse distance weighting
+        # Weight = 1 / (distance + epsilon) to avoid division by zero
+        epsilon = 1e-6
+        total_weight = 0.0
+        weighted_sum = 0.0
+        
+        for neighbor in k_nearest:
+            # Use inverse distance weighting: closer neighbors have more weight
+            weight = 1.0 / (neighbor['distance'] + epsilon)
+            weighted_sum += neighbor['latency_ms'] * weight
+            total_weight += weight
+        
+        if total_weight == 0:
+            self.log.warning(f"[插值失败] 总权重为0，无法进行加权插值")
+            return None
+        
+        interpolated_latency = weighted_sum / total_weight
+        
+        # Log the K nearest neighbors used
+        neighbors_info = ", ".join([f"{n['key']}(dist={n['distance']:.2f})" for n in k_nearest[:3]])
+        if len(k_nearest) > 3:
+            neighbors_info += f", ... (共{k_neighbors_actual}个)"
+        
+        self.log.info(f"[插值成功] query=({op_type}, b={batch_size}, s={seq_len}, h1={hidden_dim1}, h2={hidden_dim2}), "
+                     f"使用K={k_neighbors_actual}近邻, 最小距离={min_distance:.3f}, "
+                     f"插值延迟={interpolated_latency:.3f}ms, 使用的近邻: {neighbors_info}")
+        
+        return interpolated_latency
 
 
 def main():

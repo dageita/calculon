@@ -44,6 +44,9 @@ class HybridProfilerConfigs:
     min_confidence_threshold: float = 0.8
     max_interpolation_distance: float = 2.0
     
+    # K-nearest neighbors for interpolation
+    k_neighbors: int = 5  # Number of nearest neighbors to use for weighted interpolation
+    
     # Performance tuning
     enable_caching: bool = True
     cache_size: int = 1000
@@ -102,17 +105,24 @@ class HybridProfiler:
     def _calculate_confidence(self, op_type: str, batch_size: int, seq_len: int, 
                             hidden_dim1: int, hidden_dim2: int) -> float:
         """Calculate confidence score for offline profiled data."""
+        self.log.info(f"[置信度计算] 开始计算置信度: op_type={op_type}, batch_size={batch_size}, "
+                      f"seq_len={seq_len}, hidden_dim1={hidden_dim1}, hidden_dim2={hidden_dim2}")
+        
         # Check if exact match exists
         exact_match = self.offline_profiler.get_operator_latency(
             op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
         )
         if exact_match is not None:
+            self.log.info(f"[置信度结果] 精确匹配, confidence=1.0")
             return 1.0
         
         # Check for nearby matches
         if self.configs.interpolation_enabled:
+            self.log.info(f"[置信度计算] 精确匹配未找到, 尝试插值...")
             interpolated = self.offline_profiler.interpolate_latency(
-                op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
+                op_type, batch_size, seq_len, hidden_dim1, hidden_dim2,
+                max_distance=self.configs.max_interpolation_distance,
+                k_neighbors=self.configs.k_neighbors
             )
             if interpolated is not None:
                 # Calculate distance-based confidence
@@ -120,21 +130,29 @@ class HybridProfiler:
                     op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
                 )
                 confidence = max(0.0, 1.0 - min_distance / self.configs.max_interpolation_distance)
+                self.log.info(f"[置信度结果] 插值匹配, min_distance={min_distance:.3f}, "
+                             f"max_interpolation_distance={self.configs.max_interpolation_distance}, "
+                             f"confidence={confidence:.3f}")
                 return confidence
         
+        self.log.info(f"[置信度结果] 无匹配数据, confidence=0.0")
         return 0.0
     
     def _calculate_min_distance(self, op_type: str, batch_size: int, seq_len: int, 
                               hidden_dim1: int, hidden_dim2: int) -> float:
         """Calculate minimum distance to profiled operators."""
+        self.log.info(f"[最小距离计算] 开始计算: op_type={op_type}, batch_size={batch_size}, "
+                      f"seq_len={seq_len}, hidden_dim1={hidden_dim1}, hidden_dim2={hidden_dim2}")
+        
         min_distance = float('inf')
+        checked_count = 0
         
         for key in self.offline_profiler.profiled_data.keys():
             if not key.startswith(op_type):
                 continue
             
             parts = key.split('_')
-            if len(parts) < 6:
+            if len(parts) < 5:
                 continue
             
             try:
@@ -151,34 +169,44 @@ class HybridProfiler:
                     abs(profiled_h2 - hidden_dim2) * 1.0
                 )
                 
+                checked_count += 1
                 min_distance = min(min_distance, distance)
                 
             except (ValueError, IndexError):
                 continue
         
+        self.log.info(f"[最小距离结果] 检查了 {checked_count} 个算子, min_distance={min_distance:.3f}")
         return min_distance
     
     def _get_offline_latency(self, op_type: str, batch_size: int, seq_len: int, 
                            hidden_dim1: int, hidden_dim2: int) -> Optional[float]:
         """Get latency from offline profiled data."""
+        self.log.info(f"[获取离线延迟] 开始查询: op_type={op_type}, batch_size={batch_size}, "
+                      f"seq_len={seq_len}, hidden_dim1={hidden_dim1}, hidden_dim2={hidden_dim2}")
+        
         # Try exact match first
         latency_ms = self.offline_profiler.get_operator_latency(
             op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
         )
         if latency_ms is not None:
-            # Convert from milliseconds to seconds
-            return latency_ms / 1000.0
-        
+            latency_s = latency_ms / 1000.0
+            self.log.info(f"[获取离线延迟] 精确匹配成功: latency_ms={latency_ms:.3f}, latency_s={latency_s:.6f}")
+            return latency_s
         
         # Try interpolation if enabled
         if self.configs.interpolation_enabled:
+            self.log.info(f"[获取离线延迟] 精确匹配失败, 尝试插值...")
             interpolated_ms = self.offline_profiler.interpolate_latency(
-                op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
+                op_type, batch_size, seq_len, hidden_dim1, hidden_dim2,
+                max_distance=self.configs.max_interpolation_distance,
+                k_neighbors=self.configs.k_neighbors
             )
             if interpolated_ms is not None:
-                # Convert from milliseconds to seconds
-                return interpolated_ms / 1000.0
+                latency_s = interpolated_ms / 1000.0
+                self.log.info(f"[获取离线延迟] 插值成功: interpolated_ms={interpolated_ms:.3f}, latency_s={latency_s:.6f}")
+                return latency_s
         
+        self.log.info(f"[获取离线延迟] 查询失败, 无可用数据")
         return None
     
     def _determine_operator_type(self, layer: Layer) -> str:
@@ -233,29 +261,54 @@ class HybridProfiler:
         # Note: calculon_fallback is incremented in the calling method
         # Call the parent class method directly to avoid recursion
         if isinstance(layer, HybridLayer):
-            # Get the original Layer class method
-            from calculon.llm.layers import Layer as OriginalLayer
-            # Create a temporary layer with the same properties but using original Layer class
-            temp_layer = OriginalLayer(
-                name=layer.name,
-                sys=layer.sys,
-                fw_flops=layer.fw_flops,
-                agrad_flops=layer.agrad_flops,
-                wgrad_flops=layer.wgrad_flops,
-                inputs_size=layer.inputs_size,
-                output_size=layer.output_size,
-                activation_space=layer.activation_space,
-                activation_grads=layer.activation_grads,
-                weight_space=layer.weight_space,
-                weight_grads=layer.weight_grads,
-                optim_space=layer.optim_space,
-                needs_recompute=layer.needs_recompute,
-                needs_recomm=layer.needs_recomm,
-                activation_reused=layer.activation_reused,
-                activation_stored=layer.activation_stored,
-                output_stored=layer.output_stored
-            )
-            return temp_layer.compute_processing_time(stage)
+            # If HybridLayer has an original_layer, use it directly to preserve the exact type
+            if hasattr(layer, '_original_layer') and layer._original_layer is not None:
+                return layer._original_layer.compute_processing_time(stage)
+            
+            # Otherwise, try to create the correct layer type based on the layer's class
+            # For HybridLinear, create a Linear layer; for others, create the base Layer
+            from calculon.llm.layers import Layer as OriginalLayer, Linear as OriginalLinear
+            
+            if isinstance(layer, HybridLinear):
+                # Extract dimensions from HybridLinear
+                batch_seq = getattr(layer, '_seq_len', None) or getattr(layer, '_batch_size', None) or 1
+                c_in = getattr(layer, '_hidden_dim1', None) or 512
+                c_out = getattr(layer, '_hidden_dim2', None) or 512
+                # Create a Linear layer with the correct type to preserve use_matrix_engine() behavior
+                temp_layer = OriginalLinear(
+                    name=layer.name,
+                    sys=layer.sys,
+                    batch_seq=batch_seq,
+                    c_in=c_in,
+                    c_out=c_out,
+                    needs_recompute=layer.needs_recompute,
+                    activation_reused=layer.activation_reused,
+                    activation_stored=layer.activation_stored,
+                    output_stored=layer.output_stored
+                )
+                return temp_layer.compute_processing_time(stage)
+            else:
+                # For other HybridLayer types, create base Layer
+                temp_layer = OriginalLayer(
+                    name=layer.name,
+                    sys=layer.sys,
+                    fw_flops=layer.fw_flops,
+                    agrad_flops=layer.agrad_flops,
+                    wgrad_flops=layer.wgrad_flops,
+                    inputs_size=layer.inputs_size,
+                    output_size=layer.output_size,
+                    activation_space=layer.activation_space,
+                    activation_grads=layer.activation_grads,
+                    weight_space=layer.weight_space,
+                    weight_grads=layer.weight_grads,
+                    optim_space=layer.optim_space,
+                    needs_recompute=layer.needs_recompute,
+                    needs_recomm=layer.needs_recomm,
+                    activation_reused=layer.activation_reused,
+                    activation_stored=layer.activation_stored,
+                    output_stored=layer.output_stored
+                )
+                return temp_layer.compute_processing_time(stage)
         else:
             return layer.compute_processing_time(stage)
     
@@ -263,6 +316,11 @@ class HybridProfiler:
                            batch_size: int = None, seq_len: int = None,
                            hidden_dim1: int = None, hidden_dim2: int = None) -> float:
         """Get operator latency using hybrid approach."""
+        
+        import logging
+        logger = self.log if hasattr(self, 'log') else logging.getLogger("HybridProfiler.get_operator_latency")
+        logger.info(f"[HYBRID_QUERY] layer={getattr(layer, 'name', repr(layer))}, stage={stage}, op_type={self._determine_operator_type(layer)}, batch={batch_size}, seq_len={seq_len}, h1={hidden_dim1}, h2={hidden_dim2}")
+
         self._stats['total_queries'] += 1
         
         # Determine operator type based on layer type
@@ -285,7 +343,9 @@ class HybridProfiler:
             return cached_result
         
         # Apply fusion strategy
+        self.log.info(f"[融合策略] 当前策略: {self.configs.fusion_strategy}")
         if self.configs.fusion_strategy == "offline_only":
+            self.log.info(f"[融合策略] 使用 offline_only 策略，优先查询离线数据")
             # Try exact match first
             exact_latency = self.offline_profiler.get_operator_latency(
                 op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
@@ -300,7 +360,9 @@ class HybridProfiler:
             # Try interpolation if enabled
             if self.configs.interpolation_enabled:
                 interpolated_ms = self.offline_profiler.interpolate_latency(
-                    op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
+                    op_type, batch_size, seq_len, hidden_dim1, hidden_dim2,
+                    max_distance=self.configs.max_interpolation_distance,
+                    k_neighbors=self.configs.k_neighbors
                 )
                 if interpolated_ms is not None:
                     # Interpolation found
@@ -311,6 +373,7 @@ class HybridProfiler:
             
             # Fall back to Calculon if enabled
             if self.configs.fallback_to_calculon:
+                self.log.info(f"[融合策略] offline_only 路径无数据，回退到理论模型")
                 self._stats['calculon_fallback'] += 1
                 latency = self._get_calculon_latency(layer, stage)
                 self._cache_result(cache_key, latency)
@@ -319,15 +382,18 @@ class HybridProfiler:
                 raise RuntimeError(f"No offline data available for {op_type} and fallback disabled")
         
         elif self.configs.fusion_strategy == "calculon_only":
+            self.log.info(f"[融合策略] 使用 calculon_only 策略，直接使用理论模型")
             latency = self._get_calculon_latency(layer, stage)
             self._cache_result(cache_key, latency)
             return latency
         
         else:  # hybrid strategy
+            self.log.info(f"[融合策略] 使用 hybrid 策略，根据置信度选择数据源")
             # Get confidence score
             confidence = self._calculate_confidence(op_type, batch_size, seq_len, hidden_dim1, hidden_dim2)
             
             if confidence >= self.configs.min_confidence_threshold:
+                self.log.info(f"[融合策略] 置信度 {confidence:.3f} >= 阈值 {self.configs.min_confidence_threshold}，尝试使用离线数据")
                 # Try exact match first
                 exact_latency = self.offline_profiler.get_operator_latency(
                     op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
@@ -342,7 +408,9 @@ class HybridProfiler:
                 # Try interpolation if enabled
                 if self.configs.interpolation_enabled:
                     interpolated_ms = self.offline_profiler.interpolate_latency(
-                        op_type, batch_size, seq_len, hidden_dim1, hidden_dim2
+                        op_type, batch_size, seq_len, hidden_dim1, hidden_dim2,
+                        max_distance=self.configs.max_interpolation_distance,
+                        k_neighbors=self.configs.k_neighbors
                     )
                     if interpolated_ms is not None:
                         # Interpolation found
@@ -352,12 +420,14 @@ class HybridProfiler:
                         return latency
                 
                 # Confidence was high but no offline data found - fall back to Calculon
+                self.log.info(f"[融合策略] 置信度高但无离线数据，回退到理论模型")
                 self._stats['calculon_fallback'] += 1
                 latency = self._get_calculon_latency(layer, stage)
                 self._cache_result(cache_key, latency)
                 return latency
             else:
                 # Confidence was low, go directly to Calculon
+                self.log.info(f"[融合策略] 置信度 {confidence:.3f} < 阈值 {self.configs.min_confidence_threshold}，直接使用理论模型")
                 self._stats['calculon_fallback'] += 1
                 latency = self._get_calculon_latency(layer, stage)
                 self._cache_result(cache_key, latency)
@@ -365,9 +435,48 @@ class HybridProfiler:
     
     def _determine_operator_type(self, layer: Layer) -> str:
         """Determine operator type from layer instance."""
-        # Check for hybrid layers first
+        # Check for hybrid layers first - use original layer type information
         if hasattr(layer, '__class__') and 'Hybrid' in layer.__class__.__name__:
-            # For hybrid layers, always return "gemm" to use offline data
+            # Try to get original layer to determine operator type correctly
+            original_layer = getattr(layer, '_original_layer', None)
+            if original_layer is not None:
+                # Recursively call with original layer to get correct operator type
+                return self._determine_operator_type(original_layer)
+            
+            # Fallback: check original_layer_type name string
+            original_layer_type = getattr(layer, '_original_layer_type', None)
+            if original_layer_type:
+                original_layer_type_lower = original_layer_type.lower()
+                if 'linearnorm' in original_layer_type_lower or 'layernorm' in original_layer_type_lower:
+                    return "layernorm"
+                elif 'gelu' in original_layer_type_lower:
+                    return "gelu"
+                elif 'softmax' in original_layer_type_lower:
+                    return "softmax"
+                elif 'dropout' in original_layer_type_lower:
+                    return "dropout"
+                elif 'linear' in original_layer_type_lower:
+                    return "gemm"
+                elif 'bmm' in original_layer_type_lower or 'batchmatmul' in original_layer_type_lower:
+                    return "bmm"
+                elif 'attention' in original_layer_type_lower:
+                    return "attention"
+            
+            # If no original layer info available, check layer name as fallback
+            layer_name_lower = getattr(layer, 'name', '').lower()
+            if 'layernorm' in layer_name_lower:
+                return "layernorm"
+            elif 'gelu' in layer_name_lower:
+                return "gelu"
+            elif 'softmax' in layer_name_lower:
+                return "softmax"
+            elif 'dropout' in layer_name_lower:
+                return "dropout"
+            elif 'attention' in layer_name_lower:
+                return "attention"
+            
+            # Default: for HybridLayer without clear type info, assume gemm
+            # This is reasonable because most hybrid layers are Linear layers
             return "gemm"
         
         # Check for original layer types
@@ -386,6 +495,18 @@ class HybridProfiler:
         elif isinstance(layer, DropOut):
             return "dropout"
         else:
+            # Final fallback: check layer name
+            layer_name_lower = getattr(layer, 'name', '').lower()
+            if 'layernorm' in layer_name_lower:
+                return "layernorm"
+            elif 'gelu' in layer_name_lower:
+                return "gelu"
+            elif 'softmax' in layer_name_lower:
+                return "softmax"
+            elif 'dropout' in layer_name_lower:
+                return "dropout"
+            elif 'attention' in layer_name_lower:
+                return "attention"
             return "gemm"  # Default to gemm instead of unknown
     
     def _extract_dimensions_from_layer(self, layer: Layer, batch_size: int = None, 
