@@ -35,7 +35,7 @@
     "@umijs/babel-plugin-lock-core-js-3": "^3.5.41",
     "@umijs/preset-react": "1.x",
     "ahooks": "^2.10.9",
-    "axios": "^1.3.5",
+    "axios": "1.15.0",
     "dayjs": "^1.11.10",
     "echarts": "^6.0.0",
     "file-saver": "^2.0.5",
