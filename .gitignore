@@ -44,5 +44,6 @@ nosetests.xml
 .cache/
 .umi/
 *.cache.*
+.cursor/
 
 test/test_ployt_timeline.py

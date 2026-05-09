@@ -13,12 +13,19 @@ from app.models.calculator_result import MemoryUsage, Computation, Communication
 import logging
 import json
 import os
+import importlib
+
 from calculon.llm.runner import Runner
 from calculon.llm.llm import Llm
 from calculon.llm.optimal_execution import OptimalExecution
-from calculon.system import System
 from calculon.hybrid_profiler import HybridProfilerConfigs
-from calculon.hybrid_llm import create_hybrid_llm
+from calculon.hybrid_llm import HybridLlm, create_hybrid_llm
+
+# 必须与 HybridLlm → super().compile 所在包里的 isinstance(sys, System) 使用同一 System。
+# 若仅用本文件顶部的 Llm.__module__，在「工作区 calculon」与「site-packages calculon」混用时，
+# 仍可能与实际执行 compile 的 Llm 不是同一模块。
+_BaseLlm = HybridLlm.__bases__[0]
+System = importlib.import_module(_BaseLlm.__module__).System
 
 
 class OptimizationStrategyType(Enum):
@@ -206,13 +213,20 @@ class CalculateRepository:
 
     def build_syst(self, gpu_dict, network_dict):
         try:
-            # 从gpu_dict中提取name，在calculon/systems下寻找name.json文件
+            # 与 build_hybrid_profiler_config、api/v1/calculator.py 一致：<项目根>/systems/{gpu}.json
             name = gpu_dict.get("name")
-            system_json_path = os.path.join(os.path.dirname(__file__), "../../../..", "calculon", "systems", f"{name}.json")
-            system_json_path = os.path.abspath(system_json_path)
-            if not os.path.exists(system_json_path):
-                raise FileNotFoundError(f"System config file not found: {system_json_path}")
-                return {"status": "error", "error": f"System config file not found: {system_json_path}"}
+            repo_file = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.abspath(os.path.join(repo_file, "../../.."))
+            candidates = [
+                os.path.join(project_root, "systems", f"{name}.json"),
+                os.path.join(project_root, "systems", f"{(name or '').lower()}.json"),
+                os.path.join(project_root, "calculon", "systems", f"{name}.json"),
+            ]
+            system_json_path = next((p for p in candidates if p and os.path.exists(p)), None)
+            if not system_json_path:
+                raise FileNotFoundError(
+                    f"System config file not found for GPU '{name}'. Tried: {candidates}"
+                )
             with open(system_json_path, "r") as f:
                 sys_json = json.load(f)
             # 处理sys_json.networks[0]，代表机内网络
@@ -238,7 +252,6 @@ class CalculateRepository:
             return {"status": "error", "error": str(e)}
         except Exception as e:
             return {"status": "error", "error": f"Internal error: {str(e)}"}
-        return result
 
     def build_hybrid_profiler_config(self, gpu_dict):
         """Build hybrid profiler configuration based on GPU name.
@@ -350,6 +363,8 @@ class CalculateRepository:
             exe = self.build_exe(gpu_dict, trainning_config_dict)
             self.logger.info("wxftest build 1")
             syst = self.build_syst(gpu_dict, network_dict)
+            if isinstance(syst, dict) and syst.get("status") == "error":
+                return syst
             self.logger.info("wxftest build 2")
             
             # 构建 hybrid profiler 配置
@@ -405,7 +420,10 @@ class CalculateRepository:
             return result
             
         except Exception as e:
-            self.logger.error(f"Error in hybrid profiler calculation: {e}")
+            # 排障：记录完整堆栈；稳定后改回 logger.error 即可
+            self.logger.exception(
+                "Error in hybrid profiler calculation: %s", e
+            )
             # 如果 hybrid profiler 失败，回退到原始方法
             self.logger.warning("Falling back to original Calculon method")
             return Runner.isinstance_run_command(self.logger, app, exe, syst)
@@ -420,6 +438,8 @@ class CalculateRepository:
         try:
             app = self.build_app(model_dict)
             syst = self.build_syst(gpu_dict, network_dict)
+            if isinstance(syst, dict) and syst.get("status") == "error":
+                return syst
             result = OptimalExecution.isinstance_run_command(self.logger, app, syst, optimal_config)
         except Llm.Error as e:
             return {"status": "error", "error": str(e)}

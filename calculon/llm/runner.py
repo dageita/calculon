@@ -80,7 +80,8 @@ class Runner(calculon.CommandLine):
         logger.error(f'LLM Error: {error}')  # 记录日志
         return {"status": "error", "error": str(error)} 
       except Exception as e:
-        logger.error(f'Unexpected error: {e}') 
+        # 排障：记录完整堆栈；稳定后改回 logger.error 即可
+        logger.exception('Unexpected error: %s', e)
         return {"status": "error", "error": f"Internal error: {str(e)}"}
 
       # if stats == '-':
