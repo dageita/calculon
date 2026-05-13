@@ -4,8 +4,8 @@ import '@@/core/devScripts';
 import { plugin } from './core/plugin';
 import './core/pluginRegister';
 import { createHistory } from './core/history';
-import { ApplyPluginsType } from 'D:/works/LLM/trainer/llm-training-calculator/frontend/node_modules/@umijs/runtime';
-import { renderClient } from 'D:/works/LLM/trainer/llm-training-calculator/frontend/node_modules/@umijs/renderer-react/dist/index.js';
+import { ApplyPluginsType } from '/src/simulator/frontend/node_modules/@umijs/runtime';
+import { renderClient } from '/src/simulator/frontend/node_modules/@umijs/renderer-react/dist/index.js';
 import { getRoutes } from './core/routes';
 
 

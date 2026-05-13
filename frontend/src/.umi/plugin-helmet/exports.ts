@@ -1,3 +1,3 @@
 // @ts-nocheck
 // @ts-ignore
-export { Helmet } from 'D:/works/LLM/trainer/llm-training-calculator/frontend/node_modules/react-helmet';
+export { Helmet } from '/src/simulator/frontend/node_modules/react-helmet';

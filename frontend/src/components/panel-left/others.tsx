@@ -11,8 +11,9 @@ import { InfoCircleOutlined } from '@ant-design/icons';
 import LogModel from '@/models/logModel';
 import { getStrategies, getDataTypes } from '@/services';
 import { useImmer } from 'use-immer';
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { normalizeCalculonDatatype, normalizeDatatypeList } from '@/utils/calculonDatatype';
 
 
 // 参数配置列表
@@ -69,7 +70,6 @@ const OtherPanel = (props) => {
     return curGpu.num_procs;
   };
 
-  // 加载优化策略列表
   const loadStrategies = async () => {
     const strategyRes = await getStrategies();
     const strList = strategyRes.map(item => ({
@@ -83,20 +83,16 @@ const OtherPanel = (props) => {
     }));
   };
 
-
-  const loadDataTypes = async () => {
-      // 注意：这里原代码使用了curGpu.value，可能需要根据实际情况调整
+  const loadDataTypes = useCallback(async () => {
+      if (!curGpu?.value) return;
       const result = await getDataTypes(curGpu.value) as any;
-      const dataTypes = result.datatypes.map((item: any) => ({
-          key: item,
-          label: item,
-          value: item,
-      }));
+      const raw = Array.isArray(result?.datatypes) ? result.datatypes : [];
+      const dataTypes = normalizeDatatypeList(raw.map((x: any) => String(x)));
       setState(prev => ({
           ...prev,
-          dataTypeList: dataTypes
+          dataTypeList: dataTypes.map((d) => ({ key: d.value, label: d.label, value: d.value })),
       }));
-  };
+  }, [curGpu?.value]);
 
 
     // 组件卸载时记录当前GPU值
@@ -129,11 +125,13 @@ const OtherPanel = (props) => {
         }
     }, []); // 空依赖数组表示只在组件挂载时执行一次
 
-  // 组件加载时获取策略列表
   useEffect(() => {
-    loadStrategies();
-    loadDataTypes();
+    void loadStrategies();
   }, []);
+
+  useEffect(() => {
+    loadDataTypes();
+  }, [loadDataTypes]);
 
   // 渲染微批次大小设置组件
   const renderMicrobatchSize = () => (
@@ -259,7 +257,10 @@ const OtherPanel = (props) => {
           options={state.dataTypeList}
           placeholder={t('Select one datatype')}
           value={otherConfig['datatype']}
-          onChange={(val) => setParamValue('datatype', val, 'Data Type')}
+          onChange={(val) => {
+            const canon = normalizeCalculonDatatype(val as string);
+            setParamValue('datatype', canon ?? val, 'Data Type');
+          }}
         />
       </div>
     </div>

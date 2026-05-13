@@ -1,4 +1,6 @@
-import { defineConfig, Redirect } from 'umi';
+import { defineConfig } from 'umi';
+
+const apiProxyTarget = process.env.API_PROXY_TARGET || 'http://127.0.0.1:8000';
 
 export default defineConfig({
   title: 'LLM Training Calculator',
@@ -14,14 +16,18 @@ export default defineConfig({
   mock:false,
   routes: [
     { path: '/help', component: '@/pages/help/index' },
+    { path: '/agent', component: '@/pages/agent' },
     { path: '/optimal', component: '@/pages/index' },
     { path: '/guide', component: '@/pages/index' },
     { path: '/',  redirect: '/guide'},
   ],
   fastRefresh: {},
+  define: {
+    'process.env.API_PROXY_TARGET': apiProxyTarget,
+  },
   proxy: {
     '/llm_training_calculator': {
-      target: 'http://10.121.129.10:8000',
+      target: apiProxyTarget,
       changeOrigin: true,
     },
   }

@@ -1,3 +1,56 @@
+@import url('https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600;700&family=Literata:ital,opsz,wght@0,7..72,400;0,7..72,600;1,7..72,400&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+    --card: 222.2 84% 4.9%;
+    --card-foreground: 210 40% 98%;
+    --popover: 222.2 84% 4.9%;
+    --popover-foreground: 210 40% 98%;
+    --primary: 217.2 91.2% 59.8%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+    --accent: 217.2 32.6% 17.5%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 224.3 76.3% 48%;
+  }
+}
+
 /* @import '~antd/dist/antd.dark.css'; */
 #root {
   height: 100%;
@@ -110,4 +163,371 @@
 
 ::-webkit-scrollbar-thumb {
   background-color: #666;
+}
+
+/* —— Agent 页：热力学实验室 / 深色控制台（frontend-design） —— */
+@keyframes agent-sim-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px) skewY(-0.4deg);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) skewY(0);
+  }
+}
+
+@keyframes agent-sim-pulse-glow {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.agent-sim-root {
+  --agent-fg: #e8edf4;
+  --agent-fg-muted: #94a3b8;
+  --agent-surface: rgba(15, 23, 42, 0.55);
+  --agent-surface-solid: #111827;
+  --agent-border: rgba(148, 163, 184, 0.18);
+  --agent-teal: #2dd4bf;
+  --agent-amber: #fbbf24;
+  --agent-ink: #030712;
+  position: relative;
+  min-height: 100%;
+  font-family: 'Familjen Grotesk', system-ui, sans-serif;
+  color: var(--agent-fg);
+  background: var(--agent-ink);
+}
+
+.agent-sim-bg {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 120% 80% at 100% -10%, rgba(45, 212, 191, 0.12), transparent 50%),
+    radial-gradient(ellipse 90% 60% at 0% 100%, rgba(251, 191, 36, 0.08), transparent 45%),
+    linear-gradient(165deg, #050a12 0%, #0c1220 38%, #080c14 100%);
+  z-index: 0;
+}
+
+.agent-sim-bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.22;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+
+.agent-sim-grid {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  background-size: 48px 48px;
+  background-image:
+    linear-gradient(to right, rgba(148, 163, 184, 0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(148, 163, 184, 0.06) 1px, transparent 1px);
+  mask-image: radial-gradient(ellipse 70% 65% at 50% 35%, black 10%, transparent 70%);
+  z-index: 0;
+}
+
+.agent-sim-content {
+  position: relative;
+  z-index: 1;
+  max-width: 1040px;
+  margin: 0 auto;
+  padding: clamp(1.25rem, 4vw, 2.5rem) clamp(1rem, 3vw, 1.75rem) 3rem;
+}
+
+.agent-sim-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+  padding-bottom: 1.5rem;
+  border-bottom: 1px solid var(--agent-border);
+}
+
+.agent-sim-eyebrow {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--agent-teal);
+  margin: 0 0 0.5rem;
+}
+
+.agent-sim-title {
+  font-family: 'Literata', Georgia, serif;
+  font-size: clamp(1.75rem, 4vw, 2.35rem);
+  font-weight: 700;
+  line-height: 1.15;
+  margin: 0;
+  letter-spacing: -0.02em;
+  color: #f1f5f9;
+}
+
+.agent-sim-title span {
+  color: var(--agent-teal);
+  font-style: italic;
+}
+
+.agent-sim-lede {
+  margin: 0.75rem 0 0;
+  max-width: 36rem;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--agent-fg-muted);
+}
+
+.agent-sim-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
+  align-items: center;
+}
+
+.agent-sim-nav a,
+.agent-sim-nav button.ant-btn-link {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8rem;
+  letter-spacing: 0.04em;
+  color: var(--agent-fg-muted) !important;
+  padding: 0.25rem 0 !important;
+  height: auto !important;
+  border-bottom: 1px solid transparent !important;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.agent-sim-nav a:hover,
+.agent-sim-nav button.ant-btn-link:hover {
+  color: var(--agent-teal) !important;
+  border-bottom-color: var(--agent-teal) !important;
+}
+
+.agent-sim-nav .agent-sim-nav-active {
+  color: var(--agent-amber) !important;
+  border-bottom-color: var(--agent-amber) !important;
+}
+
+.agent-sim-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  margin-bottom: 1.25rem;
+  align-items: center;
+}
+
+.agent-sim-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  padding: 0.35rem 0.65rem;
+  border-radius: 4px;
+  background: var(--agent-surface);
+  border: 1px solid var(--agent-border);
+  color: var(--agent-fg-muted);
+}
+
+.agent-sim-chip strong {
+  color: var(--agent-teal);
+  font-weight: 500;
+}
+
+.agent-sim-panel {
+  background: var(--agent-surface);
+  border: 1px solid var(--agent-border);
+  border-radius: 12px;
+  backdrop-filter: blur(12px);
+  margin-bottom: 1.25rem;
+  overflow: hidden;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.35);
+}
+
+/* 与参数面板同宽同外框；内边距略紧以容纳长条输入 */
+.agent-sim-panel.agent-sim-input-mount {
+  padding: 12px 14px;
+}
+
+/* Agent 输入白框：确保为定位容器，避免全局 button 样式破坏 absolute */
+.agent-sim-input-white {
+  position: relative !important;
+  isolation: isolate;
+}
+
+.agent-sim-send-btn {
+  position: absolute !important;
+  box-sizing: border-box;
+}
+
+.agent-sim-send-btn svg {
+  display: block;
+  pointer-events: none;
+}
+
+/* 白框内输入：避免继承 agent-sim-root 的浅色字；占位符保持灰 */
+.agent-sim-input-white textarea.agent-sim-ai-textarea {
+  color: #0f172a !important;
+  caret-color: #0f172a;
+}
+
+.agent-sim-input-white textarea.agent-sim-ai-textarea::placeholder {
+  color: #94a3b8 !important;
+  opacity: 1;
+}
+
+.agent-sim-panel .ant-collapse {
+  background: transparent;
+  border: none;
+}
+
+.agent-sim-panel .ant-collapse-item {
+  border-bottom: 1px solid var(--agent-border) !important;
+}
+
+.agent-sim-panel .ant-collapse-header {
+  font-family: 'Familjen Grotesk', sans-serif;
+  font-weight: 600 !important;
+  color: #f8fafc !important;
+  padding: 14px 18px !important;
+}
+
+.agent-sim-panel .ant-collapse-content-box {
+  padding: 16px 18px 20px !important;
+}
+
+.agent-sim-panel .ant-typography,
+.agent-sim-panel .ant-form-item-label > label {
+  color: var(--agent-fg-muted) !important;
+}
+
+.agent-sim-panel .ant-select-selector,
+.agent-sim-panel .ant-input-number {
+  background: rgba(3, 7, 18, 0.55) !important;
+  border-color: var(--agent-border) !important;
+  color: var(--agent-fg) !important;
+}
+
+.agent-sim-panel .ant-select-arrow,
+.agent-sim-panel .ant-input-number-handler-wrap {
+  color: var(--agent-fg-muted) !important;
+}
+
+.agent-sim-panel .ant-btn-default {
+  background: rgba(45, 212, 191, 0.12) !important;
+  border-color: rgba(45, 212, 191, 0.35) !important;
+  color: var(--agent-teal) !important;
+  font-weight: 600;
+}
+
+.agent-sim-panel .ant-btn-default:hover {
+  background: rgba(45, 212, 191, 0.2) !important;
+  border-color: var(--agent-teal) !important;
+  color: #ccfbf1 !important;
+}
+
+.agent-sim-msg {
+  animation: agent-sim-enter 0.5s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  margin-bottom: 1rem;
+  border-radius: 10px;
+  border: 1px solid var(--agent-border);
+  padding: 1rem 1.1rem;
+  backdrop-filter: blur(8px);
+}
+
+.agent-sim-msg-user {
+  margin-left: clamp(0px, 8vw, 3.5rem);
+  border-left: 3px solid var(--agent-amber);
+  background: linear-gradient(135deg, rgba(251, 191, 36, 0.06), rgba(15, 23, 42, 0.5));
+}
+
+.agent-sim-msg-assistant {
+  margin-right: clamp(0px, 6vw, 2.5rem);
+  border-left: 3px solid var(--agent-teal);
+  background: linear-gradient(135deg, rgba(45, 212, 191, 0.07), rgba(15, 23, 42, 0.45));
+}
+
+.agent-sim-msg .ant-typography {
+  color: var(--agent-fg) !important;
+}
+
+.agent-sim-msg-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--agent-fg-muted);
+  margin-bottom: 0.5rem;
+}
+
+.agent-sim-msg pre {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: #f8fafc !important;
+  background: rgba(3, 7, 18, 0.92);
+  border: 1px solid var(--agent-border);
+  border-radius: 6px;
+  padding: 0.5rem 0.65rem;
+}
+
+.agent-sim-msg .ant-collapse-ghost > .ant-collapse-item {
+  border-bottom: none !important;
+}
+
+.agent-sim-msg .ant-collapse-header {
+  padding: 4px 0 !important;
+  color: var(--agent-teal) !important;
+}
+
+.agent-sim-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin-top: 0.5rem;
+}
+
+.agent-sim-toolbar .ant-checkbox-wrapper {
+  color: var(--agent-fg-muted) !important;
+  font-size: 0.85rem;
+}
+
+.agent-sim-toolbar .ant-btn {
+  border-radius: 6px;
+  font-weight: 600;
+}
+
+.agent-sim-toolbar .ant-btn-primary,
+.agent-sim-toolbar .ant-btn:not(.ant-btn-link) {
+  background: rgba(30, 41, 59, 0.9) !important;
+  border-color: var(--agent-border) !important;
+  color: var(--agent-fg) !important;
+}
+
+.agent-sim-toolbar .ant-btn-primary:hover,
+.agent-sim-toolbar .ant-btn:not(.ant-btn-link):hover {
+  border-color: var(--agent-teal) !important;
+  color: var(--agent-teal) !important;
+}
+
+.agent-sim-root .ant-alert {
+  background: rgba(127, 29, 29, 0.25) !important;
+  border: 1px solid rgba(248, 113, 113, 0.35) !important;
+  color: #fecaca !important;
+  border-radius: 8px;
+}
+
+.agent-sim-root .ant-typography code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8em;
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  background: rgba(45, 212, 191, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.25);
+  color: var(--agent-teal) !important;
 }

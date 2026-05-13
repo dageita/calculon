@@ -11,8 +11,9 @@ import { InfoCircleOutlined } from '@ant-design/icons';
 import LogModel from '@/models/logModel';
 import { getDataTypes } from '@/services';
 import { useImmer } from 'use-immer';
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { normalizeCalculonDatatype, normalizeDatatypeList } from '@/utils/calculonDatatype';
 
 
 const OptimalPanel = (props) => {
@@ -35,19 +36,16 @@ const OptimalPanel = (props) => {
 
 
     // 加载优化策略列表
-    const loadDataTypes = async () => {
-        // 注意：这里原代码使用了curGpu.value，可能需要根据实际情况调整
+    const loadDataTypes = useCallback(async () => {
+        if (!curGpu?.value) return;
         const result = await getDataTypes(curGpu.value) as any;
-        const dataTypes = result.datatypes.map((item: any) => ({
-            key: item,
-            label: item,
-            value: item,
-        }));
+        const raw = Array.isArray(result?.datatypes) ? result.datatypes : [];
+        const dataTypes = normalizeDatatypeList(raw.map((x: any) => String(x)));
         setState(prev => ({
             ...prev,
-            dataTypeList: dataTypes
+            dataTypeList: dataTypes.map((d) => ({ key: d.value, label: d.label, value: d.value })),
         }));
-    };
+    }, [curGpu?.value]);
 
     // 组件卸载时记录当前GPU值
     useEffect(() => {
@@ -81,10 +79,9 @@ const OptimalPanel = (props) => {
 
 
 
-    // 组件加载时获取策略列表
     useEffect(() => {
         loadDataTypes();
-    }, []);
+    }, [loadDataTypes]);
 
 
     // 渲染微批次大小设置组件
@@ -117,7 +114,6 @@ const OptimalPanel = (props) => {
                 <InputNumber
                     className={styles['input-num-content']}
                     min={1}
-                    disabled
                     value={curGpu?.num_procs}
                     onChange={(val: any) => {
                         setProject({
@@ -141,7 +137,10 @@ const OptimalPanel = (props) => {
                     options={state.dataTypeList}
                     placeholder={t('Select one datatype')}
                     value={otherConfig['datatype']}
-                    onChange={(val) => setParamValue('datatype', val, 'Data Type')}
+                    onChange={(val) => {
+                        const canon = normalizeCalculonDatatype(val as string);
+                        setParamValue('datatype', canon ?? val, 'Data Type');
+                    }}
                 />
             </div>
         </div>

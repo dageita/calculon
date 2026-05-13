@@ -1,8 +1,8 @@
 // @ts-nocheck
 import React from 'react';
-import initialState from 'D:/works/LLM/trainer/llm-training-calculator/frontend/src/.umi/plugin-initial-state/models/initialState';
-import model0 from "D:/works/LLM/trainer/llm-training-calculator/frontend/src/models/logModel";
-import model1 from "D:/works/LLM/trainer/llm-training-calculator/frontend/src/models/projectModel";
+import initialState from '/src/simulator/frontend/src/.umi/plugin-initial-state/models/initialState';
+import model0 from "/src/simulator/frontend/src/models/logModel";
+import model1 from "/src/simulator/frontend/src/models/projectModel";
 // @ts-ignore
 import Dispatcher from './helpers/dispatcher';
 // @ts-ignore

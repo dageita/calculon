@@ -1,5 +1,5 @@
 import os
-from typing import List
+from typing import List, Optional
 from pydantic import AnyHttpUrl
 from pydantic_settings import BaseSettings
 
@@ -11,6 +11,16 @@ class Settings(BaseSettings):
     BACKEND_CORS_ORIGINS: List[AnyHttpUrl] = ["http://localhost:8080", "https://localhost:8080", "http://localhost",
                                               "https://localhost"]
     API_V1_STR: str = "/api/v1"
+
+    # LangChain / LangGraph agent (optional — leave OPENAI_API_KEY unset to disable /agent/chat)
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_BASE_URL: Optional[str] = None
+    AGENT_MODEL: str = "deepseek-v4-flash"
+    AGENT_MAX_ITERATIONS: int = 8  # used when wiring max agent steps at graph level (reserved)
+    AGENT_CHECKPOINT_SQLITE: Optional[str] = None  # set to e.g. /var/lib/agent/checkpoints.sqlite
+    AGENT_LLM_TIMEOUT_SEC: float = 120.0
+    AGENT_LLM_MAX_RETRIES: int = 2
+    AGENT_MAX_CONCURRENT_INVOCATIONS: int = 4  # documented for ops / future rate limiting
 
     CALCULATOR_RESULT_TEMPLATE: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                                    "template.xlsx")

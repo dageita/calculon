@@ -2,6 +2,7 @@ import json
 import os
 
 import fastapi
+from app.agent.simulator_facade import SimulatorFacade
 from app.config import settings
 from app.core.calculate_repository import CalculateRepository, OptimizationStrategyType, NetworkTopologyType
 from app.models.calculator_input import Gpu, Model, Network, TrainningConfig, OptimalConfig
@@ -13,6 +14,7 @@ from fastapi.responses import FileResponse
 from fastapi import HTTPException
 
 router = fastapi.APIRouter()
+_sim_facade = SimulatorFacade()
 
 
 @router.get("/gpu")
@@ -133,8 +135,7 @@ def create_calculator(gpu: Gpu,
                       network: Network,
                       model: Model,
                       trainning_config: TrainningConfig):
-    cr = CalculateRepository()
-    res = cr.calculate(gpu, network, model, trainning_config)
+    res = _sim_facade.calculate(gpu, network, model, trainning_config)
     if res.get("status") == "error":
         raise HTTPException(
             status_code=400,  # 客户端参数错误
@@ -148,8 +149,7 @@ def create_optimal(gpu: Gpu,
                     network: Network,
                     model: Model,
                     optimal_config: OptimalConfig):
-    cr = CalculateRepository()
-    res = cr.optimal(gpu, network, model, optimal_config)
+    res = _sim_facade.optimal(gpu, network, model, optimal_config)
     if res.get("status") == "error":
         raise HTTPException(
             status_code=400,  # 客户端参数错误

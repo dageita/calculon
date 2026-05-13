@@ -7,9 +7,9 @@ h11==0.14.0
 idna==3.4
 openpyxl==3.1.2
 pip==23.3.1
-pydantic==2.4.2
-pydantic_core==2.10.1
-pydantic-settings==2.0.3
+# pydantic>=2.10 required by langchain 0.3.x
+pydantic>=2.10.0,<3
+pydantic-settings>=2.6.0,<3
 python-dotenv==1.0.0
 python-multipart==0.0.6
 setuptools==65.5.0
@@ -20,3 +20,10 @@ uvicorn==0.23.2
 numpy
 pandas
 psutil
+langchain>=0.3.14,<0.4
+langchain-core>=0.3.14,<0.4
+langchain-openai>=0.2.8,<0.4
+langgraph>=0.2.40,<0.3
+langgraph-checkpoint>=2.0.21,<3
+langgraph-checkpoint-sqlite>=2.0.11,<3
+pytest>=8.0.0

@@ -1,0 +1,10 @@
+{
+  "name": "wangxf35 env",
+  "image": "lenovo-ac-harbor.com/auto-parallel/crius-torch:dev-0.1",
+  "postCreateCommand": "conda init bash && echo 'conda activate crius' >> ~/.bashrc",
+ 
+  "extensions": [
+    "ms-python.python",
+    "ms-toolsai.jupyter"
+  ]
+}

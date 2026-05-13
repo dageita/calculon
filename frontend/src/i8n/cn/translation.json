@@ -1,6 +1,8 @@
 {
   "comparision": "结果对比",
   "guide mode": "指引模式",
+  "optimal mode": "最优模式",
+  "agent mode": "训练 Agent",
   "custom mode": "自定义模式",
   "benchmark mode": "基准模式",
   "cluster": "集群",

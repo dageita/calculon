@@ -1,5 +1,7 @@
 import React, { FC, useRef } from 'react';
 import { Layout, Divider, Tabs, Button, Drawer, Switch, Tooltip } from 'antd'
+
+const { TabPane } = Tabs
 import { HistoryOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 const { Header, Sider, Content } = Layout
 import PanelLeft from '@/components/panel-left';
@@ -31,6 +33,8 @@ const Index: FC<IIndexProps> = (props) => {
     
     if (location.pathname.includes('optimal')) {
       mode = 'optimal';
+    } else if (location.pathname.includes('agent')) {
+      mode = 'agent';
     } else if (location.pathname.includes('benchmark')) {
       mode = 'benchmark';
     } else if (location.pathname.includes('guide')) {
@@ -49,6 +53,7 @@ const Index: FC<IIndexProps> = (props) => {
     const modeMap = {
       guide: '/guide',
       optimal: '/optimal',
+      agent: '/agent',
       // benchmark: '/benchmark'
     };
     
@@ -68,21 +73,6 @@ const Index: FC<IIndexProps> = (props) => {
     i18n.changeLanguage(checked ? 'cn' : 'en')
   }
   
-  const items = [
-    {
-      key: 'guide',
-      label: t('guide mode')
-    },
-    {
-      key: 'optimal',
-      label: t('optimal mode')
-    },
-    // {
-    //   key: 'benchmark',
-    //   label: t('benchmark mode')
-    // }
-  ];
-
   return (
     <React.Fragment>
       <Layout className="llm-layout-wrapper" key={location.pathname}>
@@ -93,10 +83,10 @@ const Index: FC<IIndexProps> = (props) => {
             </div>
             <Divider type="vertical" />
             <div className="header-tabs">
-              <Tabs
-                items={items}
-                activeKey={curMode}
-                onChange={onChangeMode}>
+              <Tabs activeKey={curMode} onChange={onChangeMode} animated={false}>
+                <TabPane tab={t('guide mode')} key="guide" />
+                <TabPane tab={t('optimal mode')} key="optimal" />
+                <TabPane tab={t('agent mode')} key="agent" />
               </Tabs>
             </div>
             <div className="header-history">

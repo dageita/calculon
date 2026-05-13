@@ -59,6 +59,10 @@ COPY frontend/default.conf /etc/nginx/conf.d/default.conf
 
 RUN mkdir -p /var/log/nginx && nginx -t
 
+# Agent（可选）：运行时通过 -e 传入，例如
+#   OPENAI_API_KEY OPENAI_BASE_URL AGENT_MODEL AGENT_CHECKPOINT_SQLITE AGENT_LLM_TIMEOUT_SEC
+# 详见 backend/AGENT_DEPLOY.md
+
 # 暴露端口（前端nginx端口80，后端Python端口8000）
 EXPOSE 3000 8000
 

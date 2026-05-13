@@ -31,7 +31,7 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     active: 'gpu',
   });
   const { curMode, curGpu, curNetwork, curModel, autoRecalc, otherConfig, totalConfig, result, setProject,
-    checkSize, checkPipeline, checkTotalConfig, setRecommendConfig } = useModel(ProjectModel);
+    checkSize, checkPipeline, checkParallelProd, checkBatchDpMicro, checkTotalConfig, setRecommendConfig } = useModel(ProjectModel);
   // const { changeLog, setAutoCalculated } = useModel(LogModel);
   const { history_results, pushHistory } = useModel(LogModel);
   const itemData = [
@@ -89,9 +89,10 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         && otherConfig.tensor_par
         && otherConfig.pipeline_par
         && otherConfig.data_par
+        && otherConfig.batch_size
         && otherConfig.datatype
       ) {
-        return true
+        return checkSize() && checkPipeline() && checkParallelProd() && checkBatchDpMicro()
       } else if (curMode === 'optimal' && otherConfig && otherConfig.max_batch_size
         && otherConfig.datatype) {
         return true

@@ -10,8 +10,8 @@
     "url": ""
   },
   "scripts": {
-    "start": "cross-env NODE_OPTIONS=--openssl-legacy-provider PORT=8080 umi dev",
-    "build": "cross-env NODE_OPTIONS=--openssl-legacy-provider umi build",
+    "start": "cross-env PORT=8080 umi dev",
+    "build": "cross-env umi build",
     "postinstall": "umi generate tmp",
     "prettier": "prettier --write '**/*.{js,jsx,tsx,ts,less,md,json}'",
     "test": "umi-test",
@@ -36,6 +36,8 @@
     "@umijs/preset-react": "1.x",
     "ahooks": "^2.10.9",
     "axios": "1.15.0",
+    "clsx": "^2.1.1",
+    "cross-env": "^7.0.3",
     "dayjs": "^1.11.10",
     "echarts": "^6.0.0",
     "file-saver": "^2.0.5",
@@ -48,6 +50,7 @@
     "react-color": "^2.19.3",
     "react-i18next": "^13.5.0",
     "react-use-observer": "^2.2.4",
+    "tailwind-merge": "^3.6.0",
     "umi": "^3.5.3",
     "use-image": "^1.0.7",
     "use-immer": "^0.6.0"
@@ -59,7 +62,6 @@
     "@types/react-color": "^3.0.6",
     "@types/react-dom": "^17.0.0",
     "@umijs/test": "^3.5.3",
-    "cross-env": "^7.0.3",
     "lint-staged": "^10.0.7",
     "prettier": "^2.2.0",
     "react": "17.x",

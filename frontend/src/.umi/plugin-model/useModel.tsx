@@ -1,7 +1,7 @@
 // @ts-nocheck
 import { useState, useEffect, useContext, useRef } from 'react';
 // @ts-ignore
-import isEqual from 'D:/works/LLM/trainer/llm-training-calculator/frontend/node_modules/fast-deep-equal/index.js';
+import isEqual from '/src/simulator/frontend/node_modules/fast-deep-equal/index.js';
 // @ts-ignore
 import { UmiContext } from './helpers/constant';
 import { Model, models } from './Provider';

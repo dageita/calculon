@@ -17,6 +17,9 @@ body {
 
   .header-wrapper {
     display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    min-width: 0;
   }
 
   .header-logo,
@@ -41,8 +44,18 @@ body {
   }
 
   .header-tabs {
+    flex: 1;
+    min-width: 0;
     padding-left: 10px;
     padding-top: 10px;
+
+    .ant-tabs-nav {
+      margin-bottom: 0;
+    }
+
+    .ant-tabs-tab {
+      padding: 8px 12px;
+    }
   }
 
   .header-language {

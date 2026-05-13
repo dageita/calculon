@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { createHashHistory, History } from 'D:/works/LLM/trainer/llm-training-calculator/frontend/node_modules/@umijs/runtime';
+import { createHashHistory, History } from '/src/simulator/frontend/node_modules/@umijs/runtime';
 
 let options = {
   "basename": "/"
