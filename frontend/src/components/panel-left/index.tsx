@@ -135,7 +135,19 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         "attn_heads": curModel['attn_heads'],
         "attn_size": curModel['attn_size'],
         "num_blocks": curModel['num_blocks'],
-        "vocab_size": curModel['vocab_size']
+        "vocab_size": curModel['vocab_size'],
+        "num_experts": curModel['num_experts'],
+        "moe_topk": curModel['moe_topk'],
+        "num_shared_experts": curModel['num_shared_experts'],
+        "moe_feedforward": curModel['moe_feedforward'],
+        "first_k_dense": curModel['first_k_dense'],
+        "moe_layer_freq": curModel['moe_layer_freq'],
+        "kv_size": curModel['kv_size'],
+        "q_lora_rank": curModel['q_lora_rank'],
+        "kv_lora_rank": curModel['kv_lora_rank'],
+        "qk_nope_head_dim": curModel['qk_nope_head_dim'],
+        "qk_rope_head_dim": curModel['qk_rope_head_dim'],
+        "v_head_dim": curModel['v_head_dim']
       }
     }
     let calcRes: any ;
@@ -145,6 +157,8 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         "tensor_par": otherConfig['tensor_par'],
         "pipeline_par": otherConfig['pipeline_par'],
         "data_par": otherConfig['data_par'],
+        "expert_par": otherConfig['expert_par'] || 1,
+        "context_par": otherConfig['context_par'] || 1,
         "batch_size": otherConfig['batch_size'],
         "microbatch_size": otherConfig['microbatch_size'],
         "datatype": otherConfig['datatype']

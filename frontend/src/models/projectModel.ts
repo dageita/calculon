@@ -6,6 +6,8 @@ const ProjectModel = ({ set, get }: any = {}) => ({
   modelMetrics: null as any, // Model Metrics，根据所选择的model和minibatch size计算而来
   otherConfig: {
     // optimization_strategy: 'No recomputation'
+    expert_par: 1,
+    context_par: 1,
   } as any, // 其他配置
   totalConfig: {
     // data_parallel_degree: 0,

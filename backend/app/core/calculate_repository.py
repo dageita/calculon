@@ -35,7 +35,8 @@ class OptimizationStrategyType(Enum):
 
 class NetworkTopologyType(Enum):
     SINGLE_MACHINE = "Single machine"
-    ONE_BIG_SWITCH= "One big switch"
+    ONE_BIG_SWITCH = "One big switch"
+    HOST_AGGREGATED_ONE_SWITCH = "Host aggregated one switch"
     SPINE_LEAF = "Spine-leaf"
 
 class CalculateRepository:
@@ -173,29 +174,48 @@ class CalculateRepository:
             "attn_size": model_dict.get("attn_size"),
             "num_blocks": model_dict.get("num_blocks"),
             "vocab_size": model_dict.get("vocab_size"),
+            # MoE 字段（None 时由 Application 回落为 dense 默认值）
+            "num_experts": model_dict.get("num_experts"),
+            "moe_topk": model_dict.get("moe_topk"),
+            "num_shared_experts": model_dict.get("num_shared_experts"),
+            "moe_feedforward": model_dict.get("moe_feedforward"),
+            "first_k_dense": model_dict.get("first_k_dense"),
+            "moe_layer_freq": model_dict.get("moe_layer_freq"),
+            "kv_size": model_dict.get("kv_size"),
+            "q_lora_rank": model_dict.get("q_lora_rank"),
+            "kv_lora_rank": model_dict.get("kv_lora_rank"),
+            "qk_nope_head_dim": model_dict.get("qk_nope_head_dim"),
+            "qk_rope_head_dim": model_dict.get("qk_rope_head_dim"),
+            "v_head_dim": model_dict.get("v_head_dim"),
         }
         return Llm.Application(app_json)
 
-    def build_exe(self, gpu_dict, trainning_config_dict):
+    def build_exe(self, gpu_dict, trainning_config_dict, model_dict=None):
         strategy_map = {
             "Full recomputation": "full",
             "None recomputation": "none",
             "Attention-only recomputation": "attn_only"
         }
         activation_recompute = strategy_map.get(trainning_config_dict.get("optimization_strategy"), "none")
+        # Auto-select MLA when model carries LoRA ranks (DeepSeek-V3 etc.).
+        attention_type = "mla" if model_dict and model_dict.get("q_lora_rank") else "multihead"
         exe_json = {
             "num_procs": gpu_dict.get("num_procs"),
             "tensor_par": trainning_config_dict.get("tensor_par"),
             "pipeline_par": trainning_config_dict.get("pipeline_par"),
             "data_par": trainning_config_dict.get("data_par"),
+            "expert_par": trainning_config_dict.get("expert_par") or 1,
+            "context_par": trainning_config_dict.get("context_par") or 1,
             "tensor_par_net": 0,
             "pipeline_par_net": 0,
             "data_par_net": 0,
+            "expert_par_net": 0,
+            "context_par_net": 0,
             "batch_size": trainning_config_dict.get("batch_size"),
             "microbatch_size": trainning_config_dict.get("microbatch_size"),
             "datatype": trainning_config_dict.get("datatype"),
             "fused_activation": False,
-            "attention_type": "multihead",
+            "attention_type": attention_type,
             "activation_recompute": activation_recompute,
             "pipeline_interleaving": 1,
             "optimizer_sharding": False,
@@ -360,7 +380,7 @@ class CalculateRepository:
         try:
             app = self.build_app(model_dict)
             self.logger.info("wxftest build 0")
-            exe = self.build_exe(gpu_dict, trainning_config_dict)
+            exe = self.build_exe(gpu_dict, trainning_config_dict, model_dict)
             self.logger.info("wxftest build 1")
             syst = self.build_syst(gpu_dict, network_dict)
             if isinstance(syst, dict) and syst.get("status") == "error":

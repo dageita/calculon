@@ -41,9 +41,60 @@ const PARAMS_LIST = [
   {
     title: 'Vocabulary size',
     key: 'vocab_size'
+  },
+  {
+    title: 'Number of routed experts (MoE)',
+    key: 'num_experts'
+  },
+  {
+    title: 'Experts per token (MoE top-k)',
+    key: 'moe_topk'
+  },
+  {
+    title: 'Number of shared experts',
+    key: 'num_shared_experts'
+  },
+  {
+    title: 'MoE feedforward dimension size',
+    key: 'moe_feedforward'
+  },
+  {
+    title: 'First-k dense layers',
+    key: 'first_k_dense'
+  },
+  {
+    title: 'MoE layer frequency',
+    key: 'moe_layer_freq'
+  },
+  {
+    title: 'Per-token KV size (CP)',
+    key: 'kv_size'
+  },
+  {
+    title: 'Q LoRA rank (MLA)',
+    key: 'q_lora_rank'
+  },
+  {
+    title: 'KV LoRA rank (MLA)',
+    key: 'kv_lora_rank'
+  },
+  {
+    title: 'QK nope head dim (MLA)',
+    key: 'qk_nope_head_dim'
+  },
+  {
+    title: 'QK rope head dim (MLA)',
+    key: 'qk_rope_head_dim'
+  },
+  {
+    title: 'V head dim (MLA)',
+    key: 'v_head_dim'
   }
   // minibatch_size
 ]
+
+// MoE 字段对 dense 模型可选，不参与必填校验
+const MOE_KEYS = ['num_experts', 'moe_topk', 'num_shared_experts', 'moe_feedforward', 'first_k_dense', 'moe_layer_freq', 'kv_size', 'q_lora_rank', 'kv_lora_rank', 'qk_nope_head_dim', 'qk_rope_head_dim', 'v_head_dim']
 
 const NUM_PARAMS_LIST = [
   {
@@ -124,7 +175,7 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
     })
   }
   const addItemToList = () => {
-    const isNotComplete = PARAMS_LIST.find((p => !state.newModel[p.key]))
+    const isNotComplete = PARAMS_LIST.find((p => !MOE_KEYS.includes(p.key) && !state.newModel[p.key]))
     if (isNotComplete) {
       message.warn('Please fill it out completely!')
       return
@@ -188,13 +239,13 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
       <div>
         {curModel?.value ?
           <div className={styles.gpu_params}>
-            {PARAMS_LIST.map((pItem, _idx) =>
+            {PARAMS_LIST.filter(pItem => !MOE_KEYS.includes(pItem.key) || curModel[pItem.key] != null).map((pItem, _idx, arr) =>
               <div key={_idx}>
                 <div className={styles.gpu_params_item}>
                   <div className={styles.gpu_params_label}>{pItem.title}</div>
                   <div className={styles.gpu_params_value}>{curModel[pItem.key]}</div>
                 </div>
-                {_idx < PARAMS_LIST.length - 1 && <Divider />}
+                {_idx < arr.length - 1 && <Divider />}
               </div>)}
           </div>
           :

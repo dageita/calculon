@@ -552,17 +552,23 @@ class HybridLlm(Llm):
         
         # Call the original flow network time calculation with hybrid results
         result = self._flow_net.total_flow_network_time(
-            pp=self.exe.pipeline_par, 
-            dp=self.exe.data_par, 
+            pp=self.exe.pipeline_par,
+            dp=self.exe.data_par,
             tp=self.exe.tensor_par,
+            ep=self.exe.expert_par,
+            cp=self.exe.context_par,
             fwdCompTime=fwd_comp_time,
             bwdCompTime=bwd_comp_time,
-            microbatches=self.exe._num_microbatches, 
-            fwdTPSize=self._tp_fw_comm_size, 
-            bwdTPSize=self._tp_bw_comm_size, 
-            fwdPPSize=self._pp_fw_comm_size, 
-            bwdPPSize=self._pp_bw_comm_size, 
+            microbatches=self.exe._num_microbatches,
+            fwdTPSize=self._tp_fw_comm_size,
+            bwdTPSize=self._tp_bw_comm_size,
+            fwdPPSize=self._pp_fw_comm_size,
+            bwdPPSize=self._pp_bw_comm_size,
             dpSize=self._dp_comm_size,
+            fwd_ep_size=self._ep_fw_comm_size,
+            bwd_ep_size=self._ep_bw_comm_size,
+            fwd_cp_size=self._cp_fw_comm_size,
+            bwd_cp_size=self._cp_bw_comm_size,
             enable_timeline=True
         )
         

@@ -349,20 +349,28 @@ class Layer:
 class Linear(Layer):
   def __init__(self, name, sys, batch_seq, c_in, c_out,
                needs_recompute=False, activation_reused=False,
-               activation_stored=True, output_stored=True):
+               activation_stored=True, output_stored=True,
+               weight_multiplier=1.0, flop_multiplier=1.0):
+    """GEMM layer.
+
+    weight_multiplier / flop_multiplier scale stored weights and compute
+    independently — used by MoE to store all local experts while only
+    charging FLOPs for the activated (topk/EP + shared) equivalent.
+    """
     m, n, k = batch_seq, c_in, c_out
+    wm, fm = float(weight_multiplier), float(flop_multiplier)
     super().__init__(name,
                      sys,
-                     fw_flops=2*m*n*k,
-                     agrad_flops=2*m*n*k,
-                     wgrad_flops=2*m*n*k,
+                     fw_flops=2*m*n*k*fm,
+                     agrad_flops=2*m*n*k*fm,
+                     wgrad_flops=2*m*n*k*fm,
                      inputs_size=m*n,
                      output_size=m*k,
-                     weight_space=n*k,
-                     weight_grads=n*k,
+                     weight_space=n*k*wm,
+                     weight_grads=n*k*wm,
                      activation_space=m*n,
                      activation_grads=m*k,
-                     optim_space=2*n*k,
+                     optim_space=2*n*k*wm,
                      needs_recompute=needs_recompute,
                      activation_reused=activation_reused,
                      activation_stored=activation_stored,
@@ -370,6 +378,7 @@ class Linear(Layer):
 
   def use_matrix_engine(self):
     return True
+
 
 class LinearOverlapped(Layer):
   def __init__(self, name, sys, batch_seq, c_in, c_out, tensor_par_comm_type,
@@ -720,6 +729,10 @@ class GeLU(Layer):
 
   def get_agrad_mem_accessed(self):
     return self.get_fw_mem_accessed()
+
+
+# SiLU ≈ GeLU arithmetic intensity; alias for SwiGLU gate activation.
+SiLU = GeLU
 
 
 # https://automata88.medium.com/how-to-implement-the-softmax-derivative-independently-from-any-loss-function-ae6d44363a9d

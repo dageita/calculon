@@ -67,7 +67,8 @@ class AllExecutions(calculon.CommandLine):
   def execution_fields():
     return (
       'num_procs', 'tensor_par', 'pipeline_par', 'data_par', 'tensor_par_net',
-      'pipeline_par_net', 'data_par_net', 'batch_size', 'microbatch_size',
+      'pipeline_par_net', 'data_par_net', 'expert_par', 'context_par',
+      'expert_par_net', 'context_par_net', 'batch_size', 'microbatch_size',
       'datatype', 'fused_activation', 'attention_type', 'activation_recompute',
       'pipeline_interleaving', 'optimizer_sharding', 'tensor_par_comm_type',
       'tensor_par_overlap', 'seq_par_ag_redo', 'data_par_overlap',
@@ -121,6 +122,7 @@ class AllExecutions(calculon.CommandLine):
                                   for pn in pick(pp>1, range(num_nets), [0]):
                                     for dn in pick(dp>1, range(num_nets), [0]):
                                       yield (num_procs, tp, pp, dp, tn, pn, dn,
+                                             1, 1, 0, 0,
                                              batch_size, microbatch_size, datatype,
                                              fused_act, 'multihead', activation_recompute,
                                              ppint, optimizer_sharding, tensor_par_comm_type,

@@ -20,7 +20,23 @@ import logging
 from ctypes import *
 from ctypes import addressof
 
-lib = CDLL("./libpycallclass.so")
+import os as _os
+
+def _load_pycall_lib():
+  """按优先级解析 libpycallclass.so，避免 cwd 变化时加载到旧 ABI 的副本。"""
+  _here = _os.path.dirname(_os.path.abspath(__file__))
+  candidates = [
+    _os.environ.get('PYCALLCLASS_SO', ''),
+    _os.path.join(_here, '..', '..', 'LLMFlowSimulator', 'libpycallclass.so'),
+    _os.path.join(_here, 'libpycallclass.so'),
+  ]
+  for path in candidates:
+    if path and _os.path.exists(path):
+      return CDLL(_os.path.abspath(path))
+  # 保持历史行为：找不到时回落到 cwd（由 CDLL 抛出标准错误）
+  return CDLL("./libpycallclass.so")
+
+lib = _load_pycall_lib()
 pycall_main = lib.pycall_main
 # 使用动态函数签名，避免固定数组大小限制
 def create_dynamic_pycall_main(max_events, enable_timeline=True):
@@ -31,6 +47,8 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         c_int,   # pp
         c_int,   # dp
         c_int,   # tp
+        c_int,   # ep
+        c_int,   # cp
         c_double, # inter
         c_double, # intra
         c_double, # fwdCompTime
@@ -41,8 +59,13 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         c_uint64,   # bwdTPSize
         c_uint64,   # fwdPPSize
         c_uint64,   # bwdPPSize
-        c_uint64,   # dpSize 
+        c_uint64,   # dpSize
+        c_uint64,   # fwdEPSize
+        c_uint64,   # bwdEPSize
+        c_uint64,   # fwdCPSize
+        c_uint64,   # bwdCPSize
         c_bool,     # enableTimeline
+        c_int,      # maxEvents（C++ 按此上限截断写入，防止越界）
         POINTER(c_int),     # timelineEventCount
         POINTER(c_int),     # timelineRanks
         (c_char_p * max_events),  # timelineEventTypes - 动态大小
@@ -61,7 +84,13 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         POINTER(c_double),  # microbatchTpBwComm
         POINTER(c_double),  # microbatchPpFwComm
         POINTER(c_double),  # microbatchPpBwComm
-        POINTER(c_double)   # totalCommTime
+        POINTER(c_double),  # totalCommTime
+        POINTER(c_double),  # batchEpFwComm
+        POINTER(c_double),  # batchEpBwComm
+        POINTER(c_double),  # batchEpComm
+        POINTER(c_double),  # batchCpFwComm
+        POINTER(c_double),  # batchCpBwComm
+        POINTER(c_double)   # batchCpComm
     ]
 pycall_main.restype = None
 
@@ -128,6 +157,11 @@ class Network:
   def processor_usage(self):
     return self._proc_usage
 
+  @property
+  def effective_bandwidth(self):
+    # Keeps the flow-level simulator on the same bandwidth basis as time().
+    return self._bw * self._eff
+
   def time(self, op, op_size, comm_size):
     """ Computes the time taken for a network operation.
 
@@ -158,7 +192,7 @@ class Network:
 
    # 显式转换函数
   def cast_uint64(self, value):
-      return c_uint64(value & 0xFFFFFFFFFFFFFFFF)  # 强制64位掩码
+      return c_uint64(int(value) & 0xFFFFFFFFFFFFFFFF)  # 强制64位掩码
   
 # unit: Bps
   def flow_network_init(self, inter, intra, topology):
@@ -167,7 +201,7 @@ class Network:
     self._topology = topology # 网络拓扑类型
     self.log.info("wxftest flow network init: inter=%f, intra=%f, topology=%s", self._inter, self._intra, self._topology)
 
-  def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline):
+  def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline, ep=1, fwd_ep_size=0, bwd_ep_size=0, cp=1, fwd_cp_size=0, bwd_cp_size=0):
     topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
     self.log.info("wxftest total flow network time: pp=%d, dp=%d, tp=%d, fwdCompTime=%f, bwdCompTime=%f, microbatches=%d, fwdTPSize=%d, bwdTPSize=%d, fwdPPSize=%d, bwdPPSize=%d, dpSize=%d, enable_timeline=%s", pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline)
     
@@ -175,8 +209,9 @@ class Network:
     # 无论enable_timeline为true还是false，都需要传递所有参数
     timelineEventCount = c_int(0)
     
-    # 预分配一个较大的缓冲区
-    initial_max_events = 1000
+    # 预分配一个较大的缓冲区（MoE/EP/CP 场景事件数 = ranks × microbatches ×
+    # 每 microbatch 的通信事件数，1000 很容易不够；C++ 侧会按 maxEvents 截断）
+    initial_max_events = 50000
     timelineRanks = (c_int * initial_max_events)()
     timelineMicrobatches = (c_int * initial_max_events)()
     timelineStartTimes = (c_double * initial_max_events)()
@@ -204,31 +239,42 @@ class Network:
     microbatchPpFwComm = c_double()
     microbatchPpBwComm = c_double()
     totalCommTime = c_double()
+    batchEpFwComm = c_double()
+    batchEpBwComm = c_double()
+    batchEpComm = c_double()
+    batchCpFwComm = c_double()
+    batchCpBwComm = c_double()
+    batchCpComm = c_double()
 
     try:
         # 设置函数签名 - 始终使用完整的函数签名
         create_dynamic_pycall_main(initial_max_events, enable_timeline)
-        
+
         # 始终使用相同的调用方式，传递所有参数
         # C++端会根据enableTimeline参数决定是否使用timeline相关参数
         pycall_main(
-            pp, dp, tp,
-            self._inter, self._intra, 
+            pp, dp, tp, ep, cp,
+            self._inter, self._intra,
             fwdCompTime, bwdCompTime, microbatches,
             topology_bytes,
             self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
             self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
             self.cast_uint64(dpSize),
+            self.cast_uint64(fwd_ep_size), self.cast_uint64(bwd_ep_size),
+            self.cast_uint64(fwd_cp_size), self.cast_uint64(bwd_cp_size),
             c_bool(enable_timeline),  # enableTimeline参数
+            c_int(initial_max_events),  # maxEvents：timeline 缓冲区容量
             byref(timelineEventCount), timelineRanks, timelineEventTypes,
             timelineMicrobatches, timelineStartTimes, timelineEndTimes,
-            byref(globalTime), 
-            byref(batchTpFwComm), byref(batchTpBwComm), 
-            byref(batchPpFwComm), byref(batchPpBwComm), 
+            byref(globalTime),
+            byref(batchTpFwComm), byref(batchTpBwComm),
+            byref(batchPpFwComm), byref(batchPpBwComm),
             byref(batchDpComm), byref(batchTpComm), byref(batchPpComm),
-            byref(microbatchTpFwComm), byref(microbatchTpBwComm), 
-            byref(microbatchPpFwComm), byref(microbatchPpBwComm), 
-            byref(totalCommTime)
+            byref(microbatchTpFwComm), byref(microbatchTpBwComm),
+            byref(microbatchPpFwComm), byref(microbatchPpBwComm),
+            byref(totalCommTime),
+            byref(batchEpFwComm), byref(batchEpBwComm), byref(batchEpComm),
+            byref(batchCpFwComm), byref(batchCpBwComm), byref(batchCpComm)
         )
         
         # 检查事件数量是否超过缓冲区大小（仅在enable_timeline=True时有效）
@@ -240,7 +286,7 @@ class Network:
     except Exception as e:
         self.log.error("Error in pycall main: %s", e)
         # 返回默认值
-        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, [], [], [], [], [])
+        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, [], [], [], [], [], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
     self.log.debug("wxftest - New return values:")
     self.log.debug("  globalTime: %f", globalTime.value)
@@ -288,11 +334,13 @@ class Network:
     
     # 始终返回相同格式的结果，包含timeline数据
     # 当enable_timeline=False时，timeline相关数据为空或默认值
-    return (globalTime.value, batchTpFwComm.value, batchTpBwComm.value, 
+    return (globalTime.value, batchTpFwComm.value, batchTpBwComm.value,
             batchPpFwComm.value, batchPpBwComm.value, batchDpComm.value,
             batchTpComm.value, batchPpComm.value,
-            microbatchTpFwComm.value, microbatchTpBwComm.value, 
-            microbatchPpFwComm.value, microbatchPpBwComm.value, 
+            microbatchTpFwComm.value, microbatchTpBwComm.value,
+            microbatchPpFwComm.value, microbatchPpBwComm.value,
             totalCommTime.value,
-            timelineEventCount.value, timelineRanks, timelineEventTypes, 
-            timelineMicrobatches, timelineStartTimes, timelineEndTimes)
+            timelineEventCount.value, timelineRanks, timelineEventTypes,
+            timelineMicrobatches, timelineStartTimes, timelineEndTimes,
+            batchEpFwComm.value, batchEpBwComm.value, batchEpComm.value,
+            batchCpFwComm.value, batchCpBwComm.value, batchCpComm.value)

@@ -38,17 +38,150 @@ class Llm:
       self.attn_heads = cfg['attn_heads']
       self.attn_size = cfg['attn_size']
       self.num_blocks = cfg['num_blocks']
+      self.vocab_size = cfg.get('vocab_size') or 51200
+      # MoE architecture fields (absent/zero => dense model, behavior unchanged).
+      self.num_experts = cfg.get('num_experts') or 0
+      self.moe_topk = cfg.get('moe_topk') or 0
+      self.num_shared_experts = cfg.get('num_shared_experts') or 0
+      self.moe_feedforward = cfg.get('moe_feedforward') or 0
+      self.first_k_dense = cfg.get('first_k_dense') or 0
+      self.moe_layer_freq = cfg.get('moe_layer_freq') or 1
+      # MLA fields (absent/zero => standard MHA/MQA).
+      self.q_lora_rank = cfg.get('q_lora_rank') or 0
+      self.kv_lora_rank = cfg.get('kv_lora_rank') or 0
+      self.qk_nope_head_dim = cfg.get('qk_nope_head_dim') or self.attn_size
+      self.qk_rope_head_dim = cfg.get('qk_rope_head_dim') or 0
+      self.v_head_dim = cfg.get('v_head_dim') or self.attn_size
+      # MLA attention impl: 'absorb' matches DeepSeek-V3/inference/model.py default;
+      # 'naive' keeps decompressed K/V path.
+      self.mla_attn_impl = cfg.get('mla_attn_impl') or 'absorb'
+      assert self.mla_attn_impl in ('absorb', 'naive'), \
+        f'mla_attn_impl must be absorb|naive, got {self.mla_attn_impl}'
+      # MTP (HF num_nextn_predict_layers): not in inference/model.py
+      self.num_nextn_predict_layers = cfg.get('num_nextn_predict_layers') or 0
+      self.include_mtp = bool(cfg.get('include_mtp') or False)
+      # Per-token KV dimension used by CP ring-attention traffic.
+      if cfg.get('kv_size'):
+        self.kv_size = cfg['kv_size']
+      elif self.is_mla:
+        self.kv_size = self.kv_lora_rank + self.qk_rope_head_dim
+      else:
+        self.kv_size = self.attn_heads * self.attn_size
+      if self.num_experts > 0:
+        assert self.moe_topk > 0, 'MoE model requires moe_topk > 0'
+        assert self.moe_feedforward > 0, 'MoE model requires moe_feedforward > 0'
+        assert self.num_blocks > self.first_k_dense, \
+          'num_blocks must exceed first_k_dense for MoE models'
+        # DeepSeek-V3/inference/model.py uses n_dense_layers only (freq≡1).
+        assert self.moe_layer_freq == 1, (
+          f'moe_layer_freq={self.moe_layer_freq} is not supported by '
+          f'DeepSeek-V3/inference/model.py (n_dense_layers only)')
+      if self.q_lora_rank or self.kv_lora_rank:
+        assert self.q_lora_rank > 0 and self.kv_lora_rank > 0, \
+          'MLA requires both q_lora_rank and kv_lora_rank'
+
+    @property
+    def is_moe(self):
+      return self.num_experts > 0
+
+    @property
+    def is_mla(self):
+      return self.q_lora_rank > 0 and self.kv_lora_rank > 0
+
+    @property
+    def num_moe_blocks(self):
+      if not self.is_moe:
+        return 0
+      return (self.num_blocks - self.first_k_dense) // self.moe_layer_freq
+
+    def _attn_weight_params(self):
+      """Projection weights per attention block (no biases).
+
+      MLA packing matches DeepSeek-V3/inference/model.py (wq_a/wq_b, wkv_a/wkv_b,
+      wo) plus q_norm/kv_norm scales. Split WUQ/WQR etc. are algebraically equal.
+      """
+      if self.is_mla:
+        h, n_h = self.hidden, self.attn_heads
+        qk = self.qk_nope_head_dim + self.qk_rope_head_dim
+        return (
+          h * self.q_lora_rank +                                    # wq_a
+          self.q_lora_rank * (n_h * qk) +                           # wq_b
+          h * (self.kv_lora_rank + self.qk_rope_head_dim) +         # wkv_a
+          self.kv_lora_rank * (n_h * (self.qk_nope_head_dim +
+                                      self.v_head_dim)) +           # wkv_b
+          h * (n_h * self.v_head_dim) +                             # wo
+          self.q_lora_rank + self.kv_lora_rank                      # q/kv RMSNorm
+        )
+      return 4 * self.hidden * self.attn_heads * self.attn_size
+
+    def mtp_params(self):
+      """HF MTP estimate (not in inference/model.py). One block ≈ MLA+FFN/MoE."""
+      if self.num_nextn_predict_layers <= 0:
+        return 0
+      attn = self._attn_weight_params() + 2 * self.hidden
+      if self.is_moe:
+        expert_ffn = 3 * self.hidden * self.moe_feedforward
+        shared_w = 3 * self.hidden * self.num_shared_experts * self.moe_feedforward
+        ffn = (self.num_experts * expert_ffn + shared_w +
+               self.hidden * self.num_experts)
+        if self.hidden == 7168:
+          ffn += self.num_experts  # gate bias
+      else:
+        ffn = 3 * self.hidden * self.feedforward
+      return self.num_nextn_predict_layers * (attn + ffn)
 
     def num_parameters(self):
-      # https://cs.stanford.edu/~matei/papers/2021/sc_megatron_lm.pdf
-      # Equation 2
-      p = 2 * self.hidden * self.feedforward                   # MLP weights
-      p += 4 * self.hidden * self.attn_heads * self.attn_size  # Attn weights
-      p += self.hidden + self.feedforward                      # biases MLP
-      p += 3 * self.attn_heads * self.attn_size + self.hidden  # biases Attn
-      p += 2 * 2 * self.hidden                                 # layer norm
-      p *= self.num_blocks                                     # per each block
-      p += (51200 + self.seq_size) * self.hidden               # embeddings
+      attn = self._attn_weight_params()
+      # 2 RMSNorm scales (pre-attn, pre-mlp); DeepSeek is bias-free.
+      attn += 2 * self.hidden
+      if self.is_moe:
+        # Dense prefix + MoE body both use SwiGLU (3-matrix).
+        # Shared experts: one MLP(inter=S*moe_f) ≡ S * expert_w.
+        dense_ffn = 3 * self.hidden * self.feedforward
+        expert_ffn = 3 * self.hidden * self.moe_feedforward
+        shared_w = 3 * self.hidden * self.num_shared_experts * self.moe_feedforward
+        moe_ffn = self.num_experts * expert_ffn + shared_w
+        moe_ffn += self.hidden * self.num_experts                # router
+        if self.hidden == 7168:
+          moe_ffn += self.num_experts                            # gate bias
+        p = self.first_k_dense * (attn + dense_ffn)
+        p += self.num_moe_blocks * (attn + moe_ffn)
+        # RoPE: no learned position embedding; untied LM head (model.py).
+        p += self.vocab_size * self.hidden                       # embed
+        p += self.vocab_size * self.hidden                       # LM head
+        p += self.hidden                                         # final norm
+        if self.include_mtp:
+          p += self.mtp_params()
+      else:
+        # Legacy dense: 2-matrix GeLU FFN + Megatron-style biases/LN/pos-emb.
+        dense_ffn = 2 * self.hidden * self.feedforward
+        dense_ffn += self.hidden + self.feedforward
+        attn_legacy = 4 * self.hidden * self.attn_heads * self.attn_size
+        attn_legacy += 3 * self.attn_heads * self.attn_size + self.hidden
+        attn_legacy += 2 * 2 * self.hidden
+        p = self.num_blocks * (attn_legacy + dense_ffn)
+        p += (self.vocab_size + self.seq_size) * self.hidden
+      return p
+
+    def num_activated_parameters(self):
+      """Parameters activated per token (dense-equivalent compute proxy)."""
+      if not self.is_moe:
+        return self.num_parameters()
+      attn = self._attn_weight_params() + 2 * self.hidden
+      dense_ffn = 3 * self.hidden * self.feedforward
+      expert_ffn = 3 * self.hidden * self.moe_feedforward
+      shared_w = 3 * self.hidden * self.num_shared_experts * self.moe_feedforward
+      router = self.hidden * self.num_experts
+      if self.hidden == 7168:
+        router += self.num_experts
+      p = self.first_k_dense * (attn + dense_ffn)
+      p += self.num_moe_blocks * (
+        attn + self.moe_topk * expert_ffn + shared_w + router)
+      p += self.vocab_size * self.hidden                         # embed
+      p += self.vocab_size * self.hidden                         # LM head
+      p += self.hidden                                           # final norm
+      if self.include_mtp:
+        p += self.mtp_params()
       return p
 
   class Execution:
@@ -58,7 +191,8 @@ class Llm:
     def fields():
       return (
         'num_procs', 'tensor_par', 'pipeline_par', 'data_par', 'tensor_par_net',
-        'pipeline_par_net', 'data_par_net', 'batch_size', 'microbatch_size',
+        'pipeline_par_net', 'data_par_net', 'expert_par', 'context_par',
+        'expert_par_net', 'context_par_net', 'batch_size', 'microbatch_size',
         'datatype', 'fused_activation', 'attention_type', 'activation_recompute',
         'pipeline_interleaving', 'optimizer_sharding', 'tensor_par_comm_type',
         'tensor_par_overlap', 'seq_par_ag_redo', 'data_par_overlap',
@@ -66,12 +200,20 @@ class Llm:
 
     @staticmethod
     def from_json(cfg):
+      # Backward compatibility: older configs without EP/CP default to degree 1
+      # on network tier 0.
+      cfg = dict(cfg)
+      cfg.setdefault('expert_par', 1)
+      cfg.setdefault('context_par', 1)
+      cfg.setdefault('expert_par_net', 0)
+      cfg.setdefault('context_par_net', 0)
       assert set(cfg.keys()) == set(Llm.Execution.fields())
       values = [cfg[field] for field in Llm.Execution.fields()]
       return Llm.Execution(*values)
 
     def __init__(self, num_procs, tensor_par, pipeline_par, data_par,
                  tensor_par_net, pipeline_par_net, data_par_net,
+                 expert_par, context_par, expert_par_net, context_par_net,
                  batch_size, microbatch_size, datatype,
                  fused_activation, attention_type, activation_recompute,
                  pipeline_interleaving, optimizer_sharding,
@@ -87,13 +229,23 @@ class Llm:
       assert self.pipeline_par > 0
       self.data_par = data_par
       assert self.data_par > 0
-      # assert self.num_procs == self.tensor_par * self.pipeline_par * \
-      #   self.data_par, 'tensor * pipeline * data parallelism != num_procs'
-      if self.num_procs != self.tensor_par * self.pipeline_par * self.data_par:
-        raise Llm.Error('tensor * pipeline * data parallelism != num_procs')
+      # EP/CP are modeled as first-class orthogonal dimensions, matching the
+      # 5D rank grid (tp, cp, ep, dp, pp) of the LLMFlowSimulator C++ engine:
+      #   num_procs == TP * PP * DP * EP * CP
+      self.expert_par = expert_par
+      assert self.expert_par > 0
+      self.context_par = context_par
+      assert self.context_par > 0
+      total_par = self.tensor_par * self.pipeline_par * self.data_par * \
+        self.expert_par * self.context_par
+      if self.num_procs != total_par:
+        raise Llm.Error(
+          'tensor * pipeline * data * expert * context parallelism != num_procs')
       self.tensor_par_net = tensor_par_net
       self.pipeline_par_net = pipeline_par_net
       self.data_par_net = data_par_net
+      self.expert_par_net = expert_par_net
+      self.context_par_net = context_par_net
       self.global_batch_size = batch_size
       assert self.global_batch_size > 0
       self.microbatch_size = microbatch_size
@@ -113,7 +265,7 @@ class Llm:
       self.datatype = datatype
       self.fused_activation = fused_activation
       self.attention_type = attention_type
-      assert self.attention_type in ['multihead', 'multiquery']
+      assert self.attention_type in ['multihead', 'multiquery', 'mla']
       self.activation_recompute = activation_recompute
       assert self.activation_recompute in ['full', 'attn_only', 'none']
       if self.activation_recompute in ['full', 'attn_only']:
@@ -158,7 +310,8 @@ class Llm:
       keys = Llm.Execution.fields()
       values = [
         self.num_procs, self.tensor_par, self.pipeline_par, self.data_par, self.tensor_par_net,
-        self.pipeline_par_net, self.data_par_net, self.global_batch_size, self.microbatch_size,
+        self.pipeline_par_net, self.data_par_net, self.expert_par, self.context_par,
+        self.expert_par_net, self.context_par_net, self.global_batch_size, self.microbatch_size,
         self.datatype, self.fused_activation, self.attention_type, self.activation_recompute,
         self.pipeline_interleaving, self.optimizer_sharding, self.tensor_par_comm_type,
         self.tensor_par_overlap, self.seq_par_ag_redo, self.data_par_overlap,
@@ -652,7 +805,204 @@ class Llm:
         j['layers'].append(layer.get_stats_json())
     return j
 
+  def _build_mla_attn_block(self):
+    """Multi-head Latent Attention (DeepSeek-V3/inference/model.py).
+
+    Weight packing matches model.py MLA (split WUQ/WQR ≡ fused wq_b, etc.):
+      WDQ/WUQ/WQR ≡ wq_a + wq_b; WDKV/WKR ≡ wkv_a; WUK/WUV ≡ wkv_b; WO ≡ wo
+
+    attn_impl:
+      absorb (default): store WUK/WUV but do not run full decompress GEMMs;
+        use q_absorb / latent·cache / pe·cache / v_absorb einsums.
+      naive: decompress K/V via WUK/WUV then standard QK / AttnV.
+    """
+    recompute_flag = self.exe.activation_recompute == "full"
+    recompute_attn_flag = self.exe.activation_recompute in ["full", "attn_only"]
+    recompute_ag_flag = recompute_attn_flag or self.exe.seq_par_ag_redo
+    tp = self.exe.tensor_par
+    app = self.app
+    absorb = app.mla_attn_impl == 'absorb'
+    assert app.attn_heads % tp == 0, (
+      f"MLA attn_heads={app.attn_heads} must divide by TP={tp}")
+    if self.exe.tensor_par_overlap != 'none':
+      raise self.Error('MLA currently requires tensor_par_overlap=none')
+
+    heads_tp = app.attn_heads // tp
+    qk_dim = app.qk_nope_head_dim + app.qk_rope_head_dim
+    v_dim = app.v_head_dim
+    mbs = self.exe.microbatch_size
+    # WUK/WUV always stored; absorb path folds them into einsums (flop_mult=0).
+    wkv_b_flops = 0.0 if absorb else 1.0
+
+    self._llm_block.append(Fork(
+      "AttnBlock_Fork", self.sys,
+      pick(self.exe._sequence_par, self._seq_par_activation_size,
+           self._activation_size),
+      2, needs_recompute=recompute_flag, activation_stored=True))
+    self._llm_block.append(LayerNorm(
+      "AttnBlock_LayerNorm", self.sys,
+      pick(self.exe._sequence_par, self._seq_par_activation_size,
+           self._activation_size),
+      app.hidden, needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True))
+    self._llm_block.append(TPComm(
+      "AttnBlock_F", self.sys, self._activation_size,
+      self.exe.tensor_par_net, tp,
+      tensor_par_comm_type=self.exe.tensor_par_comm_type,
+      conjugate=False, in_network_reduction=self.exe.in_network_reduction,
+      needs_recomm=recompute_ag_flag))
+
+    # Q path: wq_a → q_norm (scale) → wq_b (split nope/rope)
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WDQ", self.sys, self._batch_seq,
+      app.hidden, app.q_lora_rank,
+      needs_recompute=recompute_flag,
+      activation_stored=(not recompute_ag_flag)))
+    self._llm_block.append(LayerNorm(
+      "AttnBlock_MLA_QNorm", self.sys,
+      self._batch_seq * app.q_lora_rank, app.q_lora_rank,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True))
+    self._llm_block.append(Fork(
+      "AttnBlock_MLA_Q_Fork", self.sys,
+      self._batch_seq * app.q_lora_rank, 2,
+      needs_recompute=recompute_ag_flag, activation_stored=True))
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WUQ", self.sys, self._batch_seq,
+      app.q_lora_rank, heads_tp * app.qk_nope_head_dim,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True))
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WQR", self.sys, self._batch_seq,
+      app.q_lora_rank, heads_tp * app.qk_rope_head_dim,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True))
+
+    # KV path: wkv_a (split latent/rope) + wkv_b (WUK/WUV)
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WDKV", self.sys, self._batch_seq,
+      app.hidden, app.kv_lora_rank,
+      needs_recompute=recompute_flag,
+      activation_stored=(not recompute_ag_flag)))
+    self._llm_block.append(LayerNorm(
+      "AttnBlock_MLA_KVNorm", self.sys,
+      self._batch_seq * app.kv_lora_rank, app.kv_lora_rank,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True))
+    self._llm_block.append(Fork(
+      "AttnBlock_MLA_KV_Fork", self.sys,
+      self._batch_seq * app.kv_lora_rank, 2,
+      needs_recompute=recompute_ag_flag, activation_stored=True))
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WUK", self.sys, self._batch_seq,
+      app.kv_lora_rank, heads_tp * app.qk_nope_head_dim,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True,
+      flop_multiplier=wkv_b_flops))
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WUV", self.sys, self._batch_seq,
+      app.kv_lora_rank, heads_tp * v_dim,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True,
+      flop_multiplier=wkv_b_flops))
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WKR", self.sys, self._batch_seq,
+      app.hidden, app.qk_rope_head_dim,
+      needs_recompute=recompute_flag,
+      activation_stored=(not recompute_ag_flag)))
+
+    if absorb:
+      # model.py absorb: q_nope @ WUK, scores vs kv/pe cache, then @ WUV
+      self._llm_block.append(BatchMatMul(
+        "AttnBlock_MLA_QAbsorb", self.sys,
+        mbs * heads_tp,
+        app.seq_size, app.qk_nope_head_dim, app.kv_lora_rank,
+        needs_recompute=recompute_attn_flag,
+        output_stored=(not recompute_attn_flag)))
+      self._llm_block.append(BatchMatMul(
+        "AttnBlock_MLA_ScoreKV", self.sys,
+        mbs * heads_tp,
+        app.seq_size, app.kv_lora_rank, app.seq_size,
+        needs_recompute=recompute_attn_flag,
+        output_stored=(not recompute_attn_flag)))
+      self._llm_block.append(BatchMatMul(
+        "AttnBlock_MLA_ScorePE", self.sys,
+        mbs * heads_tp,
+        app.seq_size, app.qk_rope_head_dim, app.seq_size,
+        needs_recompute=recompute_attn_flag,
+        output_stored=(not recompute_attn_flag)))
+      self._llm_block.append(SoftMax(
+        "AttnBlock_Multihead_SoftMax", self.sys,
+        heads_tp * app.seq_size**2 * mbs,
+        needs_recompute=recompute_attn_flag,
+        output_stored=(not recompute_attn_flag)))
+      self._llm_block.append(DropOut(
+        "AttnBlock_Multihead_DropOut", self.sys,
+        heads_tp * app.seq_size**2 * mbs,
+        needs_recompute=recompute_attn_flag,
+        activation_stored=(not recompute_attn_flag)))
+      self._llm_block.append(BatchMatMul(
+        "AttnBlock_MLA_AttnKV", self.sys,
+        mbs * heads_tp,
+        app.seq_size, app.seq_size, app.kv_lora_rank,
+        needs_recompute=recompute_flag))
+      self._llm_block.append(BatchMatMul(
+        "AttnBlock_MLA_VAbsorb", self.sys,
+        mbs * heads_tp,
+        app.seq_size, app.kv_lora_rank, v_dim,
+        needs_recompute=recompute_flag))
+    else:
+      # naive: full QK on (nope+rope), AttnV on v_dim
+      self._llm_block.append(BatchMatMul(
+        "AttnBlock_Multihead_Key_Query", self.sys,
+        mbs * heads_tp,
+        app.seq_size, qk_dim, app.seq_size,
+        needs_recompute=recompute_attn_flag,
+        output_stored=(not recompute_attn_flag)))
+      self._llm_block.append(SoftMax(
+        "AttnBlock_Multihead_SoftMax", self.sys,
+        heads_tp * app.seq_size**2 * mbs,
+        needs_recompute=recompute_attn_flag,
+        output_stored=(not recompute_attn_flag)))
+      self._llm_block.append(DropOut(
+        "AttnBlock_Multihead_DropOut", self.sys,
+        heads_tp * app.seq_size**2 * mbs,
+        needs_recompute=recompute_attn_flag,
+        activation_stored=(not recompute_attn_flag)))
+      self._llm_block.append(BatchMatMul(
+        "AttnBlock_Multihead_Attn", self.sys,
+        mbs * heads_tp,
+        app.seq_size, app.seq_size, v_dim,
+        needs_recompute=recompute_flag))
+
+    self._llm_block.append(Linear(
+      "AttnBlock_MLA_WO", self.sys, self._batch_seq,
+      heads_tp * v_dim, app.hidden,
+      needs_recompute=recompute_flag))
+    self._llm_block.append(TPComm(
+      "AttnBlock_G", self.sys, self._activation_size,
+      self.exe.tensor_par_net, tp,
+      tensor_par_comm_type=self.exe.tensor_par_comm_type,
+      conjugate=True, in_network_reduction=self.exe.in_network_reduction,
+      needs_recomm=recompute_flag, activation_stored=False))
+    self._llm_block.append(DropOut(
+      "AttnBlock_DropOut", self.sys,
+      pick(self.exe._sequence_par, self._seq_par_activation_size,
+           self._activation_size),
+      needs_recompute=recompute_flag))
+    self._llm_block.append(ElementWise(
+      "AttnBlock_Residual", self.sys,
+      pick(self.exe._sequence_par, self._seq_par_activation_size,
+           self._activation_size),
+      pick(self.exe._sequence_par, self._seq_par_activation_size,
+           self._activation_size),
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True))
+
   def _build_attn_block(self):
+    if self.app.is_mla or self.exe.attention_type == 'mla':
+      self._build_mla_attn_block()
+      return
     recompute_flag = self.exe.activation_recompute == "full"
     recompute_attn_flag = self.exe.activation_recompute in \
       ["full", "attn_only"]
@@ -915,9 +1265,18 @@ class Llm:
       activation_stored=False,
       activation_reused=True))
 
-  def _build_mlp_block(self):
+  def _build_mlp_block(self, ffn_mode='gelu'):
+    """Build MLP/FFN block.
+
+    ffn_mode:
+      'gelu'   — legacy 2-matrix GeLU (dense models)
+      'swiglu' — dense SwiGLU 3-matrix (DeepSeek dense prefix)
+      'moe'    — MoE SwiGLU: store EP-local experts, charge topk/EP+shared FLOPs
+    """
     recompute_flag = self.exe.activation_recompute == "full"
     recompute_ag_flag = recompute_flag or self.exe.seq_par_ag_redo
+    tp = self.exe.tensor_par
+    app = self.app
 
     self._llm_block.append(Fork(
       "MlpBlock_Fork",
@@ -926,120 +1285,158 @@ class Llm:
            self._activation_size),
       2,
       needs_recompute=recompute_flag,
-      # We account this activation when consider Residual and LayerNorm
       activation_stored=True))
     self._llm_block.append(LayerNorm(
       "MlpBlock_LayerNorm",
       self.sys,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
-      self.app.hidden,
+      app.hidden,
       needs_recompute=recompute_flag,
-      # Activation is stored in Fork instead
       activation_stored=False,
       activation_reused=True))
-    if self.exe.tensor_par_overlap == 'none':
-      self._llm_block.append(TPComm(
-        "MlpBlock_F",
-        self.sys,
-        # We only do compute/mem analyzing this layers, comm analyzed later
-        # We keep extra mem buffer for comm, consider full tensor mem access
-        # to be consistent with how much data comm moves/touches
-        # This is conservative estimate that does not consider p2p_rs_ag
-        # because we don't differentiate between edge and middle blocks here
-        self._activation_size,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        tensor_par_comm_type=self.exe.tensor_par_comm_type,
-        conjugate=False,
-        in_network_reduction=self.exe.in_network_reduction,
-        needs_recomm=recompute_ag_flag))
-      self._llm_block.append(Linear(
-        "MlpBlock_Mlp1",
-        self.sys,
-        self._batch_seq,
-        self.app.hidden,
-        self.app.feedforward // self.exe.tensor_par,
-        needs_recompute=recompute_flag,
-        # With seq_par, we use activations from Comm layers to reflect that
-        # they're split, otherwise we keep full size activations
-        activation_stored=(not recompute_ag_flag)))
+
+    if ffn_mode == 'moe':
+      self._build_moe_swiglu_ffn(recompute_flag, recompute_ag_flag)
+    elif ffn_mode == 'swiglu':
+      self._build_swiglu_ffn(
+        app.feedforward, recompute_flag, recompute_ag_flag,
+        weight_multiplier=1.0, flop_multiplier=1.0, name_prefix='MlpBlock')
     else:
-      self._llm_block.append(LinearOverlapped(
-        "MlpBlock_Mlp1_AG",
-        self.sys,
-        self._batch_seq,
-        self.app.hidden,
-        self.app.feedforward,
-        self.exe.tensor_par_comm_type,
-        self.exe.tensor_par,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        conjugate=False,
-        tp_overlap=self.exe.tensor_par_overlap,
-        needs_recompute=recompute_flag,
-        needs_recomm=recompute_ag_flag))
-    self._llm_block.append(GeLU(
-      "MlpBlock_GeLU",
-      self.sys,
-      self.app.feedforward * self._batch_seq // self.exe.tensor_par,
-      needs_recompute=recompute_flag,
-      fused=self.exe.fused_activation))
-    if self.exe.tensor_par_overlap == 'none':
-      self._llm_block.append(Linear(
-        "MlpBlock_Mlp2",
-        self.sys,
-        self._batch_seq,
-        self.app.feedforward // self.exe.tensor_par,
-        self.app.hidden,
-        needs_recompute=recompute_flag))
-      self._llm_block.append(TPComm(
-        "MlpBlock_G",
-        self.sys,
-        self._activation_size,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        # We only compute flops/mem analyzing this layers, comm analyzed later
-        # This is conservative estimate that does not consider p2p_rs_ag
-        # because we don't differentiate between edge and middle blocks here
-        tensor_par_comm_type=self.exe.tensor_par_comm_type,
-        conjugate=True,
-        in_network_reduction=self.exe.in_network_reduction,
-        needs_recomm=recompute_flag,
-        # We don't store input to RS/AR
-        activation_stored=False))
-    else:
-      self._llm_block.append(LinearOverlapped(
-        "MlpBlock_Mlp2_RS",
-        self.sys,
-        self._batch_seq,
-        self.app.feedforward,
-        self.app.hidden,
-        self.exe.tensor_par_comm_type,
-        self.exe.tensor_par,
-        self.exe.tensor_par_net,
-        self.exe.tensor_par,
-        conjugate=True,
-        tp_overlap=self.exe.tensor_par_overlap,
-        needs_recompute=recompute_flag,
-        needs_recomm=recompute_flag))
+      # Legacy GeLU 2-matrix path (unchanged for dense models)
+      if self.exe.tensor_par_overlap == 'none':
+        self._llm_block.append(TPComm(
+          "MlpBlock_F", self.sys, self._activation_size,
+          self.exe.tensor_par_net, tp,
+          tensor_par_comm_type=self.exe.tensor_par_comm_type,
+          conjugate=False, in_network_reduction=self.exe.in_network_reduction,
+          needs_recomm=recompute_ag_flag))
+        self._llm_block.append(Linear(
+          "MlpBlock_Mlp1", self.sys, self._batch_seq,
+          app.hidden, app.feedforward // tp,
+          needs_recompute=recompute_flag,
+          activation_stored=(not recompute_ag_flag)))
+      else:
+        self._llm_block.append(LinearOverlapped(
+          "MlpBlock_Mlp1_AG", self.sys, self._batch_seq,
+          app.hidden, app.feedforward,
+          self.exe.tensor_par_comm_type, tp,
+          self.exe.tensor_par_net, tp,
+          conjugate=False, tp_overlap=self.exe.tensor_par_overlap,
+          needs_recompute=recompute_flag, needs_recomm=recompute_ag_flag))
+      self._llm_block.append(GeLU(
+        "MlpBlock_GeLU", self.sys,
+        app.feedforward * self._batch_seq // tp,
+        needs_recompute=recompute_flag, fused=self.exe.fused_activation))
+      if self.exe.tensor_par_overlap == 'none':
+        self._llm_block.append(Linear(
+          "MlpBlock_Mlp2", self.sys, self._batch_seq,
+          app.feedforward // tp, app.hidden,
+          needs_recompute=recompute_flag))
+        self._llm_block.append(TPComm(
+          "MlpBlock_G", self.sys, self._activation_size,
+          self.exe.tensor_par_net, tp,
+          tensor_par_comm_type=self.exe.tensor_par_comm_type,
+          conjugate=True, in_network_reduction=self.exe.in_network_reduction,
+          needs_recomm=recompute_flag, activation_stored=False))
+      else:
+        self._llm_block.append(LinearOverlapped(
+          "MlpBlock_Mlp2_RS", self.sys, self._batch_seq,
+          app.feedforward, app.hidden,
+          self.exe.tensor_par_comm_type, tp,
+          self.exe.tensor_par_net, tp,
+          conjugate=True, tp_overlap=self.exe.tensor_par_overlap,
+          needs_recompute=recompute_flag, needs_recomm=recompute_flag))
+
     self._llm_block.append(DropOut(
-      "MlpBlock_DropOut",
-      self.sys,
+      "MlpBlock_DropOut", self.sys,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       needs_recompute=recompute_flag))
     self._llm_block.append(ElementWise(
-      "MlpBlock_Residual",
-      self.sys,
+      "MlpBlock_Residual", self.sys,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       needs_recompute=recompute_flag,
-      # Activation is stored in Fork instead
-      activation_stored=False,
-      activation_reused=True))
+      activation_stored=False, activation_reused=True))
+
+  def _build_swiglu_ffn(self, ffn_width, recompute_flag, recompute_ag_flag,
+                        weight_multiplier=1.0, flop_multiplier=1.0,
+                        name_prefix='MlpBlock'):
+    """3-matrix SwiGLU FFN: gate/up/down with SiLU(gate)*up."""
+    tp = self.exe.tensor_par
+    app = self.app
+    assert ffn_width % tp == 0, (
+      f"FFN width {ffn_width} must divide by TP={tp}")
+    if self.exe.tensor_par_overlap != 'none':
+      raise self.Error('SwiGLU/MoE currently requires tensor_par_overlap=none')
+    f_tp = ffn_width // tp
+    wm, fm = weight_multiplier, flop_multiplier
+
+    self._llm_block.append(TPComm(
+      f"{name_prefix}_F", self.sys, self._activation_size,
+      self.exe.tensor_par_net, tp,
+      tensor_par_comm_type=self.exe.tensor_par_comm_type,
+      conjugate=False, in_network_reduction=self.exe.in_network_reduction,
+      needs_recomm=recompute_ag_flag))
+    self._llm_block.append(Fork(
+      f"{name_prefix}_SwiGLU_Fork", self.sys, self._activation_size, 2,
+      needs_recompute=recompute_ag_flag,
+      activation_stored=(not recompute_ag_flag)))
+    self._llm_block.append(Linear(
+      f"{name_prefix}_Gate", self.sys, self._batch_seq,
+      app.hidden, f_tp,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True,
+      weight_multiplier=wm, flop_multiplier=fm))
+    self._llm_block.append(Linear(
+      f"{name_prefix}_Up", self.sys, self._batch_seq,
+      app.hidden, f_tp,
+      needs_recompute=recompute_flag,
+      activation_stored=False, activation_reused=True,
+      weight_multiplier=wm, flop_multiplier=fm))
+    self._llm_block.append(SiLU(
+      f"{name_prefix}_SiLU", self.sys, f_tp * self._batch_seq,
+      needs_recompute=recompute_flag, fused=self.exe.fused_activation))
+    self._llm_block.append(ElementWise(
+      f"{name_prefix}_GateUp", self.sys,
+      f_tp * self._batch_seq, f_tp * self._batch_seq,
+      needs_recompute=recompute_flag))
+    self._llm_block.append(Linear(
+      f"{name_prefix}_Down", self.sys, self._batch_seq,
+      f_tp, app.hidden,
+      needs_recompute=recompute_flag,
+      weight_multiplier=wm, flop_multiplier=fm))
+    self._llm_block.append(TPComm(
+      f"{name_prefix}_G", self.sys, self._activation_size,
+      self.exe.tensor_par_net, tp,
+      tensor_par_comm_type=self.exe.tensor_par_comm_type,
+      conjugate=True, in_network_reduction=self.exe.in_network_reduction,
+      needs_recomm=recompute_flag, activation_stored=False))
+
+  def _build_moe_swiglu_ffn(self, recompute_flag, recompute_ag_flag):
+    """MoE SwiGLU: EP-sharded expert weights, activated FLOPs = topk/EP + shared."""
+    app = self.app
+    ep = self.exe.expert_par
+    assert app.num_experts % ep == 0, (
+      f"num_experts={app.num_experts} must divide by EP={ep}")
+    experts_stored = app.num_experts // ep + app.num_shared_experts
+    # Per-rank useful compute: routed work split by EP, shared replicated.
+    active_equiv = app.moe_topk / ep + app.num_shared_experts
+
+    # Router is typically replicated on each EP rank (gate then dispatch).
+    self._llm_block.append(Linear(
+      "MlpBlock_Router", self.sys, self._batch_seq,
+      app.hidden, app.num_experts,
+      needs_recompute=recompute_flag,
+      activation_stored=(not recompute_ag_flag)))
+
+    self._build_swiglu_ffn(
+      app.moe_feedforward, recompute_flag, recompute_ag_flag,
+      weight_multiplier=experts_stored, flop_multiplier=active_equiv,
+      name_prefix='MlpBlock_MoE')
 
   def compile(self, sys, exe):
     assert not self._compiled
@@ -1099,12 +1496,33 @@ class Llm:
         f"We should split batch_seq={self._batch_seq} between"
         f" {self.exe.tensor_par} TP partitions evenly")
     self._seq_par_activation_size = self._batch_seq_par * self.app.hidden
-    self._build_attn_block()
-    self._build_mlp_block()
+    self._dense_layers = None
+    self._moe_layers = None
+    if self.app.is_moe:
+      # Dense prefix template (SwiGLU) + MoE body template; stats blended later.
+      self._llm_block = []
+      self._build_attn_block()
+      self._build_mlp_block(ffn_mode='swiglu')
+      self._dense_layers = list(self._llm_block)
+
+      self._llm_block = []
+      self._build_attn_block()
+      self._build_mlp_block(ffn_mode='moe')
+      self._moe_layers = list(self._llm_block)
+      # Default iteration target = MoE body (majority of layers).
+      self._llm_block = self._moe_layers
+    else:
+      self._build_attn_block()
+      self._build_mlp_block(ffn_mode='gelu')
     for layer in self._llm_block:
       layer.set_bytes_per_element(self._bytes_per_element)
       if self.exe.optimizer_sharding:
         layer.shard_optimizer(self.exe.data_par)
+    if self._dense_layers is not None:
+      for layer in self._dense_layers:
+        layer.set_bytes_per_element(self._bytes_per_element)
+        if self.exe.optimizer_sharding:
+          layer.shard_optimizer(self.exe.data_par)
     self._compiled = True
 
   def _check_network_assignments(self):
@@ -1131,7 +1549,9 @@ class Llm:
     self._dp_net = self.sys.get_network(self.exe.data_par_net)
 
     self._flow_net = self.sys.get_network(0)
-    self._flow_net.flow_network_init(self._dp_net._bw, self._tp_net._bw, self._dp_net._topology)
+    self._flow_net.flow_network_init(
+      self._dp_net.effective_bandwidth, self._tp_net.effective_bandwidth,
+      self._dp_net._topology)
 
     for tier_used, tier_size, tier in zip(
         used, size, range(self.sys.num_networks)):
@@ -1142,6 +1562,46 @@ class Llm:
             self.sys.get_network(tier).size % tier_size != 0):
           raise self.Error(f'Network tier{tier} isn\'t fully used')
 
+  _BLOCK_STAT_ATTRS = (
+    '_block_fw_flops', '_block_fw_flops_time', '_block_fw_mem_accessed',
+    '_block_fw_mem_time', '_block_fw_time',
+    '_baseblock_fw_tp_size', '_edgeblock_fw_tp_size',
+    '_baseblock_fw_tp_time', '_edgeblock_fw_tp_time',
+    '_baseblock_fw_tp_time_exposed', '_edgeblock_fw_tp_time_exposed',
+    '_block_weight_space', '_block_act_working_space', '_block_act_storage_space',
+    '_block_re_flops', '_block_re_flops_time', '_block_re_mem_accessed',
+    '_block_re_mem_time', '_block_re_time',
+    '_baseblock_recomm_size', '_edgeblock_recomm_size',
+    '_baseblock_recomm_time', '_edgeblock_recomm_time',
+    '_baseblock_recomm_time_exposed', '_edgeblock_recomm_time_exposed',
+    '_block_agrad_flops', '_block_agrad_flops_time', '_block_agrad_mem_accessed',
+    '_block_agrad_mem_time', '_block_agrad_time',
+    '_baseblock_agrad_tp_size', '_edgeblock_agrad_tp_size',
+    '_baseblock_agrad_tp_time', '_edgeblock_agrad_tp_time',
+    '_baseblock_agrad_tp_time_exposed', '_edgeblock_agrad_tp_time_exposed',
+    '_block_wgrad_flops', '_block_wgrad_flops_time', '_block_wgrad_mem_accessed',
+    '_block_wgrad_mem_time', '_block_wgrad_time',
+    '_block_optim_flops', '_block_optim_flops_time', '_block_optim_mem_accessed',
+    '_block_optim_mem_time', '_block_optim_time',
+    '_block_weight_grad_space', '_block_weight_grad_space_no_sharding',
+    '_block_act_grad_space', '_block_optimizer_space',
+    '_tp_bw_overlap_req', '_block_act_checkpoint_size',
+  )
+
+  def _capture_block_stats(self):
+    return {k: getattr(self, k) for k in self._BLOCK_STAT_ATTRS}
+
+  def _blend_block_stats(self, dense, moe):
+    nd = self.app.first_k_dense
+    nm = self.app.num_moe_blocks
+    n = self.app.num_blocks
+    for k in self._BLOCK_STAT_ATTRS:
+      dv, mv = dense[k], moe[k]
+      if k == '_tp_bw_overlap_req':
+        setattr(self, k, max(dv, mv))
+      else:
+        setattr(self, k, (nd * dv + nm * mv) / n)
+
   def _compute_block_stats(self):
     """
     This function computes the statistics for one microbatch on a single block.
@@ -1149,6 +1609,21 @@ class Llm:
     tensor and pipeline parallelism cause different communication operations to
     occur at the full batch level, the communication times are computed later.
     """
+    if self.app.is_moe and self._dense_layers is not None:
+      saved = self._llm_block
+      self._llm_block = self._dense_layers
+      self._compute_block_stats_homogeneous()
+      dense = self._capture_block_stats()
+      self._llm_block = self._moe_layers
+      self._compute_block_stats_homogeneous()
+      moe = self._capture_block_stats()
+      self._blend_block_stats(dense, moe)
+      self._llm_block = saved
+      return
+    self._compute_block_stats_homogeneous()
+
+  def _compute_block_stats_homogeneous(self):
+    """Accumulate stats over a single homogeneous block template."""
     if self.exe.training and self.exe.activation_recompute == "full":
       self._block_act_checkpoint_size = \
         self._activation_size * self._bytes_per_element
@@ -1505,6 +1980,39 @@ class Llm:
     self._pp_fw_comm_size = self._blocks_per_proc * self._block_fw_pp_size
     self._pp_bw_comm_size = self._blocks_per_proc * self._block_bw_pp_size
 
+    # EP all-to-all comm size (per microbatch, per rank): MoE token dispatch
+    # and combine across the expert-parallel group. Fired once per microbatch
+    # forward/backward by the flow simulator, so sizes aggregate all MoE layers
+    # hosted on this rank.
+    if self.app.is_moe and self.exe.expert_par > 1:
+      tokens = self.exe.microbatch_size * self.app.seq_size
+      # Uniform routing: (EP-1)/EP of dispatched tokens leave this rank.
+      locality = (self.exe.expert_par - 1) / self.exe.expert_par
+      # Approximation: MoE layers are uniformly spread over pipeline stages.
+      moe_blocks_per_proc = self.app.num_moe_blocks / self.exe.pipeline_par
+      ep_layer_fw = 2 * tokens * self.app.moe_topk * self.app.hidden * \
+        self._bytes_per_element * locality
+      self._ep_fw_comm_size = int(moe_blocks_per_proc * ep_layer_fw)
+      # Backward: gradients of combine and dispatch, 2x forward volume.
+      self._ep_bw_comm_size = 2 * self._ep_fw_comm_size
+    else:
+      self._ep_fw_comm_size = 0
+      self._ep_bw_comm_size = 0
+
+    # CP ring-attention comm size (per microbatch, per rank): each rank passes
+    # its K/V chunk around the ring for CP-1 hops per attention layer.
+    if self.exe.context_par > 1:
+      cp_chunk = 2 * self.exe.microbatch_size * \
+        (self.app.seq_size / self.exe.context_par) * self.app.kv_size * \
+        self._bytes_per_element
+      self._cp_fw_comm_size = int(self._blocks_per_proc * \
+        (self.exe.context_par - 1) * cp_chunk)
+      # Backward: dK/dV ring passes, 2x forward volume.
+      self._cp_bw_comm_size = 2 * self._cp_fw_comm_size
+    else:
+      self._cp_fw_comm_size = 0
+      self._cp_bw_comm_size = 0
+
     # These TP numbers are for total times for all blocks in all chunks
     tp_fw_comm_time = self.exe._num_microbatches * self._chunks_per_proc * (
       (self._baseblocks_per_chunk * self._baseblock_fw_tp_time) +
@@ -1750,6 +2258,10 @@ class Llm:
     self.log.debug("%s %s", 'TP comm BW size:', self._tp_bw_comm_size)
     self.log.debug("%s %s", 'PP comm FW size:', self._pp_fw_comm_size)
     self.log.debug("%s %s", 'PP comm BW size:', self._pp_bw_comm_size)
+    self.log.debug("%s %s", 'EP comm FW size:', self._ep_fw_comm_size)
+    self.log.debug("%s %s", 'EP comm BW size:', self._ep_bw_comm_size)
+    self.log.debug("%s %s", 'CP comm FW size:', self._cp_fw_comm_size)
+    self.log.debug("%s %s", 'CP comm BW size:', self._cp_bw_comm_size)
 
     # DP overlap happens if DP time for a previous block(s) is lower than
     # microbatch BW pass time for next pack of consecutive blocks
@@ -2175,14 +2687,17 @@ class Llm:
     self.log.info("wxftest computing flow network result with timeline")
     result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
+      ep=self.exe.expert_par, cp=self.exe.context_par,
       fwdCompTime=self._block_fw_time * self._blocks_per_proc,
       bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
-      microbatches=self.exe._num_microbatches, 
-      fwdTPSize=self._tp_fw_comm_size, 
-      bwdTPSize=self._tp_bw_comm_size, 
-      fwdPPSize=self._pp_fw_comm_size, 
-      bwdPPSize=self._pp_bw_comm_size, 
+      microbatches=self.exe._num_microbatches,
+      fwdTPSize=self._tp_fw_comm_size,
+      bwdTPSize=self._tp_bw_comm_size,
+      fwdPPSize=self._pp_fw_comm_size,
+      bwdPPSize=self._pp_bw_comm_size,
       dpSize=self._dp_comm_size,
+      fwd_ep_size=self._ep_fw_comm_size, bwd_ep_size=self._ep_bw_comm_size,
+      fwd_cp_size=self._cp_fw_comm_size, bwd_cp_size=self._cp_bw_comm_size,
       enable_timeline=True)
     
     # 缓存结果
@@ -2203,14 +2718,17 @@ class Llm:
     self.log.info("wxftest computing flow network result without timeline for total comm time")
     network_result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
+      ep=self.exe.expert_par, cp=self.exe.context_par,
       fwdCompTime=self._block_fw_time * self._blocks_per_proc,
       bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
-      microbatches=self.exe._num_microbatches, 
-      fwdTPSize=self._tp_fw_comm_size, 
-      bwdTPSize=self._tp_bw_comm_size, 
-      fwdPPSize=self._pp_fw_comm_size, 
-      bwdPPSize=self._pp_bw_comm_size, 
+      microbatches=self.exe._num_microbatches,
+      fwdTPSize=self._tp_fw_comm_size,
+      bwdTPSize=self._tp_bw_comm_size,
+      fwdPPSize=self._pp_fw_comm_size,
+      bwdPPSize=self._pp_bw_comm_size,
       dpSize=self._dp_comm_size,
+      fwd_ep_size=self._ep_fw_comm_size, bwd_ep_size=self._ep_bw_comm_size,
+      fwd_cp_size=self._cp_fw_comm_size, bwd_cp_size=self._cp_bw_comm_size,
       enable_timeline=False)  # 不需要timeline数据
     
     # 将结果存入缓存
@@ -2233,14 +2751,17 @@ class Llm:
     self.log.info("wxftest computing flow network result without timeline for global time")
     network_result = self._flow_net.total_flow_network_time(
       pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
+      ep=self.exe.expert_par, cp=self.exe.context_par,
       fwdCompTime=self._block_fw_time * self._blocks_per_proc,
       bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
-      microbatches=self.exe._num_microbatches, 
-      fwdTPSize=self._tp_fw_comm_size, 
-      bwdTPSize=self._tp_bw_comm_size, 
-      fwdPPSize=self._pp_fw_comm_size, 
-      bwdPPSize=self._pp_bw_comm_size, 
+      microbatches=self.exe._num_microbatches,
+      fwdTPSize=self._tp_fw_comm_size,
+      bwdTPSize=self._tp_bw_comm_size,
+      fwdPPSize=self._pp_fw_comm_size,
+      bwdPPSize=self._pp_bw_comm_size,
       dpSize=self._dp_comm_size,
+      fwd_ep_size=self._ep_fw_comm_size, bwd_ep_size=self._ep_bw_comm_size,
+      fwd_cp_size=self._cp_fw_comm_size, bwd_cp_size=self._cp_bw_comm_size,
       enable_timeline=False)  # 不需要timeline数据
     
     # 将结果存入缓存
@@ -2280,6 +2801,19 @@ class Llm:
     return time
 
   def get_useful_flops(self):
+    if self.app.is_moe and self._dense_layers is not None:
+      dense = sum(b.get_fw_flops() for b in self._dense_layers)
+      moe = sum(b.get_fw_flops() for b in self._moe_layers)
+      if self.exe.training:
+        dense += sum(
+          b.get_agrad_flops() + b.get_wgrad_flops() + b.get_optim_step_flops()
+          for b in self._dense_layers)
+        moe += sum(
+          b.get_agrad_flops() + b.get_wgrad_flops() + b.get_optim_step_flops()
+          for b in self._moe_layers)
+      nd, nm, n = (self.app.first_k_dense, self.app.num_moe_blocks,
+                   self.app.num_blocks)
+      return (nd * dense + nm * moe) / n
     total_flops = sum(
       [block.get_fw_flops() for block in self._llm_block])
     if self.exe.training:

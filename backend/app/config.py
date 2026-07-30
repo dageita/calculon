@@ -207,7 +207,32 @@ class Settings(BaseSettings):
             num_blocks=80,
             vocab_size=32000 
         ),
- 
+        # https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json
+        # MoE: 61 层 = 3 dense + 58 MoE；256 路由专家 + 1 共享专家，topk=8；
+        # kv_size = kv_lora_rank(512) + qk_rope_head_dim(64)（MLA 压缩 KV）。
+        Model(
+            name="DeepSeek-V3 671B",
+            seq_size=4096,
+            hidden=7168,
+            feedforward=18432,
+            attn_heads=128,
+            attn_size=128,
+            num_blocks=61,
+            vocab_size=129280,
+            num_experts=256,
+            moe_topk=8,
+            num_shared_experts=1,
+            moe_feedforward=2048,
+            first_k_dense=3,
+            moe_layer_freq=1,
+            kv_size=576,
+            q_lora_rank=1536,
+            kv_lora_rank=512,
+            qk_nope_head_dim=128,
+            qk_rope_head_dim=64,
+            v_head_dim=128,
+        ),
+
     ]
 
     class Config:

@@ -121,16 +121,20 @@ class Runner(calculon.CommandLine):
         microbatch_pp_fw_comm = pp_fw_comm / model.exe._num_microbatches if model.exe._num_microbatches > 0 else 0
         microbatch_pp_bw_comm = pp_bw_comm / model.exe._num_microbatches if model.exe._num_microbatches > 0 else 0
         total_comm_time = total_comm
+        batch_ep_fw_comm = batch_ep_bw_comm = batch_ep_comm = 0
+        batch_cp_fw_comm = batch_cp_bw_comm = batch_cp_comm = 0
     else:
         # 新版本，包含timeline数据和新的通信时间数据
-        (global_time, batch_tp_fw_comm, batch_tp_bw_comm, 
+        (global_time, batch_tp_fw_comm, batch_tp_bw_comm,
          batch_pp_fw_comm, batch_pp_bw_comm, batch_dp_comm,
          batch_tp_comm, batch_pp_comm,
-         microbatch_tp_fw_comm, microbatch_tp_bw_comm, 
-         microbatch_pp_fw_comm, microbatch_pp_bw_comm, 
+         microbatch_tp_fw_comm, microbatch_tp_bw_comm,
+         microbatch_pp_fw_comm, microbatch_pp_bw_comm,
          total_comm_time,
-         timeline_event_count, timeline_ranks, timeline_event_types, 
-         timeline_microbatches, timeline_start_times, timeline_end_times) = network_result
+         timeline_event_count, timeline_ranks, timeline_event_types,
+         timeline_microbatches, timeline_start_times, timeline_end_times,
+         batch_ep_fw_comm, batch_ep_bw_comm, batch_ep_comm,
+         batch_cp_fw_comm, batch_cp_bw_comm, batch_cp_comm) = network_result
         
         # 构建timeline事件列表
         timeline_events = []
@@ -209,6 +213,16 @@ class Runner(calculon.CommandLine):
             "microbatch_tp_bw_comm_time": microbatch_tp_bw_comm,
             "microbatch_pp_fw_comm_time": microbatch_pp_fw_comm,
             "microbatch_pp_bw_comm_time": microbatch_pp_bw_comm,
+            "ep_comm_fw_size": human_format(model._ep_fw_comm_size, 'bytes'),
+            "ep_comm_bw_size": human_format(model._ep_bw_comm_size, 'bytes'),
+            "cp_comm_fw_size": human_format(model._cp_fw_comm_size, 'bytes'),
+            "cp_comm_bw_size": human_format(model._cp_bw_comm_size, 'bytes'),
+            "batch_ep_fw_comm_time": batch_ep_fw_comm,
+            "batch_ep_bw_comm_time": batch_ep_bw_comm,
+            "batch_ep_comm_time": batch_ep_comm,
+            "batch_cp_fw_comm_time": batch_cp_fw_comm,
+            "batch_cp_bw_comm_time": batch_cp_bw_comm,
+            "batch_cp_comm_time": batch_cp_comm,
             "total_comm_time": total_comm_time,
         },
         "timeline_events": timeline_events,

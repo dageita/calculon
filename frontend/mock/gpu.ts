@@ -21,7 +21,7 @@ export default {
     'GET /llm_training_calculator/network': (req: any, res: any) => {
         res.send({
             "network_bandwidth": 0,
-            "network_topology": ["Single machine", "One big switch", "Spine-leaf"]
+            "network_topology": ["Single machine", "One big switch", "Host aggregated one switch", "Spine-leaf"]
         })
     },
 

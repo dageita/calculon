@@ -40,6 +40,22 @@ const PARAMS_LIST = [
     max: 10000,
     precision: 0,
     step: 1
+  },
+  {
+    title: 'Expert parallel degree',
+    key: 'expert_par',
+    min: 1,
+    max: 10000,
+    precision: 0,
+    step: 1
+  },
+  {
+    title: 'Context parallel degree',
+    key: 'context_par',
+    min: 1,
+    max: 10000,
+    precision: 0,
+    step: 1
   }
 ];
 
@@ -205,7 +221,7 @@ const OtherPanel = (props) => {
       </div>
 
       <div className={styles.slider_tip}>
-        <span style={{color:otherConfig['tensor_par'] * otherConfig['pipeline_par'] *otherConfig['data_par'] ==curGpu.num_procs? '': '#ff4d4f'}} >{t('pp_dp_tp_recommend', {value: curGpu.num_procs})}</span>
+        <span style={{color:otherConfig['tensor_par'] * otherConfig['pipeline_par'] *otherConfig['data_par'] * (otherConfig['expert_par'] || 1) * (otherConfig['context_par'] || 1) ==curGpu.num_procs? '': '#ff4d4f'}} >{t('pp_dp_tp_recommend', {value: curGpu.num_procs})}</span>
       </div>
 
       <div className={styles['group_slider']}>

@@ -24,12 +24,28 @@ class Model(BaseModel):
     attn_size: int = None
     num_blocks: int = None
     vocab_size: int = None
+    # MoE 架构字段（缺省表示 dense 模型）
+    num_experts: int = None        # n_routed_experts
+    moe_topk: int = None           # num_experts_per_tok
+    num_shared_experts: int = None
+    moe_feedforward: int = None    # moe_intermediate_size
+    first_k_dense: int = None      # first_k_dense_replace
+    moe_layer_freq: int = None
+    kv_size: int = None            # CP KV 维度（MLA: kv_lora_rank + qk_rope_head_dim）
+    # MLA 字段
+    q_lora_rank: int = None
+    kv_lora_rank: int = None
+    qk_nope_head_dim: int = None
+    qk_rope_head_dim: int = None
+    v_head_dim: int = None
 
 class TrainningConfig(BaseModel):
     optimization_strategy: str = None  # 优化策略
     tensor_par: int = None
     pipeline_par: int = None
     data_par: int = None
+    expert_par: int = None   # 专家并行度，缺省 1
+    context_par: int = None  # 上下文并行度，缺省 1
     batch_size: int = None
     microbatch_size: int = None
     datatype: str = None  # 数据类型

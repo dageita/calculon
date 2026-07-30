@@ -43,6 +43,12 @@ class Communication(BaseModel):
     per_loop_p2p_time: float = 0
     word_embedding_allreduce_time: float = 0
     gradient_allreduce_time: float = 0
+    batch_ep_fw_comm_time: float = 0
+    batch_ep_bw_comm_time: float = 0
+    batch_ep_comm_time: float = 0
+    batch_cp_fw_comm_time: float = 0
+    batch_cp_bw_comm_time: float = 0
+    batch_cp_comm_time: float = 0
 
 
 class Timeline(BaseModel):

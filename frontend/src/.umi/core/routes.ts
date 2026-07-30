@@ -1,6 +1,6 @@
 // @ts-nocheck
 import React from 'react';
-import { ApplyPluginsType } from 'D:/works/LLM/trainer/llm-training-calculator/frontend/node_modules/@umijs/runtime';
+import { ApplyPluginsType } from '/src/Simulator/calculon/frontend/node_modules/@umijs/runtime';
 import * as umiExports from './umiExports';
 import { plugin } from './plugin';
 

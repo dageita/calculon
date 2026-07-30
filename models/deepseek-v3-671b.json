@@ -1,0 +1,23 @@
+{
+  "hidden": 7168,
+  "feedforward": 18432,
+  "seq_size": 4096,
+  "attn_heads": 128,
+  "attn_size": 128,
+  "num_blocks": 61,
+  "vocab_size": 129280,
+  "num_experts": 256,
+  "moe_topk": 8,
+  "num_shared_experts": 1,
+  "moe_feedforward": 2048,
+  "first_k_dense": 3,
+  "moe_layer_freq": 1,
+  "kv_size": 576,
+  "q_lora_rank": 1536,
+  "kv_lora_rank": 512,
+  "qk_nope_head_dim": 128,
+  "qk_rope_head_dim": 64,
+  "v_head_dim": 128,
+  "mla_attn_impl": "absorb",
+  "num_nextn_predict_layers": 1
+}
