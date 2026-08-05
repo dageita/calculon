@@ -5,7 +5,9 @@ const ProjectModel = ({ set, get }: any = {}) => ({
   curModel: null as any, // 当前选择的Model
   modelMetrics: null as any, // Model Metrics，根据所选择的model和minibatch size计算而来
   otherConfig: {
-    // optimization_strategy: 'No recomputation'
+    activation_recompute: 'full',
+    optimization_strategy: 'Full recomputation',
+    optimizer_sharding: false,
     expert_par: 1,
     context_par: 1,
   } as any, // 其他配置

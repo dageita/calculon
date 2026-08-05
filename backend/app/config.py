@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     CALCULATOR_RESULT_TEMPLATE: str = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                                    "template.xlsx")
 
+    # Bandwidth units: GB/s unidirectional (must match systems/<name>.json
+    # networks[0]=intra, networks[1]=inter). H20: 450 GB/s NVLink, 25 GB/s NIC
+    # (= 25e9 B/s); do NOT use mem2/PCIe (64 GB/s) as intra.
     GPU_LIST: List[Gpu] = [
         Gpu(
             name="A800_80GB_SXM",
@@ -22,7 +25,9 @@ class Settings(BaseSettings):
             sparse_tensor_fp32_processing_power=312,
             memory=80,
             memory_bandwidth=2039,
-            bus_bandwidth=200,
+            bus_bandwidth=450,
+            network_bandwidth=32,
+            pcie_bandwidth=32,
             support_p2p=True,
         ),
         Gpu(
@@ -31,7 +36,9 @@ class Settings(BaseSettings):
             sparse_tensor_fp32_processing_power=989,
             memory=80,
             memory_bandwidth=3350,
-            bus_bandwidth=400,
+            bus_bandwidth=450,
+            network_bandwidth=50,
+            pcie_bandwidth=450,
             support_p2p=True,
         ),
         Gpu(
@@ -41,6 +48,8 @@ class Settings(BaseSettings):
             memory=80,
             memory_bandwidth=2039,
             bus_bandwidth=300,
+            network_bandwidth=25,
+            pcie_bandwidth=32,
             support_p2p=True,
         ),
         Gpu(
@@ -49,7 +58,9 @@ class Settings(BaseSettings):
             sparse_tensor_fp32_processing_power=74,
             memory=96,
             memory_bandwidth=4000,
-            bus_bandwidth=64,
+            bus_bandwidth=450,
+            network_bandwidth=25,
+            pcie_bandwidth=64,
             support_p2p=True,
         ),
         Gpu(
@@ -59,6 +70,8 @@ class Settings(BaseSettings):
             memory=48,
             memory_bandwidth=864,
             bus_bandwidth=32,
+            network_bandwidth=32,
+            pcie_bandwidth=32,
             support_p2p=True,
         ),
     ]

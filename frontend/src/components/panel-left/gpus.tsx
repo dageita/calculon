@@ -1,15 +1,15 @@
 import { FC, useEffect } from 'react';
 import { useImmer } from 'use-immer';
-import { Select, Divider, Input, InputNumber, Slider, Button, Drawer, message } from 'antd'
+import { Select, Divider, Input, InputNumber, Button, Drawer, message } from 'antd'
 import Empty from '../empty';
 import useModel from 'flooks';
 import { getGpuList, getNetWork } from '@/services'
 import ProjectModel from '@/models/projectModel';
 import styles from './index.less';
 import LogModel from '@/models/logModel';
-import { PlusOutlined } from '@ant-design/icons'
 import { useTranslation } from 'react-i18next';
 
+// Bandwidth fields are read-only from systems/<gpu>.json (GB/s, unidirectional).
 const PARAMS_LIST = [
   {
     title: 'GPU Type',
@@ -31,21 +31,21 @@ const PARAMS_LIST = [
     key: 'memory_bandwidth'
   },
   {
-    title: 'Bus Bandwidth(GB/s)',
+    title: 'Intra-node Bandwidth(GB/s)',
     key: 'bus_bandwidth'
+  },
+  {
+    title: 'Inter-node Bandwidth(GB/s)',
+    key: 'network_bandwidth'
+  },
+  {
+    title: 'PCIe Bandwidth(GB/s)',
+    key: 'pcie_bandwidth'
   }, {
     title: 'support p2p',
     key: 'support_p2p'
   }
 ]
-const SLIDER_LIST = [{
-  title: 'Inter-host network bandwidth(Gb/s)',
-  key: 'network_bandwidth',
-  min: 0,
-  max: 1600,
-  precision: 1,
-  step: 1
-}]
 export interface IGPUSelectionProps { }
 const GpuSelection: FC<IGPUSelectionProps> = (props) => {
   const { setProject, curGpu, curNetwork,curCouHasChanged } = useModel(ProjectModel);
@@ -58,6 +58,11 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
       curGpu: {
         ...item,
         num_procs: curGpu?.num_procs
+      },
+      // Keep topology; BW always comes from the selected GPU / systems JSON.
+      curNetwork: {
+        ...curNetwork,
+        network_bandwidth: item?.network_bandwidth,
       }
     });
   };
@@ -96,12 +101,30 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
       ...prev,
       GPU_LIST: [...gpuList, ...localItems]
     }));
+    // If a GPU is already selected, refresh BW from catalog (systems JSON).
+    if (curGpu?.name) {
+      const matched = gpuList.find((g: any) => g.name === curGpu.name)
+      if (matched) {
+        setProject({
+          curGpu: {
+            ...curGpu,
+            ...matched,
+            num_procs: curGpu?.num_procs ? curGpu?.num_procs : 1,
+          },
+          curNetwork: {
+            ...curNetwork,
+            network_bandwidth: matched.network_bandwidth,
+          }
+        })
+      }
+    }
   }
 
   const loadNetwork = async () => {
     const netRes: any = await getNetWork()
     if (netRes.error) return
-    const topoList = netRes?.network_topology.map((item: any) => {
+    const topologies = netRes?.network_topology || []
+    const topoList = topologies.map((item: any) => {
       return {
         key: item,
         label: item,
@@ -110,9 +133,11 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
     })
     setProject({
       curNetwork: {
-        network_bandwidth: netRes?.network_bandwidth,
-        network_topology: netRes.network_topology.length > 0 ? netRes.network_topology[0] : '',
-        ...curNetwork
+        ...curNetwork,
+        network_topology: curNetwork?.network_topology
+          || (topologies.length > 0 ? topologies[0] : ''),
+        // Prefer GPU systems JSON BW when available.
+        network_bandwidth: curGpu?.network_bandwidth ?? curNetwork?.network_bandwidth,
       }
     });
 
@@ -120,8 +145,7 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
       ...prev,
       TOPO_LIST: [...topoList],
       netInfo: {
-        network_bandwidth: netRes.network_bandwidth,
-        network_topology: netRes.network_topology.length > 0 ? netRes.network_topology[0] : ''
+        network_topology: topologies.length > 0 ? topologies[0] : ''
       }
     }))
   }
@@ -145,7 +169,7 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
     })
   }
   const addItemToList = () => {
-    const isNotComplete = PARAMS_LIST.find((p => !state.newGpu[p.key]))
+    const isNotComplete = PARAMS_LIST.find((p => !state.newGpu[p.key] && state.newGpu[p.key] !== false && state.newGpu[p.key] !== 0))
     if (isNotComplete) {
       message.warn('Please fill it out completely!')
       return
@@ -213,7 +237,7 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
               <div key={_idx}>
                 <div className={styles.gpu_params_item}>
                   <div className={styles.gpu_params_label}>{pItem.title}</div>
-                  <div className={styles.gpu_params_value}>{curGpu[pItem.key].toString()}
+                  <div className={styles.gpu_params_value}>{curGpu[pItem.key]?.toString?.() ?? String(curGpu[pItem.key])}
                   </div>
                 </div>
                 {_idx < PARAMS_LIST.length - 1 && <Divider />}
@@ -243,43 +267,6 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
         </div>
       </div>
 
-
-
-
-      <div className={styles.group_slider}>
-        {SLIDER_LIST.map((cf: any) => {
-          return (
-            <div className={styles['group-list-item']} key={cf.key}>
-              <div className={styles['item-wrapper']}>
-                <span>
-                  {cf.title}
-                </span>
-                <InputNumber
-                  precision={cf.precision || 0}
-                  width={100}
-                  min={cf.min}
-                  max={cf.max}
-                  value={curNetwork?.[cf.key]}
-                  onChange={(val) => {
-                    setProject({ curNetwork: { ...curNetwork, [cf.key]: val } });
-                  }}
-                />
-              </div>
-              <Slider
-                min={cf.min}
-                max={cf.max}
-                onChange={(val) => {
-                  setChangeLog(cf.title, val, curNetwork?.[cf.key])
-                  setProject({ curNetwork: { ...curNetwork, [cf.key]: val } });
-                }}
-                value={curNetwork?.[cf.key]}
-                step={cf.step}
-              />
-            </div>
-          );
-        })}
-      </div>
-
       <div className={styles.cluster_param_item}>
         <div className={styles.param_item_label}>Network Topology</div>
         <div className={styles.param_item_value}>
@@ -291,7 +278,8 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
               setProject({
                 curNetwork: {
                   ...curNetwork,
-                  network_topology: val
+                  network_topology: val,
+                  network_bandwidth: curGpu?.network_bandwidth,
                 }
               });
             }}
@@ -302,12 +290,6 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
 
 
       <Drawer title={t('add item')} placement="right" width={600}
-        // getPopupContainer={(node: any) => {
-        //   if (node) {
-        //     return node.parentNode;
-        //   }
-        //   return document.body;
-        // }}
         onClose={closeAddModal}
         open={state.showAddModal}>
         <div className="gpu_params">

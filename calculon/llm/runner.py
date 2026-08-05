@@ -172,13 +172,15 @@ class Runner(calculon.CommandLine):
                     "end_time": round(end_time, 6)    # end_time，保留6位小数
                 })
             except (IndexError, ValueError, TypeError) as e:
-                print(f"Warning: Failed to process timeline event {i}: {e}")
+                model.log.debug("Failed to process timeline event %d: %s", i, e)
                 continue
         
-        # 打印timeline事件统计信息
-        print(f"Successfully processed {len(timeline_events)} timeline events out of {timeline_event_count} total events")
+        model.log.debug(
+            "Processed %d timeline events out of %d total events",
+            len(timeline_events), timeline_event_count,
+        )
         if timeline_events:
-            print(f"Sample event: {timeline_events[0]}")
+            model.log.debug("Sample timeline event: %s", timeline_events[0])
     return {
         "memory_usage": {
             "optimizer": human_format(model.get_optimizer_space(), 'bytes'),
@@ -187,7 +189,18 @@ class Runner(calculon.CommandLine):
             "activation": human_format(model.get_act_space(), 'bytes'),
             "activation_gradients": human_format(model.get_act_grad_space(), 'bytes'),
             "overall_usage": human_format(model.get_mem_tier1_cap_req(), 'bytes'),
+            "tier1_capacity": human_format(model.sys.mem1.capacity, 'bytes'),
+            "tier2_capacity": human_format(model.sys.mem2.capacity, 'bytes'),
+            "tier1_over_capacity": (
+                model.get_mem_tier1_cap_req() > model.sys.mem1.capacity),
+            "tier2_over_capacity": (
+                model.get_mem_tier2_cap_req() > model.sys.mem2.capacity),
+            "over_capacity": model.mem_over_capacity(),
         },
+        "warning": (
+            "; ".join(model.get_mem_capacity_warnings())
+            if model.mem_over_capacity() else None),
+        "warnings": model.get_mem_capacity_warnings(),
         "computation": {
             "per_device_blocks": model._blocks_per_proc,
             "num_microbatches": model.exe._num_microbatches,
@@ -195,6 +208,27 @@ class Runner(calculon.CommandLine):
             "microbatch_forward_computation_time": model._block_fw_time * model._blocks_per_proc,
             "batch_backward_computation_time": model.get_bw_time(),
             "microbatch_backward_computation_time": (model._block_agrad_time + model._block_wgrad_time) * model._blocks_per_proc,
+            # Layered Attn/MLA vs FFN split (per microbatch = one block-stack on device)
+            "microbatch_attn_forward_computation_time":
+                (getattr(model, '_block_attn_fw_time', 0.0) or 0.0) * model._blocks_per_proc,
+            "microbatch_ffn_forward_computation_time":
+                (getattr(model, '_block_ffn_fw_time', 0.0) or 0.0) * model._blocks_per_proc,
+            "microbatch_attn_backward_computation_time":
+                (getattr(model, '_block_attn_bwd_time', 0.0) or 0.0) * model._blocks_per_proc,
+            "microbatch_ffn_backward_computation_time":
+                (getattr(model, '_block_ffn_bwd_time', 0.0) or 0.0) * model._blocks_per_proc,
+            "batch_attn_forward_computation_time":
+                (getattr(model, '_block_attn_fw_time', 0.0) or 0.0)
+                * model._blocks_per_proc * model.exe._num_microbatches,
+            "batch_ffn_forward_computation_time":
+                (getattr(model, '_block_ffn_fw_time', 0.0) or 0.0)
+                * model._blocks_per_proc * model.exe._num_microbatches,
+            "batch_attn_backward_computation_time":
+                (getattr(model, '_block_attn_bwd_time', 0.0) or 0.0)
+                * model._blocks_per_proc * model.exe._num_microbatches,
+            "batch_ffn_backward_computation_time":
+                (getattr(model, '_block_ffn_bwd_time', 0.0) or 0.0)
+                * model._blocks_per_proc * model.exe._num_microbatches,
         },
         "communication": {
             "dp_comm_size": human_format(model._dp_comm_size, 'bytes'),
@@ -215,6 +249,10 @@ class Runner(calculon.CommandLine):
             "microbatch_pp_bw_comm_time": microbatch_pp_bw_comm,
             "ep_comm_fw_size": human_format(model._ep_fw_comm_size, 'bytes'),
             "ep_comm_bw_size": human_format(model._ep_bw_comm_size, 'bytes'),
+            "ep_comm_fw_dispatch_size": human_format(
+                getattr(model, '_ep_fw_dispatch_size', 0) or 0, 'bytes'),
+            "ep_comm_fw_combine_size": human_format(
+                getattr(model, '_ep_fw_combine_size', 0) or 0, 'bytes'),
             "cp_comm_fw_size": human_format(model._cp_fw_comm_size, 'bytes'),
             "cp_comm_bw_size": human_format(model._cp_bw_comm_size, 'bytes'),
             "batch_ep_fw_comm_time": batch_ep_fw_comm,
@@ -223,6 +261,18 @@ class Runner(calculon.CommandLine):
             "batch_cp_fw_comm_time": batch_cp_fw_comm,
             "batch_cp_bw_comm_time": batch_cp_bw_comm,
             "batch_cp_comm_time": batch_cp_comm,
+            "microbatch_ep_fw_comm_time": (
+                batch_ep_fw_comm / model.exe._num_microbatches
+                if model.exe._num_microbatches else 0),
+            "microbatch_ep_bw_comm_time": (
+                batch_ep_bw_comm / model.exe._num_microbatches
+                if model.exe._num_microbatches else 0),
+            "microbatch_cp_fw_comm_time": (
+                batch_cp_fw_comm / model.exe._num_microbatches
+                if model.exe._num_microbatches else 0),
+            "microbatch_cp_bw_comm_time": (
+                batch_cp_bw_comm / model.exe._num_microbatches
+                if model.exe._num_microbatches else 0),
             "total_comm_time": total_comm_time,
         },
         "timeline_events": timeline_events,
@@ -231,7 +281,12 @@ class Runner(calculon.CommandLine):
             "local_batch_size": model.exe._local_batch_size,
             "batch_total_time": global_time,
             "totoal_number_of_gpus": model.exe.num_procs,
-            "total_efficiency": round(model.get_total_efficiency(), 4)
+            # total_efficiency ≈ MFU: useful_flops / (peak_tflops * step_time).
+            # compute_efficiency: same but vs compute-only time (excl. exposed comm).
+            # system_efficiency: compute_time / total_time.
+            "total_efficiency": round(model.get_total_efficiency(), 4),
+            "compute_efficiency": round(model.get_compute_efficiency(), 4),
+            "system_efficiency": round(model.get_system_efficiency(), 4),
         }
     }
 

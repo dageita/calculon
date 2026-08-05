@@ -193,20 +193,29 @@ class Llm:
         'num_procs', 'tensor_par', 'pipeline_par', 'data_par', 'tensor_par_net',
         'pipeline_par_net', 'data_par_net', 'expert_par', 'context_par',
         'expert_par_net', 'context_par_net', 'batch_size', 'microbatch_size',
-        'datatype', 'fused_activation', 'attention_type', 'activation_recompute',
+        'datatype', 'matrix_dtype', 'vector_dtype', 'fused_activation',
+        'attention_type', 'activation_recompute',
         'pipeline_interleaving', 'optimizer_sharding', 'tensor_par_comm_type',
         'tensor_par_overlap', 'seq_par_ag_redo', 'data_par_overlap',
         'weight_offload', 'activations_offload', 'optimizer_offload', 'training')
 
     @staticmethod
     def from_json(cfg):
-      # Backward compatibility: older configs without EP/CP default to degree 1
-      # on network tier 0.
+      # Backward compatibility: older configs without EP/CP default to degree 1.
+      # Network-tier defaults (2-tier systems like H20: 0=NVLink, 1=NIC):
+      #   TP/CP → typically intra-node (tensor_par_net / same)
+      #   DP/PP/EP → typically inter-node (data_par_net)
+      # Dual dtype defaults both engines to `datatype`.
       cfg = dict(cfg)
       cfg.setdefault('expert_par', 1)
       cfg.setdefault('context_par', 1)
-      cfg.setdefault('expert_par_net', 0)
-      cfg.setdefault('context_par_net', 0)
+      # Prefer aligning EP with DP (cross-node A2A); CP with TP (NVLink).
+      cfg.setdefault('expert_par_net', cfg.get('data_par_net', 0))
+      cfg.setdefault('context_par_net', cfg.get('tensor_par_net', 0))
+      if not cfg.get('datatype'):
+        cfg['datatype'] = cfg.get('matrix_dtype') or cfg.get('vector_dtype')
+      cfg.setdefault('matrix_dtype', cfg['datatype'])
+      cfg.setdefault('vector_dtype', cfg['datatype'])
       assert set(cfg.keys()) == set(Llm.Execution.fields())
       values = [cfg[field] for field in Llm.Execution.fields()]
       return Llm.Execution(*values)
@@ -214,9 +223,9 @@ class Llm:
     def __init__(self, num_procs, tensor_par, pipeline_par, data_par,
                  tensor_par_net, pipeline_par_net, data_par_net,
                  expert_par, context_par, expert_par_net, context_par_net,
-                 batch_size, microbatch_size, datatype,
-                 fused_activation, attention_type, activation_recompute,
-                 pipeline_interleaving, optimizer_sharding,
+                 batch_size, microbatch_size, datatype, matrix_dtype,
+                 vector_dtype, fused_activation, attention_type,
+                 activation_recompute, pipeline_interleaving, optimizer_sharding,
                  tensor_par_comm_type, tensor_par_overlap,
                  seq_par_ag_redo, data_par_overlap, weight_offload,
                  activations_offload, optimizer_offload, training):
@@ -240,7 +249,10 @@ class Llm:
         self.expert_par * self.context_par
       if self.num_procs != total_par:
         raise Llm.Error(
-          'tensor * pipeline * data * expert * context parallelism != num_procs')
+          f'tensor*pipeline*data*expert*context parallelism '
+          f'({self.tensor_par}*{self.pipeline_par}*{self.data_par}*'
+          f'{self.expert_par}*{self.context_par}={total_par}) '
+          f'!= num_procs({self.num_procs})')
       self.tensor_par_net = tensor_par_net
       self.pipeline_par_net = pipeline_par_net
       self.data_par_net = data_par_net
@@ -262,7 +274,14 @@ class Llm:
             f"microbatch_size({self.microbatch_size})"
         )
       self._num_microbatches = self._local_batch_size // self.microbatch_size
+      # `datatype` kept for backward compat / reporting; compute uses the pair.
       self.datatype = datatype
+      self.matrix_dtype = matrix_dtype or datatype
+      self.vector_dtype = vector_dtype or datatype
+      assert self.matrix_dtype in System.TypeSizes, \
+        f'Unsupported matrix_dtype: {self.matrix_dtype}'
+      assert self.vector_dtype in System.TypeSizes, \
+        f'Unsupported vector_dtype: {self.vector_dtype}'
       self.fused_activation = fused_activation
       self.attention_type = attention_type
       assert self.attention_type in ['multihead', 'multiquery', 'mla']
@@ -312,7 +331,8 @@ class Llm:
         self.num_procs, self.tensor_par, self.pipeline_par, self.data_par, self.tensor_par_net,
         self.pipeline_par_net, self.data_par_net, self.expert_par, self.context_par,
         self.expert_par_net, self.context_par_net, self.global_batch_size, self.microbatch_size,
-        self.datatype, self.fused_activation, self.attention_type, self.activation_recompute,
+        self.datatype, self.matrix_dtype, self.vector_dtype, self.fused_activation,
+        self.attention_type, self.activation_recompute,
         self.pipeline_interleaving, self.optimizer_sharding, self.tensor_par_comm_type,
         self.tensor_par_overlap, self.seq_par_ag_redo, self.data_par_overlap,
         self.weight_offload, self.activations_offload, self.optimizer_offload, self.training
@@ -429,6 +449,8 @@ class Llm:
     # State of calling compile() and run()
     self._compiled = False
     self._executed = False
+    # Soft memory-capacity warnings (do not abort run)
+    self._mem_capacity_warnings = []
     
     # 缓存网络计算结果，避免重复调用pycall_main
     self._flow_network_cache = None
@@ -805,6 +827,26 @@ class Llm:
         j['layers'].append(layer.get_stats_json())
     return j
 
+  def _append_bmm(self, name, batch, size_a, contraction_size, size_b,
+                  **kwargs):
+    """Append BatchMatMul with H20.json bmm_time_scale (Absorb vs Score/Attn)."""
+    kind = System.bmm_scale_kind(name)
+    kwargs.setdefault('time_scale', self.sys.get_bmm_time_scale(kind))
+    self._llm_block.append(BatchMatMul(
+      name, self.sys, batch, size_a, contraction_size, size_b, **kwargs))
+
+  def _norm_cls(self):
+    """DeepSeek/MLA uses RMSNorm; legacy dense GPT path keeps LayerNorm."""
+    return RMSNorm if (self.app.is_mla or self.app.is_moe) else LayerNorm
+
+  def _append_attn_softmax(self, name, act_size, **kwargs):
+    """Append attention SoftMax; fused into flash-attn when configured."""
+    fused = bool(getattr(self.sys, 'attn_softmax_fused', False))
+    scale = float(getattr(self.sys, 'attn_softmax_time_scale', 1.0) or 1.0)
+    self._llm_block.append(SoftMax(
+      name, self.sys, act_size,
+      fused=fused, time_scale=scale, **kwargs))
+
   def _build_mla_attn_block(self):
     """Multi-head Latent Attention (DeepSeek-V3/inference/model.py).
 
@@ -834,12 +876,13 @@ class Llm:
     # WUK/WUV always stored; absorb path folds them into einsums (flop_mult=0).
     wkv_b_flops = 0.0 if absorb else 1.0
 
+    Norm = self._norm_cls()
     self._llm_block.append(Fork(
       "AttnBlock_Fork", self.sys,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
       2, needs_recompute=recompute_flag, activation_stored=True))
-    self._llm_block.append(LayerNorm(
+    self._llm_block.append(Norm(
       "AttnBlock_LayerNorm", self.sys,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
            self._activation_size),
@@ -858,7 +901,7 @@ class Llm:
       app.hidden, app.q_lora_rank,
       needs_recompute=recompute_flag,
       activation_stored=(not recompute_ag_flag)))
-    self._llm_block.append(LayerNorm(
+    self._llm_block.append(Norm(
       "AttnBlock_MLA_QNorm", self.sys,
       self._batch_seq * app.q_lora_rank, app.q_lora_rank,
       needs_recompute=recompute_flag,
@@ -884,7 +927,7 @@ class Llm:
       app.hidden, app.kv_lora_rank,
       needs_recompute=recompute_flag,
       activation_stored=(not recompute_ag_flag)))
-    self._llm_block.append(LayerNorm(
+    self._llm_block.append(Norm(
       "AttnBlock_MLA_KVNorm", self.sys,
       self._batch_seq * app.kv_lora_rank, app.kv_lora_rank,
       needs_recompute=recompute_flag,
@@ -913,67 +956,67 @@ class Llm:
 
     if absorb:
       # model.py absorb: q_nope @ WUK, scores vs kv/pe cache, then @ WUV
-      self._llm_block.append(BatchMatMul(
-        "AttnBlock_MLA_QAbsorb", self.sys,
+      self._append_bmm(
+        "AttnBlock_MLA_QAbsorb",
         mbs * heads_tp,
         app.seq_size, app.qk_nope_head_dim, app.kv_lora_rank,
         needs_recompute=recompute_attn_flag,
-        output_stored=(not recompute_attn_flag)))
-      self._llm_block.append(BatchMatMul(
-        "AttnBlock_MLA_ScoreKV", self.sys,
+        output_stored=(not recompute_attn_flag))
+      self._append_bmm(
+        "AttnBlock_MLA_ScoreKV",
         mbs * heads_tp,
         app.seq_size, app.kv_lora_rank, app.seq_size,
         needs_recompute=recompute_attn_flag,
-        output_stored=(not recompute_attn_flag)))
-      self._llm_block.append(BatchMatMul(
-        "AttnBlock_MLA_ScorePE", self.sys,
+        output_stored=(not recompute_attn_flag))
+      self._append_bmm(
+        "AttnBlock_MLA_ScorePE",
         mbs * heads_tp,
         app.seq_size, app.qk_rope_head_dim, app.seq_size,
         needs_recompute=recompute_attn_flag,
-        output_stored=(not recompute_attn_flag)))
-      self._llm_block.append(SoftMax(
-        "AttnBlock_Multihead_SoftMax", self.sys,
+        output_stored=(not recompute_attn_flag))
+      self._append_attn_softmax(
+        "AttnBlock_Multihead_SoftMax",
         heads_tp * app.seq_size**2 * mbs,
         needs_recompute=recompute_attn_flag,
-        output_stored=(not recompute_attn_flag)))
+        output_stored=(not recompute_attn_flag))
       self._llm_block.append(DropOut(
         "AttnBlock_Multihead_DropOut", self.sys,
         heads_tp * app.seq_size**2 * mbs,
         needs_recompute=recompute_attn_flag,
         activation_stored=(not recompute_attn_flag)))
-      self._llm_block.append(BatchMatMul(
-        "AttnBlock_MLA_AttnKV", self.sys,
+      self._append_bmm(
+        "AttnBlock_MLA_AttnKV",
         mbs * heads_tp,
         app.seq_size, app.seq_size, app.kv_lora_rank,
-        needs_recompute=recompute_flag))
-      self._llm_block.append(BatchMatMul(
-        "AttnBlock_MLA_VAbsorb", self.sys,
+        needs_recompute=recompute_flag)
+      self._append_bmm(
+        "AttnBlock_MLA_VAbsorb",
         mbs * heads_tp,
         app.seq_size, app.kv_lora_rank, v_dim,
-        needs_recompute=recompute_flag))
+        needs_recompute=recompute_flag)
     else:
       # naive: full QK on (nope+rope), AttnV on v_dim
-      self._llm_block.append(BatchMatMul(
-        "AttnBlock_Multihead_Key_Query", self.sys,
+      self._append_bmm(
+        "AttnBlock_Multihead_Key_Query",
         mbs * heads_tp,
         app.seq_size, qk_dim, app.seq_size,
         needs_recompute=recompute_attn_flag,
-        output_stored=(not recompute_attn_flag)))
-      self._llm_block.append(SoftMax(
-        "AttnBlock_Multihead_SoftMax", self.sys,
+        output_stored=(not recompute_attn_flag))
+      self._append_attn_softmax(
+        "AttnBlock_Multihead_SoftMax",
         heads_tp * app.seq_size**2 * mbs,
         needs_recompute=recompute_attn_flag,
-        output_stored=(not recompute_attn_flag)))
+        output_stored=(not recompute_attn_flag))
       self._llm_block.append(DropOut(
         "AttnBlock_Multihead_DropOut", self.sys,
         heads_tp * app.seq_size**2 * mbs,
         needs_recompute=recompute_attn_flag,
         activation_stored=(not recompute_attn_flag)))
-      self._llm_block.append(BatchMatMul(
-        "AttnBlock_Multihead_Attn", self.sys,
+      self._append_bmm(
+        "AttnBlock_Multihead_Attn",
         mbs * heads_tp,
         app.seq_size, app.seq_size, v_dim,
-        needs_recompute=recompute_flag))
+        needs_recompute=recompute_flag)
 
     self._llm_block.append(Linear(
       "AttnBlock_MLA_WO", self.sys, self._batch_seq,
@@ -1178,22 +1221,20 @@ class Llm:
           activation_reused=True))
       else:
         raise self.Error('Wrong attention type', self.exe.attention_type)
-    self._llm_block.append(BatchMatMul(
+    self._append_bmm(
       "AttnBlock_Multihead_Key_Query",
-      self.sys,
       self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
       self.app.seq_size,
       self.app.attn_size,
       self.app.seq_size,
       needs_recompute=recompute_attn_flag,
-      output_stored=(not recompute_attn_flag)))
-    self._llm_block.append(SoftMax(
+      output_stored=(not recompute_attn_flag))
+    self._append_attn_softmax(
       "AttnBlock_Multihead_SoftMax",
-      self.sys,
       self.app.attn_heads // self.exe.tensor_par * \
         self.app.seq_size**2 * self.exe.microbatch_size,
       needs_recompute=recompute_attn_flag,
-      output_stored=(not recompute_attn_flag)))
+      output_stored=(not recompute_attn_flag))
     self._llm_block.append(DropOut(
       "AttnBlock_Multihead_DropOut",
       self.sys,
@@ -1201,14 +1242,13 @@ class Llm:
         self.app.seq_size**2 * self.exe.microbatch_size,
       needs_recompute=recompute_attn_flag,
       activation_stored=(not recompute_attn_flag)))
-    self._llm_block.append(BatchMatMul(
+    self._append_bmm(
       "AttnBlock_Multihead_Attn",
-      self.sys,
       self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
       self.app.seq_size,
       self.app.seq_size,
       self.app.attn_heads * self.app.attn_size // self.app.attn_heads,
-      needs_recompute=recompute_flag))
+      needs_recompute=recompute_flag)
     if self.exe.tensor_par_overlap == 'none':
       self._llm_block.append(Linear(
         "AttnBlock_MLP",
@@ -1286,7 +1326,8 @@ class Llm:
       2,
       needs_recompute=recompute_flag,
       activation_stored=True))
-    self._llm_block.append(LayerNorm(
+    Norm = self._norm_cls()
+    self._llm_block.append(Norm(
       "MlpBlock_LayerNorm",
       self.sys,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
@@ -1397,13 +1438,16 @@ class Llm:
       needs_recompute=recompute_flag,
       activation_stored=False, activation_reused=True,
       weight_multiplier=wm, flop_multiplier=fm))
+    # With fused_activation, SiLU(gate)*up is an epilogue on Gate/Up GEMMs —
+    # do not charge standalone vector time (Phase2 H2: unfused SiLU over-pred).
+    fused_act = self.exe.fused_activation
     self._llm_block.append(SiLU(
       f"{name_prefix}_SiLU", self.sys, f_tp * self._batch_seq,
-      needs_recompute=recompute_flag, fused=self.exe.fused_activation))
+      needs_recompute=recompute_flag, fused=fused_act))
     self._llm_block.append(ElementWise(
       f"{name_prefix}_GateUp", self.sys,
       f_tp * self._batch_seq, f_tp * self._batch_seq,
-      needs_recompute=recompute_flag))
+      needs_recompute=recompute_flag, fused=fused_act))
     self._llm_block.append(Linear(
       f"{name_prefix}_Down", self.sys, self._batch_seq,
       f_tp, app.hidden,
@@ -1446,7 +1490,7 @@ class Llm:
     self.sys = sys
     self._check_network_assignments()
 
-    self.sys.set_datatype(self.exe.datatype)
+    self.sys.set_datatypes(self.exe.matrix_dtype, self.exe.vector_dtype)
 
     # If we have number of blocks not divisible by PP, we can allocate the
     # reminder of the blocks on the first num_block % PP Procs and block
@@ -1464,7 +1508,11 @@ class Llm:
       raise self.Error(f'Pipeline interleaving {self.exe.pipeline_interleaving} must be less than or equal to the number of blocks per processor {self._blocks_per_proc})')
     if self._blocks_per_proc % self.exe.pipeline_interleaving != 0:
       raise self.Error(f'Pipeline interleaving {self.exe.pipeline_interleaving} must be a factor value of the number of blocks per processor {self._blocks_per_proc}')
-    self._bytes_per_element = System.TypeSizes[self.exe.datatype]
+    # Activation / comm traffic defaults to matrix dtype (GEMM I/O path).
+    # Per-layer BPE is overridden below by engine (matrix vs vector dtype).
+    self._bytes_per_element = System.TypeSizes[self.exe.matrix_dtype]
+    self._matrix_bytes_per_element = System.TypeSizes[self.exe.matrix_dtype]
+    self._vector_bytes_per_element = System.TypeSizes[self.exe.vector_dtype]
 
     # Checks that enough blocks per processor exist if offloading is being
     # performed
@@ -1514,44 +1562,161 @@ class Llm:
     else:
       self._build_attn_block()
       self._build_mlp_block(ffn_mode='gelu')
-    for layer in self._llm_block:
-      layer.set_bytes_per_element(self._bytes_per_element)
+    def _assign_layer_bpe(layer):
+      # Linear GEMM → matrix_dtype (FP8); BatchMatMul → bmm_dtype (BF16);
+      # vector ops → vector_dtype.
+      if isinstance(layer, BatchMatMul):
+        bpe = System.TypeSizes[self.sys.get_bmm_dtype()]
+      elif layer.use_matrix_engine():
+        bpe = self._matrix_bytes_per_element
+      else:
+        bpe = self._vector_bytes_per_element
+      layer.set_bytes_per_element(bpe)
       if self.exe.optimizer_sharding:
         layer.shard_optimizer(self.exe.data_par)
+
+    for layer in self._llm_block:
+      _assign_layer_bpe(layer)
     if self._dense_layers is not None:
       for layer in self._dense_layers:
-        layer.set_bytes_per_element(self._bytes_per_element)
-        if self.exe.optimizer_sharding:
-          layer.shard_optimizer(self.exe.data_par)
+        _assign_layer_bpe(layer)
     self._compiled = True
 
   def _check_network_assignments(self):
+    """Bind each parallelism dimension to a Network tier and init flow BW.
+
+    Capacity model (Megatron-style product on each tier):
+      tier_size *= degree for each of TP/PP/DP/EP/CP with degree>1 on that tier.
+
+    Flow simulator (``.so``) only exposes two bandwidth knobs:
+      inter — cross-host link capacity (B/s)
+      intra — intra-host link capacity (B/s)
+    We derive them from the tiers assigned to each parallelism:
+
+      intra ← bandwidth of TP's tier (NVLink-class); if CP shares that tier
+              it is already covered. If CP is alone on a faster/slower tier,
+              take min(TP, CP) among tiers used as "intra" roles.
+      inter ← min bandwidth among tiers used by DP / PP / EP (NIC-class
+              collectives). Falls back to DP tier if none of those are >1.
+
+    Topology string comes from the DP tier (cluster fabric description).
+    """
     used = [False] * self.sys.num_networks
     size = [1] * self.sys.num_networks
 
     assert self.exe.tensor_par_net < self.sys.num_networks
     assert self.exe.pipeline_par_net < self.sys.num_networks
     assert self.exe.data_par_net < self.sys.num_networks
+    assert self.exe.expert_par_net < self.sys.num_networks
+    assert self.exe.context_par_net < self.sys.num_networks
 
-    if self.exe.tensor_par > 1:
-      used[self.exe.tensor_par_net] = True
-      size[self.exe.tensor_par_net] *= self.exe.tensor_par
+    def _mark(degree, net_id):
+      if degree > 1:
+        used[net_id] = True
+        size[net_id] *= degree
+
+    _mark(self.exe.tensor_par, self.exe.tensor_par_net)
     self._tp_net = self.sys.get_network(self.exe.tensor_par_net)
 
-    if self.exe.pipeline_par > 1:
-      used[self.exe.pipeline_par_net] = True
-      size[self.exe.pipeline_par_net] *= self.exe.pipeline_par
+    _mark(self.exe.pipeline_par, self.exe.pipeline_par_net)
     self._pp_net = self.sys.get_network(self.exe.pipeline_par_net)
 
-    if self.exe.data_par > 1:
-      used[self.exe.data_par_net] = True
-      size[self.exe.data_par_net] *= self.exe.data_par
+    _mark(self.exe.data_par, self.exe.data_par_net)
     self._dp_net = self.sys.get_network(self.exe.data_par_net)
 
+    _mark(self.exe.expert_par, self.exe.expert_par_net)
+    self._ep_net = self.sys.get_network(self.exe.expert_par_net)
+
+    _mark(self.exe.context_par, self.exe.context_par_net)
+    self._cp_net = self.sys.get_network(self.exe.context_par_net)
+
+    # Safety: if a bound tier has zero effective BW (e.g. Single Machine with
+    # network_bandwidth=0 but PP/EP still on tier 1), remap to the fastest
+    # positive-BW tier (usually tier 0 / intra).
+    def _remap_if_zero(attr_net, attr_obj):
+      net = getattr(self, attr_obj)
+      if net.effective_bandwidth > 0:
+        return
+      for tier in range(self.sys.num_networks):
+        cand = self.sys.get_network(tier)
+        if cand.effective_bandwidth > 0:
+          old = getattr(self.exe, attr_net)
+          setattr(self.exe, attr_net, tier)
+          setattr(self, attr_obj, cand)
+          self.log.warning(
+            '%s was on tier %d with BW=0; remapped to tier %d (BW=%.3e)',
+            attr_net, old, tier, cand.effective_bandwidth)
+          return
+      raise self.Error(
+        f'{attr_net} bound to a network with zero bandwidth and no fallback tier')
+
+    _remap_if_zero('pipeline_par_net', '_pp_net')
+    _remap_if_zero('data_par_net', '_dp_net')
+    _remap_if_zero('expert_par_net', '_ep_net')
+    _remap_if_zero('tensor_par_net', '_tp_net')
+    _remap_if_zero('context_par_net', '_cp_net')
+
+    # Recompute tier occupancy after possible remaps.
+    used = [False] * self.sys.num_networks
+    size = [1] * self.sys.num_networks
+    _mark(self.exe.tensor_par, self.exe.tensor_par_net)
+    _mark(self.exe.pipeline_par, self.exe.pipeline_par_net)
+    _mark(self.exe.data_par, self.exe.data_par_net)
+    _mark(self.exe.expert_par, self.exe.expert_par_net)
+    _mark(self.exe.context_par, self.exe.context_par_net)
+
+    # --- Derive inter / intra for LLMFlowSimulator topology ---
+    # Intra-node roles: TP (always), CP when colocated with TP or marked as
+    # the same tier family (tier index <= TP's tier when tiers are ordered
+    # fast→slow is not guaranteed; use explicit assignment).
+    intra_nets = [self._tp_net]
+    if self.exe.context_par > 1:
+      intra_nets.append(self._cp_net)
+    intra_bw = min(n.effective_bandwidth for n in intra_nets)
+
+    inter_nets = []
+    if self.exe.data_par > 1:
+      inter_nets.append(self._dp_net)
+    if self.exe.pipeline_par > 1:
+      inter_nets.append(self._pp_net)
+    if self.exe.expert_par > 1:
+      inter_nets.append(self._ep_net)
+    if not inter_nets:
+      # Single-host / no cross-node collectives: still pass DP tier BW.
+      inter_nets = [self._dp_net]
+    inter_bw = min(n.effective_bandwidth for n in inter_nets)
+    # Single Machine fabric: C++ path uses only intra; keep inter>=intra so
+    # any residual inter usage cannot see a zero BW.
+    topo_str = (getattr(self._dp_net, '_topology', None)
+                or getattr(self._tp_net, '_topology', '') or '')
+    if isinstance(topo_str, str) and 'single machine' in topo_str.lower():
+      if inter_bw <= 0:
+        inter_bw = intra_bw
+
+    # Topology description: prefer DP fabric; if EP-only cross-node, use EP.
+    topo_net = self._dp_net
+    if self.exe.data_par <= 1 and self.exe.expert_par > 1:
+      topo_net = self._ep_net
+    elif self.exe.data_par <= 1 and self.exe.pipeline_par > 1:
+      topo_net = self._pp_net
+
     self._flow_net = self.sys.get_network(0)
-    self._flow_net.flow_network_init(
-      self._dp_net.effective_bandwidth, self._tp_net.effective_bandwidth,
-      self._dp_net._topology)
+    self._flow_net.flow_network_init(inter_bw, intra_bw, topo_net._topology)
+    self.log.info(
+      'flow BW assignment: inter=%.3e (from %s) intra=%.3e (from %s) topo=%s; '
+      'tiers TP=%d PP=%d DP=%d EP=%d CP=%d',
+      inter_bw,
+      '/'.join(
+        t for t, d in (('DP', self.exe.data_par), ('PP', self.exe.pipeline_par),
+                       ('EP', self.exe.expert_par)) if d > 1) or 'DP',
+      intra_bw,
+      '/'.join(
+        t for t, d in (('TP', self.exe.tensor_par),
+                       ('CP', self.exe.context_par)) if d > 1) or 'TP',
+      topo_net._topology,
+      self.exe.tensor_par_net, self.exe.pipeline_par_net,
+      self.exe.data_par_net, self.exe.expert_par_net,
+      self.exe.context_par_net)
 
     for tier_used, tier_size, tier in zip(
         used, size, range(self.sys.num_networks)):
@@ -1565,6 +1730,8 @@ class Llm:
   _BLOCK_STAT_ATTRS = (
     '_block_fw_flops', '_block_fw_flops_time', '_block_fw_mem_accessed',
     '_block_fw_mem_time', '_block_fw_time',
+    '_block_attn_fw_time', '_block_ffn_fw_time',
+    '_block_attn_bwd_time', '_block_ffn_bwd_time',
     '_baseblock_fw_tp_size', '_edgeblock_fw_tp_size',
     '_baseblock_fw_tp_time', '_edgeblock_fw_tp_time',
     '_baseblock_fw_tp_time_exposed', '_edgeblock_fw_tp_time_exposed',
@@ -1636,6 +1803,10 @@ class Llm:
     self._block_fw_mem_accessed = 0
     self._block_fw_mem_time = 0
     self._block_fw_time = 0
+    self._block_attn_fw_time = 0
+    self._block_ffn_fw_time = 0
+    self._block_attn_bwd_time = 0
+    self._block_ffn_bwd_time = 0
     self._baseblock_fw_tp_size = 0
     self._edgeblock_fw_tp_size = 0
     self._baseblock_fw_tp_time = 0
@@ -1686,12 +1857,21 @@ class Llm:
 
     prev_layer_recompute = False
     for layer in self._llm_block:
-      # Add flops/bytes/times per layer
+      # Add flops/bytes/times per layer.
+      # Layers with fw_flops==0 and fw_mem==0 (MLA absorb WUK/WUV,
+      # fused SiLU/GeLU/GateUp) contribute 0 to fw processing — weights /
+      # optimizer residency are still accumulated below via get_weight().
       self._block_fw_flops += layer.get_fw_flops()
       self._block_fw_flops_time += layer.compute_flops_time("fw")
       self._block_fw_mem_accessed += layer.get_fw_mem_accessed()
       self._block_fw_mem_time += layer.compute_mem_time("fw")
-      self._block_fw_time += layer.compute_processing_time("fw")
+      fw_t = layer.compute_processing_time("fw")
+      self._block_fw_time += fw_t
+      lname = getattr(layer, 'name', '') or ''
+      if lname.startswith('AttnBlock'):
+        self._block_attn_fw_time += fw_t
+      elif lname.startswith('MlpBlock'):
+        self._block_ffn_fw_time += fw_t
       self._baseblock_fw_tp_size += layer.get_comm_bytes("fw",
         baseblock=True)
       self._edgeblock_fw_tp_size += layer.get_comm_bytes("fw",
@@ -1732,7 +1912,12 @@ class Llm:
         self._block_agrad_flops_time += layer.compute_flops_time("agrad")
         self._block_agrad_mem_accessed += layer.get_agrad_mem_accessed()
         self._block_agrad_mem_time += layer.compute_mem_time("agrad")
-        self._block_agrad_time += layer.compute_processing_time("agrad")
+        agrad_t = layer.compute_processing_time("agrad")
+        self._block_agrad_time += agrad_t
+        if lname.startswith('AttnBlock'):
+          self._block_attn_bwd_time += agrad_t
+        elif lname.startswith('MlpBlock'):
+          self._block_ffn_bwd_time += agrad_t
         self._baseblock_agrad_tp_size += layer.get_comm_bytes("agrad",
           baseblock=True)
         self._edgeblock_agrad_tp_size += layer.get_comm_bytes("agrad",
@@ -1753,7 +1938,12 @@ class Llm:
         self._block_wgrad_flops_time += layer.compute_flops_time("wgrad")
         self._block_wgrad_mem_accessed += layer.get_wgrad_mem_accessed()
         self._block_wgrad_mem_time += layer.compute_mem_time("wgrad")
-        self._block_wgrad_time += layer.compute_processing_time("wgrad")
+        wgrad_t = layer.compute_processing_time("wgrad")
+        self._block_wgrad_time += wgrad_t
+        if lname.startswith('AttnBlock'):
+          self._block_attn_bwd_time += wgrad_t
+        elif lname.startswith('MlpBlock'):
+          self._block_ffn_bwd_time += wgrad_t
         self._block_optim_flops += layer.get_optim_step_flops()
         self._block_optim_flops_time += layer.compute_flops_time("optim")
         self._block_optim_mem_accessed += layer.get_optim_step_mem_accessed()
@@ -1980,34 +2170,39 @@ class Llm:
     self._pp_fw_comm_size = self._blocks_per_proc * self._block_fw_pp_size
     self._pp_bw_comm_size = self._blocks_per_proc * self._block_bw_pp_size
 
-    # EP all-to-all comm size (per microbatch, per rank): MoE token dispatch
-    # and combine across the expert-parallel group. Fired once per microbatch
-    # forward/backward by the flow simulator, so sizes aggregate all MoE layers
-    # hosted on this rank.
+    # EP all-to-all: two-phase dispatch / combine (DeepSeek-style), each with
+    # topk-scaled token volume. Aggregated over MoE layers on this rank.
     if self.app.is_moe and self.exe.expert_par > 1:
       tokens = self.exe.microbatch_size * self.app.seq_size
-      # Uniform routing: (EP-1)/EP of dispatched tokens leave this rank.
       locality = (self.exe.expert_par - 1) / self.exe.expert_par
-      # Approximation: MoE layers are uniformly spread over pipeline stages.
       moe_blocks_per_proc = self.app.num_moe_blocks / self.exe.pipeline_par
-      ep_layer_fw = 2 * tokens * self.app.moe_topk * self.app.hidden * \
-        self._bytes_per_element * locality
-      self._ep_fw_comm_size = int(moe_blocks_per_proc * ep_layer_fw)
-      # Backward: gradients of combine and dispatch, 2x forward volume.
-      self._ep_bw_comm_size = 2 * self._ep_fw_comm_size
+      # Per phase (dispatch or combine): tokens * topk * hidden * bpe * locality
+      ep_phase = tokens * self.app.moe_topk * self.app.hidden * \
+        self._bytes_per_element * locality * moe_blocks_per_proc
+      self._ep_fw_dispatch_size = int(ep_phase)
+      self._ep_fw_combine_size = int(ep_phase)
+      self._ep_fw_comm_size = self._ep_fw_dispatch_size + self._ep_fw_combine_size
+      # Bwd of combine ≈ dispatch volume; bwd of dispatch ≈ combine volume.
+      self._ep_bw_dispatch_size = self._ep_fw_dispatch_size
+      self._ep_bw_combine_size = self._ep_fw_combine_size
+      self._ep_bw_comm_size = self._ep_bw_dispatch_size + self._ep_bw_combine_size
     else:
+      self._ep_fw_dispatch_size = 0
+      self._ep_fw_combine_size = 0
+      self._ep_bw_dispatch_size = 0
+      self._ep_bw_combine_size = 0
       self._ep_fw_comm_size = 0
       self._ep_bw_comm_size = 0
 
-    # CP ring-attention comm size (per microbatch, per rank): each rank passes
-    # its K/V chunk around the ring for CP-1 hops per attention layer.
+    # CP ring-attention: per-hop K/V chunk size. The flow simulator applies
+    # this size on *each* ring edge (collective.cpp GroupType::CP); do NOT
+    # pre-multiply by (CP-1) here or volume is over-counted as (CP-1)^2.
     if self.exe.context_par > 1:
       cp_chunk = 2 * self.exe.microbatch_size * \
         (self.app.seq_size / self.exe.context_par) * self.app.kv_size * \
         self._bytes_per_element
-      self._cp_fw_comm_size = int(self._blocks_per_proc * \
-        (self.exe.context_par - 1) * cp_chunk)
-      # Backward: dK/dV ring passes, 2x forward volume.
+      self._cp_fw_comm_size = int(self._blocks_per_proc * cp_chunk)
+      # Backward: dK/dV ring passes, 2x forward volume per hop.
       self._cp_bw_comm_size = 2 * self._cp_fw_comm_size
     else:
       self._cp_fw_comm_size = 0
@@ -2491,16 +2686,36 @@ class Llm:
       self._optimizer_space = 0
 
   def _check_mem_caps(self):
-    if self.get_mem_tier1_cap_req() > self.sys.mem1.capacity:
-      raise self.Error(f'Mem tier1 needs '
-                       f'{human_format(self.get_mem_tier1_cap_req(), "bytes")} '
-                       f'but only has '
-                       f'{human_format(self.sys.mem1.capacity, "bytes")}')
-    if self.get_mem_tier2_cap_req() > self.sys.mem2.capacity:
-      raise self.Error(f'Mem tier2 needs '
-                       f'{human_format(self.get_mem_tier2_cap_req(), "bytes")} '
-                       f'but only has '
-                       f'{human_format(self.sys.mem2.capacity, "bytes")}')
+    """Compare tier1/tier2 demand vs capacity.
+
+    Exceeding capacity no longer aborts the run: timings are still produced so
+    the UI can show a warning and highlight Memory usage in red.
+    """
+    self._mem_capacity_warnings = []
+    t1_req = self.get_mem_tier1_cap_req()
+    t1_cap = self.sys.mem1.capacity
+    if t1_req > t1_cap:
+      msg = (
+        f'Mem tier1 needs {human_format(t1_req, "bytes")} '
+        f'but only has {human_format(t1_cap, "bytes")}'
+      )
+      self._mem_capacity_warnings.append(msg)
+      self.log.warning(msg)
+    t2_req = self.get_mem_tier2_cap_req()
+    t2_cap = self.sys.mem2.capacity
+    if t2_req > t2_cap:
+      msg = (
+        f'Mem tier2 needs {human_format(t2_req, "bytes")} '
+        f'but only has {human_format(t2_cap, "bytes")}'
+      )
+      self._mem_capacity_warnings.append(msg)
+      self.log.warning(msg)
+
+  def mem_over_capacity(self):
+    return bool(getattr(self, '_mem_capacity_warnings', None))
+
+  def get_mem_capacity_warnings(self):
+    return list(getattr(self, '_mem_capacity_warnings', []) or [])
 
   def _misc_sanity_checks(self):
     if self.exe.tensor_par == 1:
@@ -2675,6 +2890,52 @@ class Llm:
     else:
       return 0
   
+  def _flow_network_kwargs(self, enable_timeline):
+    """Build kwargs for flow simulator: layered MLA/FFN + EP two-phase sizes."""
+    bpp = self._blocks_per_proc
+    attn_fw = getattr(self, '_block_attn_fw_time', 0.0) or 0.0
+    ffn_fw = getattr(self, '_block_ffn_fw_time', 0.0) or 0.0
+    attn_bwd = getattr(self, '_block_attn_bwd_time', 0.0) or 0.0
+    ffn_bwd = getattr(self, '_block_ffn_bwd_time', 0.0) or 0.0
+    # If split is empty (unexpected), fall back to monolithic via zero layered.
+    use_layered = (attn_fw + ffn_fw) > 0
+    # Dense models have no MoE token traffic; EP>1 would schedule 0-byte EP
+    # events (duration 0). Force EP=1 into the flow sim for those cases.
+    ep = self.exe.expert_par
+    if ep > 1 and not self.app.is_moe:
+      self.log.warning(
+        "expert_par=%d on non-MoE model; ignoring EP in flow simulator "
+        "(no dispatch/combine volume)", ep)
+      ep = 1
+    elif ep > 1 and (getattr(self, '_ep_fw_dispatch_size', 0) or 0) <= 0:
+      self.log.warning(
+        "expert_par=%d but EP dispatch size is 0; ignoring EP in flow simulator",
+        ep)
+      ep = 1
+    return dict(
+      pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
+      ep=ep, cp=self.exe.context_par,
+      fwdCompTime=self._block_fw_time * bpp,
+      bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * bpp,
+      fwd_mla_time=(attn_fw * bpp) if use_layered else 0.0,
+      fwd_ffn_time=(ffn_fw * bpp) if use_layered else 0.0,
+      bwd_mla_time=(attn_bwd * bpp) if use_layered else 0.0,
+      bwd_ffn_time=(ffn_bwd * bpp) if use_layered else 0.0,
+      microbatches=self.exe._num_microbatches,
+      fwdTPSize=self._tp_fw_comm_size,
+      bwdTPSize=self._tp_bw_comm_size,
+      fwdPPSize=self._pp_fw_comm_size,
+      bwdPPSize=self._pp_bw_comm_size,
+      dpSize=self._dp_comm_size,
+      fwd_ep_size=self._ep_fw_comm_size, bwd_ep_size=self._ep_bw_comm_size,
+      fwd_ep_dispatch_size=getattr(self, '_ep_fw_dispatch_size', 0) or 0,
+      fwd_ep_combine_size=getattr(self, '_ep_fw_combine_size', 0) or 0,
+      bwd_ep_dispatch_size=getattr(self, '_ep_bw_dispatch_size', 0) or 0,
+      bwd_ep_combine_size=getattr(self, '_ep_bw_combine_size', 0) or 0,
+      fwd_cp_size=self._cp_fw_comm_size, bwd_cp_size=self._cp_bw_comm_size,
+      enable_timeline=enable_timeline,
+    )
+
   def get_total_flow_network_time(self):
     self.log.info("wxftest get total flow network time")
     
@@ -2686,19 +2947,7 @@ class Llm:
     # 计算并缓存结果（enable_timeline=True）
     self.log.info("wxftest computing flow network result with timeline")
     result = self._flow_net.total_flow_network_time(
-      pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
-      ep=self.exe.expert_par, cp=self.exe.context_par,
-      fwdCompTime=self._block_fw_time * self._blocks_per_proc,
-      bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
-      microbatches=self.exe._num_microbatches,
-      fwdTPSize=self._tp_fw_comm_size,
-      bwdTPSize=self._tp_bw_comm_size,
-      fwdPPSize=self._pp_fw_comm_size,
-      bwdPPSize=self._pp_bw_comm_size,
-      dpSize=self._dp_comm_size,
-      fwd_ep_size=self._ep_fw_comm_size, bwd_ep_size=self._ep_bw_comm_size,
-      fwd_cp_size=self._cp_fw_comm_size, bwd_cp_size=self._cp_bw_comm_size,
-      enable_timeline=True)
+      **self._flow_network_kwargs(enable_timeline=True))
     
     # 缓存结果
     self._flow_network_cache = result
@@ -2717,19 +2966,7 @@ class Llm:
     # 缓存不存在，需要重新计算（enable_timeline=False）
     self.log.info("wxftest computing flow network result without timeline for total comm time")
     network_result = self._flow_net.total_flow_network_time(
-      pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
-      ep=self.exe.expert_par, cp=self.exe.context_par,
-      fwdCompTime=self._block_fw_time * self._blocks_per_proc,
-      bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
-      microbatches=self.exe._num_microbatches,
-      fwdTPSize=self._tp_fw_comm_size,
-      bwdTPSize=self._tp_bw_comm_size,
-      fwdPPSize=self._pp_fw_comm_size,
-      bwdPPSize=self._pp_bw_comm_size,
-      dpSize=self._dp_comm_size,
-      fwd_ep_size=self._ep_fw_comm_size, bwd_ep_size=self._ep_bw_comm_size,
-      fwd_cp_size=self._cp_fw_comm_size, bwd_cp_size=self._cp_bw_comm_size,
-      enable_timeline=False)  # 不需要timeline数据
+      **self._flow_network_kwargs(enable_timeline=False))
     
     # 将结果存入缓存
     self._flow_network_cache = network_result
@@ -2750,19 +2987,7 @@ class Llm:
     # 缓存不存在，需要重新计算（enable_timeline=False）
     self.log.info("wxftest computing flow network result without timeline for global time")
     network_result = self._flow_net.total_flow_network_time(
-      pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
-      ep=self.exe.expert_par, cp=self.exe.context_par,
-      fwdCompTime=self._block_fw_time * self._blocks_per_proc,
-      bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * self._blocks_per_proc,
-      microbatches=self.exe._num_microbatches,
-      fwdTPSize=self._tp_fw_comm_size,
-      bwdTPSize=self._tp_bw_comm_size,
-      fwdPPSize=self._pp_fw_comm_size,
-      bwdPPSize=self._pp_bw_comm_size,
-      dpSize=self._dp_comm_size,
-      fwd_ep_size=self._ep_fw_comm_size, bwd_ep_size=self._ep_bw_comm_size,
-      fwd_cp_size=self._cp_fw_comm_size, bwd_cp_size=self._cp_bw_comm_size,
-      enable_timeline=False)  # 不需要timeline数据
+      **self._flow_network_kwargs(enable_timeline=False))
     
     # 将结果存入缓存
     self._flow_network_cache = network_result
@@ -2827,7 +3052,7 @@ class Llm:
     compute_time = self.get_fw_time() + self.get_bw_time() + \
       self.get_optim_step_time()
     perfect_time = self._blocks_per_proc * self.exe._num_microbatches * \
-      total_flops / self.sys.matrix.flops(self.exe.datatype)
+      total_flops / self.sys.matrix.flops(self.exe.matrix_dtype)
     return perfect_time / compute_time
 
   def get_system_efficiency(self):
@@ -2838,7 +3063,7 @@ class Llm:
   def get_total_efficiency(self):
     total_flops = self.get_useful_flops()
     perfect_time = self._blocks_per_proc * self.exe._num_microbatches * \
-      total_flops / self.sys.matrix.flops(self.exe.datatype)
+      total_flops / self.sys.matrix.flops(self.exe.matrix_dtype)
     return perfect_time / self.get_total_time()
 
   def get_weight_space_min(self):

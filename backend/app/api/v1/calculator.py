@@ -17,12 +17,24 @@ router = fastapi.APIRouter()
 
 @router.get("/gpu")
 def gpu_list():
-    return settings.GPU_LIST
+    """GPU catalog with intra/inter BW (GB/s) from systems/<name>.json when present."""
+    result = []
+    for gpu in settings.GPU_LIST:
+        item = gpu.dict() if hasattr(gpu, "dict") else dict(gpu)
+        intra, inter, pcie = CalculateRepository.load_systems_network_bandwidths(item.get("name"))
+        if intra is not None:
+            item["bus_bandwidth"] = intra
+        if inter is not None:
+            item["network_bandwidth"] = inter
+        if pcie is not None:
+            item["pcie_bandwidth"] = pcie
+        result.append(item)
+    return result
 
 @router.get("/network")
 def get_network():
+    # Bandwidth is per-GPU from systems JSON (GB/s); only topology is selectable.
     return {
-        "network_bandwidth": 0,
         "network_topology": [type.value for type in NetworkTopologyType]
     }
 
@@ -64,22 +76,25 @@ def get_gpu_datatype(gpu_name: str):
                 detail=f"GPU配置文件 {gpu_name}.json 格式错误：缺少matrix或vector字段"
             )
         
-        # 获取matrix和vector中共同支持的数据类型
-        matrix_datatypes = set(gpu_config["matrix"].keys())
-        vector_datatypes = set(gpu_config["vector"].keys())
-        
-        # 找到交集
-        common_datatypes = list(matrix_datatypes.intersection(vector_datatypes))
-        
-        if not common_datatypes:
+        # Matrix / vector engines expose independent dtype lists from systems JSON.
+        matrix_datatypes = sorted(gpu_config["matrix"].keys())
+        vector_datatypes = sorted(gpu_config["vector"].keys())
+        common_datatypes = sorted(
+            set(matrix_datatypes).intersection(vector_datatypes))
+
+        if not matrix_datatypes or not vector_datatypes:
             raise HTTPException(
                 status_code=400,
-                detail=f"GPU {gpu_name} 在matrix和vector中没有共同支持的数据类型"
+                detail=(f"GPU {gpu_name} matrix/vector dtype lists are empty "
+                        f"(matrix={matrix_datatypes}, vector={vector_datatypes})")
             )
-        
+
         return {
             "gpu_name": gpu_name,
-            "datatypes": sorted(common_datatypes)
+            "matrix_datatypes": matrix_datatypes,
+            "vector_datatypes": vector_datatypes,
+            # Backward compatible: intersection for single-select clients
+            "datatypes": common_datatypes or matrix_datatypes,
         }
         
     except json.JSONDecodeError:
@@ -135,11 +150,9 @@ def create_calculator(gpu: Gpu,
                       trainning_config: TrainningConfig):
     cr = CalculateRepository()
     res = cr.calculate(gpu, network, model, trainning_config)
-    if res.get("status") == "error":
-        raise HTTPException(
-            status_code=400,  # 客户端参数错误
-            detail=res["error"]
-        )
+    # Return structured error in HTTP 200 body so the frontend can always
+    # read `error` / `status` (HTTP 400 detail is easy to lose in proxies /
+    # umi error handling and leaves the UI without a message).
     return res
 
 
@@ -150,11 +163,6 @@ def create_optimal(gpu: Gpu,
                     optimal_config: OptimalConfig):
     cr = CalculateRepository()
     res = cr.optimal(gpu, network, model, optimal_config)
-    if res.get("status") == "error":
-        raise HTTPException(
-            status_code=400,  # 客户端参数错误
-            detail=res["error"]
-        )
     return res
 
 

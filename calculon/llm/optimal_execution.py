@@ -173,7 +173,12 @@ class OptimalExecution(calculon.CommandLine):
         self.layers = None  # 不使用layers参数
         self.num_procs = optimal_config.num_procs
         self.max_batch_size = optimal_config.max_batch_size
-        self.datatype = optimal_config.datatype
+        self.datatype = (getattr(optimal_config, 'datatype', None)
+                         or getattr(optimal_config, 'matrix_dtype', None))
+        self.matrix_dtype = (getattr(optimal_config, 'matrix_dtype', None)
+                             or self.datatype)
+        self.vector_dtype = (getattr(optimal_config, 'vector_dtype', None)
+                             or self.datatype)
         self.cpus = 1  # 默认使用1个CPU
         self.noneok = True  # 允许没有找到结果
         self.fused_activation = ['none']  # 默认不使用融合激活
@@ -199,7 +204,8 @@ class OptimalExecution(calculon.CommandLine):
               for tensor_par_comm_type in ['ar', 'p2p_rs_ag', 'rs_ag']:
                 params.append(
                   (args.debug, args.top_n, args.layers, args.num_procs,
-                    args.max_batch_size, args.datatype, app, syst, tp, pp, dp,
+                    args.max_batch_size, args.datatype, args.matrix_dtype,
+                    args.vector_dtype, app, syst, tp, pp, dp,
                     ppint, batch_size, activation_recompute, optimizer_sharding,
                     tensor_par_comm_type, args.fused_activation, args.mbs_break,
                     not args.no_tp_overlap, not args.no_dp_overlap))
@@ -368,8 +374,11 @@ class OptimalExecution(calculon.CommandLine):
   def search(debug, top_n, layers, num_procs, max_batch_size, datatype,
           app, syst, tp, pp, dp, ppint, batch_size, activation_recompute,
           optimizer_sharding, tensor_par_comm_type, fused_acts, mbs_break,
-          allow_tp_overlap, allow_dp_overlap):
+          allow_tp_overlap, allow_dp_overlap,
+          matrix_dtype=None, vector_dtype=None):
     num_nets = syst.num_networks
+    matrix_dtype = matrix_dtype or datatype
+    vector_dtype = vector_dtype or datatype
 
     best = []
     exe_count = 0
@@ -409,6 +418,8 @@ class OptimalExecution(calculon.CommandLine):
                 'batch_size': batch_size,
                 'microbatch_size': microbatch_size,
                 'datatype': datatype,
+                'matrix_dtype': matrix_dtype,
+                'vector_dtype': vector_dtype,
                 'fused_activation': fused_act,
                 'attention_type': 'multihead',
                 'activation_recompute': activation_recompute,
@@ -463,10 +474,12 @@ class OptimalExecution(calculon.CommandLine):
 
   @staticmethod
   def isinstance_search(debug, top_n, layers, num_procs, max_batch_size, datatype,
-          app, syst, tp, pp, dp, ppint, batch_size, activation_recompute,
-          optimizer_sharding, tensor_par_comm_type, fused_acts, mbs_break,
-          allow_tp_overlap, allow_dp_overlap):
+          matrix_dtype, vector_dtype, app, syst, tp, pp, dp, ppint, batch_size,
+          activation_recompute, optimizer_sharding, tensor_par_comm_type,
+          fused_acts, mbs_break, allow_tp_overlap, allow_dp_overlap):
     num_nets = syst.num_networks
+    matrix_dtype = matrix_dtype or datatype
+    vector_dtype = vector_dtype or datatype
 
     best = []
     exe_count = 0
@@ -506,6 +519,8 @@ class OptimalExecution(calculon.CommandLine):
                 'batch_size': batch_size,
                 'microbatch_size': microbatch_size,
                 'datatype': datatype,
+                'matrix_dtype': matrix_dtype,
+                'vector_dtype': vector_dtype,
                 'fused_activation': fused_act,
                 'attention_type': 'multihead',
                 'activation_recompute': activation_recompute,

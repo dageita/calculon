@@ -34,6 +34,9 @@ class Processor:
         last = flops
         self._datatypes[datatype]['efficiency'].append((flops, eff))
 
+  def supported_datatypes(self):
+    return list(self._datatypes.keys())
+
   def flops(self, datatype):
     return self._datatypes[datatype]['flops']
 

@@ -46,4 +46,5 @@ nosetests.xml
 *.cache.*
 .cursor/
 
-test/test_ployt_timeline.py
+# Local test / calibration artifacts (entire directory)
+test/

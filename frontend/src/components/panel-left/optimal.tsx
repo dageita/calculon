@@ -23,7 +23,8 @@ const OptimalPanel = (props) => {
     const { setChangeLog } = useModel(LogModel);
 
     const [state, setState] = useImmer({
-        dataTypeList: [],
+        matrixDataTypeList: [],
+        vectorDataTypeList: [],
         lastGpuValue: null,
     });
 
@@ -36,16 +37,17 @@ const OptimalPanel = (props) => {
 
     // 加载优化策略列表
     const loadDataTypes = async () => {
-        // 注意：这里原代码使用了curGpu.value，可能需要根据实际情况调整
+        if (!curGpu?.value) return;
         const result = await getDataTypes(curGpu.value) as any;
-        const dataTypes = result.datatypes.map((item: any) => ({
+        const toOpts = (arr: string[] = []) => arr.map((item: string) => ({
             key: item,
             label: item,
             value: item,
         }));
         setState(prev => ({
             ...prev,
-            dataTypeList: dataTypes
+            matrixDataTypeList: toOpts(result.matrix_datatypes || result.datatypes || []),
+            vectorDataTypeList: toOpts(result.vector_datatypes || result.datatypes || []),
         }));
     };
 
@@ -72,8 +74,9 @@ const OptimalPanel = (props) => {
             // 如果需要可以添加其他逻辑，比如触发某些函数
             if (!isSame) {
 
-                if (otherConfig?.datatype) {
-                    setParamValue('datatype', undefined, 'Data Type');
+                if (otherConfig?.matrix_dtype || otherConfig?.vector_dtype) {
+                    setParamValue('matrix_dtype', undefined, 'Matrix Data Type');
+                    setParamValue('vector_dtype', undefined, 'Vector Data Type');
                 }
             }
         }
@@ -135,13 +138,23 @@ const OptimalPanel = (props) => {
                 {renderBatchSize()}
             </div>
 
-            <p className={styles.section_title}>{t('datatype')}</p>
+            <p className={styles.section_title}>{t('matrix_dtype')}</p>
             <div className={styles['group-content']}>
                 <Select
-                    options={state.dataTypeList}
-                    placeholder={t('Select one datatype')}
-                    value={otherConfig['datatype']}
-                    onChange={(val) => setParamValue('datatype', val, 'Data Type')}
+                    options={state.matrixDataTypeList}
+                    placeholder={t('Select matrix datatype')}
+                    value={otherConfig['matrix_dtype']}
+                    onChange={(val) => setParamValue('matrix_dtype', val, 'Matrix Data Type')}
+                />
+            </div>
+
+            <p className={styles.section_title}>{t('vector_dtype')}</p>
+            <div className={styles['group-content']}>
+                <Select
+                    options={state.vectorDataTypeList}
+                    placeholder={t('Select vector datatype')}
+                    value={otherConfig['vector_dtype']}
+                    onChange={(val) => setParamValue('vector_dtype', val, 'Vector Data Type')}
                 />
             </div>
         </div>

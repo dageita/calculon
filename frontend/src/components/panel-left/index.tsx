@@ -85,15 +85,17 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     }
     if (state.active == 'others') {
       if (curMode === 'guide' && otherConfig && otherConfig.microbatch_size
-        && otherConfig.optimization_strategy
+        && otherConfig.activation_recompute
         && otherConfig.tensor_par
         && otherConfig.pipeline_par
         && otherConfig.data_par
-        && otherConfig.datatype
+        && otherConfig.matrix_dtype
+        && otherConfig.vector_dtype
       ) {
         return true
       } else if (curMode === 'optimal' && otherConfig && otherConfig.max_batch_size
-        && otherConfig.datatype) {
+        && otherConfig.matrix_dtype
+        && otherConfig.vector_dtype) {
         return true
       }
 
@@ -120,11 +122,13 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         "memory": curGpu['memory'],
         "memory_bandwidth": curGpu['memory_bandwidth'],
         "bus_bandwidth": curGpu['bus_bandwidth'],
+        "network_bandwidth": curGpu['network_bandwidth'],
         "support_p2p": curGpu['support_p2p'],
         "num_procs": curGpu['num_procs']
       },
       "network": {
-        "network_bandwidth": curNetwork['network_bandwidth'],
+        // GB/s from systems/<gpu>.json (same as GPU Inter-node Bandwidth); not user Gb/s.
+        "network_bandwidth": curGpu['network_bandwidth'] ?? curNetwork['network_bandwidth'],
         "network_topology": curNetwork['network_topology']
       },
       "model": {
@@ -154,6 +158,8 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     if (curMode ==='guide') {
       params['trainning_config'] = {
         "optimization_strategy": otherConfig['optimization_strategy'],
+        "activation_recompute": otherConfig['activation_recompute'],
+        "optimizer_sharding": Boolean(otherConfig['optimizer_sharding']) && (otherConfig['data_par'] || 0) > 1,
         "tensor_par": otherConfig['tensor_par'],
         "pipeline_par": otherConfig['pipeline_par'],
         "data_par": otherConfig['data_par'],
@@ -161,14 +167,16 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         "context_par": otherConfig['context_par'] || 1,
         "batch_size": otherConfig['batch_size'],
         "microbatch_size": otherConfig['microbatch_size'],
-        "datatype": otherConfig['datatype']
+        "matrix_dtype": otherConfig['matrix_dtype'],
+        "vector_dtype": otherConfig['vector_dtype']
       }
       calcRes = await calculate(params)
     } else {
       params['optimal_config'] = {
         "num_procs": curGpu['num_procs'],
         "max_batch_size": otherConfig['max_batch_size'],
-        "datatype": otherConfig['datatype']
+        "matrix_dtype": otherConfig['matrix_dtype'],
+        "vector_dtype": otherConfig['vector_dtype']
       }
       calcRes = await optimal(params)
     }

@@ -600,7 +600,7 @@ class HybridLlm(Llm):
             compute_time = self.get_fw_time() + self.get_bw_time() + self.get_optim_step_time()
         
         perfect_time = self._blocks_per_proc * self.exe._num_microbatches * \
-                      total_flops / self.sys.matrix.flops(self.exe.datatype)
+                      total_flops / self.sys.matrix.flops(self.exe.matrix_dtype)
         
         return perfect_time / compute_time if compute_time > 0 else 0.0
     
@@ -621,7 +621,7 @@ class HybridLlm(Llm):
         """Get total efficiency using hybrid profiling."""
         total_flops = self.get_useful_flops()
         perfect_time = self._blocks_per_proc * self.exe._num_microbatches * \
-                      total_flops / self.sys.matrix.flops(self.exe.datatype)
+                      total_flops / self.sys.matrix.flops(self.exe.matrix_dtype)
         
         total_time = self.get_total_time()
         return perfect_time / total_time if total_time > 0 else 0.0

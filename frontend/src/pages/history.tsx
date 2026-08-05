@@ -85,12 +85,16 @@ const History: FC<IIndexProps> = forwardRef((props, ref) => {
         <div className="history-params-item-value">{cluster?.name}</div>
       </div>
       <div className="history-params-item">
-        <div className="history-params-item-title">Bus Bandwidth</div>
+        <div className="history-params-item-title">Intra-node Bandwidth (GB/s)</div>
         <div className="history-params-item-value">{cluster?.bus_bandwidth}</div>
       </div>
       <div className="history-params-item">
-        <div className="history-params-item-title">Per-host network bandwidth</div>
+        <div className="history-params-item-title">Inter-node Bandwidth (GB/s)</div>
         <div className="history-params-item-value">{cluster?.network_bandwidth}</div>
+      </div>
+      <div className="history-params-item">
+        <div className="history-params-item-title">PCIe Bandwidth (GB/s)</div>
+        <div className="history-params-item-value">{cluster?.pcie_bandwidth}</div>
       </div>
       <Divider />
       <div className="history-params-item">
@@ -103,8 +107,16 @@ const History: FC<IIndexProps> = forwardRef((props, ref) => {
       </div>
       <Divider />
       <div className="history-params-item">
-        <div className="history-params-item-title">Optimization strategy</div>
-        <div className="history-params-item-value">{other_config.optimization_strategy}</div>
+        <div className="history-params-item-title">Activation recompute</div>
+        <div className="history-params-item-value">
+          {other_config.activation_recompute || other_config.optimization_strategy}
+        </div>
+      </div>
+      <div className="history-params-item">
+        <div className="history-params-item-title">Optimizer sharding</div>
+        <div className="history-params-item-value">
+          {String(other_config.optimizer_sharding ?? false)}
+        </div>
       </div>
       <div className="history-params-item">
         <div className="history-params-item-title">Tensor parallel degree</div>

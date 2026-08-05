@@ -9,11 +9,29 @@ import styles from './index.less';
 import ProjectModel from '@/models/projectModel';
 import { InfoCircleOutlined } from '@ant-design/icons';
 import LogModel from '@/models/logModel';
-import { getStrategies, getDataTypes } from '@/services';
+import { getDataTypes } from '@/services';
 import { useImmer } from 'use-immer';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 
+
+const RECOMPUTE_OPTIONS = [
+  { key: 'full', label: 'full', value: 'full' },
+  { key: 'attn_only', label: 'attn_only', value: 'attn_only' },
+  { key: 'none', label: 'none', value: 'none' },
+];
+
+const OPTIMIZER_SHARDING_OPTIONS = [
+  { key: 'true', label: 'True', value: 'true' },
+  { key: 'false', label: 'False', value: 'false' },
+];
+
+// Keep recommend APIs that still expect legacy optimization_strategy labels in sync.
+const recomputeToStrategy = (recompute: string) => {
+  if (recompute === 'full') return 'Full recomputation';
+  if (recompute === 'attn_only') return 'Attention-only recomputation';
+  return 'None recomputation';
+};
 
 // 参数配置列表
 const PARAMS_LIST = [
@@ -66,15 +84,34 @@ const OtherPanel = (props) => {
   const { setChangeLog } = useModel(LogModel);
 
   const [state, setState] = useImmer({
-    strategyList: [],
-    dataTypeList: [],
+    matrixDataTypeList: [],
+    vectorDataTypeList: [],
     lastGpuValue: null,
   });
+
+  const dpDegree = otherConfig?.data_par || 0;
+  const optimizerShardingEnabled = dpDegree > 1;
 
   // 设置参数值并记录变更日志
   const setParamValue = (key, val, title) => {
     setChangeLog(title, val, otherConfig?.[key]);
     setOtherConfig({ [key]: val });
+  };
+
+  const setActivationRecompute = (val: string) => {
+    setChangeLog('Activation recompute', val, otherConfig?.activation_recompute);
+    setOtherConfig({
+      activation_recompute: val,
+      optimization_strategy: recomputeToStrategy(val),
+    });
+  };
+
+  const setOptimizerSharding = (val: boolean) => {
+    if (!optimizerShardingEnabled && val) {
+      return;
+    }
+    setChangeLog('Optimizer sharding', String(val), String(otherConfig?.optimizer_sharding));
+    setOtherConfig({ optimizer_sharding: val });
   };
 
   // 计算最小值
@@ -85,71 +122,53 @@ const OtherPanel = (props) => {
     return curGpu.num_procs;
   };
 
-  // 加载优化策略列表
-  const loadStrategies = async () => {
-    const strategyRes = await getStrategies();
-    const strList = strategyRes.map(item => ({
-      key: item,
-      label: item,
-      value: item,
-    }));
-    setState(prev => ({
-      ...prev,
-      strategyList: strList
-    }));
-  };
-
-
-  const loadDataTypes = async () => {
-      // 注意：这里原代码使用了curGpu.value，可能需要根据实际情况调整
-      const result = await getDataTypes(curGpu.value) as any;
-      const dataTypes = result.datatypes.map((item: any) => ({
-          key: item,
-          label: item,
-          value: item,
-      }));
-      setState(prev => ({
+  const loadDataTypes = async (gpuName?: string) => {
+      const name = gpuName || curGpu?.value || curGpu?.name;
+      if (!name) return;
+      try {
+        const result = await getDataTypes(name) as any;
+        const toOpts = (arr: string[] = []) => arr.map((item: string) => ({
+            key: item,
+            label: item,
+            value: item,
+        }));
+        const matrixList = toOpts(result.matrix_datatypes || result.datatypes || []);
+        const vectorList = toOpts(result.vector_datatypes || result.datatypes || []);
+        setState(prev => ({
+            ...prev,
+            matrixDataTypeList: matrixList,
+            vectorDataTypeList: vectorList,
+        }));
+      } catch (e) {
+        console.error('loadDataTypes failed', e);
+        setState(prev => ({
           ...prev,
-          dataTypeList: dataTypes
-      }));
+          matrixDataTypeList: [],
+          vectorDataTypeList: [],
+        }));
+      }
   };
 
-
-    // 组件卸载时记录当前GPU值
-    useEffect(() => {
-        return () => {
-            // 组件卸载时保存当前GPU值
-            if (curGpu?.value) {
-                setState(prev => ({
-                    ...prev,
-                    lastGpuValue: curGpu.value
-                }));
-            }
-        };
-    }, [curGpu?.value]); // 依赖curGpu.value，确保值变化时能正确记录
-
-    // 组件挂载时比较GPU值
-    useEffect(() => {
-        // 组件挂载时，如果存在上次记录的GPU值，则进行比较
-        if (state.lastGpuValue !== null && curGpu?.value) {
-            const isSame = state.lastGpuValue === curGpu.value;
-            // 这里可以根据实际需求处理比较结果
-            console.log(`GPU值是否与上次相同: ${isSame}`);
-            // 如果需要可以添加其他逻辑，比如触发某些函数
-            if (!isSame) {
-
-                if (otherConfig?.datatype) {
-                    setParamValue('datatype', undefined, 'Data Type');
-                }
-            }
-        }
-    }, []); // 空依赖数组表示只在组件挂载时执行一次
-
-  // 组件加载时获取策略列表
+  // GPU 变化时重新拉取 matrix/vector dtype
   useEffect(() => {
-    loadStrategies();
-    loadDataTypes();
-  }, []);
+    const gpuName = curGpu?.value || curGpu?.name;
+    if (!gpuName) return;
+    if (state.lastGpuValue && state.lastGpuValue !== gpuName) {
+      setOtherConfig({
+        matrix_dtype: undefined,
+        vector_dtype: undefined,
+      });
+    }
+    setState(prev => ({ ...prev, lastGpuValue: gpuName }));
+    loadDataTypes(gpuName);
+  }, [curGpu?.value, curGpu?.name]);
+
+  // DP<=1 时强制关闭 optimizer sharding
+  useEffect(() => {
+    if (!optimizerShardingEnabled && otherConfig?.optimizer_sharding) {
+      setOtherConfig({ optimizer_sharding: false });
+    }
+  }, [optimizerShardingEnabled, otherConfig?.optimizer_sharding]);
 
   // 渲染微批次大小设置组件
   const renderMicrobatchSize = () => (
@@ -211,12 +230,32 @@ const OtherPanel = (props) => {
   return (
     <div className={styles.nest}>
       <p className={styles.section_title}>{t('optimization strategy')}</p>
+
+      <p className={styles.section_title} style={{ marginTop: 8 }}>{t('activation_recompute')}</p>
       <div className={styles['group-content']}>
         <Select
-          options={state.strategyList}
+          options={RECOMPUTE_OPTIONS}
           placeholder={t('Please select')}
-          value={otherConfig['optimization_strategy']}
-          onChange={(val) => setParamValue('optimization_strategy', val, 'Optimization Strategy')}
+          value={otherConfig['activation_recompute']}
+          onChange={(val) => setActivationRecompute(val)}
+        />
+      </div>
+
+      <p className={styles.section_title} style={{ marginTop: 8 }}>{t('optimizer_sharding')}</p>
+      <div className={styles.slider_tip}>
+        <span style={{ color: optimizerShardingEnabled ? undefined : '#ff4d4f' }}>
+          {optimizerShardingEnabled
+            ? t('optimizer_sharding_tip')
+            : t('optimizer_sharding_dp_tip')}
+        </span>
+      </div>
+      <div className={styles['group-content']}>
+        <Select
+          options={OPTIMIZER_SHARDING_OPTIONS}
+          placeholder={t('Please select')}
+          value={otherConfig['optimizer_sharding'] ? 'true' : 'false'}
+          disabled={!optimizerShardingEnabled}
+          onChange={(val) => setOptimizerSharding(val === 'true')}
         />
       </div>
 
@@ -269,13 +308,27 @@ const OtherPanel = (props) => {
         {renderMicrobatchSize()}
       </div>
 
-      <p className={styles.section_title}>{t('datatype')}</p>
+      <p className={styles.section_title}>{t('compute_precision')}</p>
+      <div className={styles.slider_tip}>
+        <span>{t('compute_precision_tip')}</span>
+      </div>
+      <p className={styles.section_title} style={{ marginTop: 8 }}>{t('matrix_dtype')}</p>
       <div className={styles['group-content']}>
         <Select
-          options={state.dataTypeList}
-          placeholder={t('Select one datatype')}
-          value={otherConfig['datatype']}
-          onChange={(val) => setParamValue('datatype', val, 'Data Type')}
+          options={state.matrixDataTypeList}
+          placeholder={t('Select matrix datatype')}
+          value={otherConfig['matrix_dtype']}
+          onChange={(val) => setParamValue('matrix_dtype', val, 'Matrix Data Type')}
+        />
+      </div>
+
+      <p className={styles.section_title}>{t('vector_dtype')}</p>
+      <div className={styles['group-content']}>
+        <Select
+          options={state.vectorDataTypeList}
+          placeholder={t('Select vector datatype')}
+          value={otherConfig['vector_dtype']}
+          onChange={(val) => setParamValue('vector_dtype', val, 'Vector Data Type')}
         />
       </div>
     </div>

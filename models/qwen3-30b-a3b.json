@@ -1,0 +1,16 @@
+{
+  "hidden": 2048,
+  "feedforward": 6144,
+  "seq_size": 40960,
+  "attn_heads": 32,
+  "kv_heads": 4,
+  "attn_size": 128,
+  "num_blocks": 48,
+  "vocab_size": 151936,
+  "num_experts": 128,
+  "moe_topk": 8,
+  "num_shared_experts": 0,
+  "moe_feedforward": 768,
+  "first_k_dense": 0,
+  "moe_layer_freq": 1
+}

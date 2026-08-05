@@ -11,7 +11,9 @@ export default {
                 "sparse_tensor_fp32_processing_power": 495,
                 "memory": 141,
                 "memory_bandwidth": 4900,
-                "bus_bandwidth": 900,
+                "bus_bandwidth": 450,
+                "network_bandwidth": 25,
+                "pcie_bandwidth": 64,
                 "support_p2p": true
             }
         ]);
@@ -20,7 +22,6 @@ export default {
     // 返回值也可以是对象形式
     'GET /llm_training_calculator/network': (req: any, res: any) => {
         res.send({
-            "network_bandwidth": 0,
             "network_topology": ["Single machine", "One big switch", "Host aggregated one switch", "Spine-leaf"]
         })
     },

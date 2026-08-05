@@ -5,6 +5,7 @@ from tempfile import NamedTemporaryFile
 
 import openpyxl
 from app.config import settings
+from app.logging_config import native_output_guard
 from app.models.calculator_input import Gpu, Model, Network, TrainningConfig, OptimalConfig
 from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import MemoryUsage, Computation, Communication, Timeline, TotalTime, CalculatorResult, \
@@ -13,19 +14,16 @@ from app.models.calculator_result import MemoryUsage, Computation, Communication
 import logging
 import json
 import os
-import importlib
 
 from calculon.llm.runner import Runner
 from calculon.llm.llm import Llm
 from calculon.llm.optimal_execution import OptimalExecution
-from calculon.hybrid_profiler import HybridProfilerConfigs
-from calculon.hybrid_llm import HybridLlm, create_hybrid_llm
+from calculon import System
 
-# 必须与 HybridLlm → super().compile 所在包里的 isinstance(sys, System) 使用同一 System。
-# 若仅用本文件顶部的 Llm.__module__，在「工作区 calculon」与「site-packages calculon」混用时，
-# 仍可能与实际执行 compile 的 Llm 不是同一模块。
-_BaseLlm = HybridLlm.__bases__[0]
-System = importlib.import_module(_BaseLlm.__module__).System
+# Offline / hybrid profiler path temporarily disabled — timing uses systems/
+# efficiency curves (roofline) via the standard Calculon Runner.
+# from calculon.hybrid_profiler import HybridProfilerConfigs
+# from calculon.hybrid_llm import HybridLlm, create_hybrid_llm
 
 
 class OptimizationStrategyType(Enum):
@@ -40,9 +38,41 @@ class NetworkTopologyType(Enum):
     SPINE_LEAF = "Spine-leaf"
 
 class CalculateRepository:
+    # Level/handlers come from backend/main.py --log-level (root logging config).
     logger = logging.getLogger("CalculateRepository")
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.DEBUG)
+
+    @staticmethod
+    def systems_json_path(gpu_name: str):
+        """Resolve systems/<gpu>.json under the Calculon project root."""
+        repo_file = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.abspath(os.path.join(repo_file, "../../.."))
+        candidates = [
+            os.path.join(project_root, "systems", f"{gpu_name}.json"),
+            os.path.join(project_root, "systems", f"{(gpu_name or '').lower()}.json"),
+            os.path.join(project_root, "calculon", "systems", f"{gpu_name}.json"),
+        ]
+        return next((p for p in candidates if p and os.path.exists(p)), None)
+
+    @classmethod
+    def load_systems_network_bandwidths(cls, gpu_name: str):
+        """Read intra/inter/PCIe bandwidth (GB/s) from systems JSON.
+
+        Returns (intra, inter, pcie) where:
+          intra = networks[0].bandwidth (NVLink / scale-up)
+          inter = networks[1].bandwidth (NIC / scale-out)
+          pcie  = mem2.GBps (PCIe / host offload path)
+        """
+        path = cls.systems_json_path(gpu_name)
+        if not path:
+            return None, None, None
+        with open(path, "r") as f:
+            sys_json = json.load(f)
+        nets = sys_json.get("networks") or []
+        intra = nets[0].get("bandwidth") if len(nets) > 0 else None
+        inter = nets[1].get("bandwidth") if len(nets) > 1 else None
+        mem2 = sys_json.get("mem2") or {}
+        pcie = mem2.get("GBps")
+        return intra, inter, pcie
 
     def parameter_metrics(self, model: Model):
         params = Parameter()
@@ -190,35 +220,96 @@ class CalculateRepository:
         }
         return Llm.Application(app_json)
 
-    def build_exe(self, gpu_dict, trainning_config_dict, model_dict=None):
+    def build_exe(self, gpu_dict, trainning_config_dict, model_dict=None, network_dict=None):
         strategy_map = {
             "Full recomputation": "full",
             "None recomputation": "none",
-            "Attention-only recomputation": "attn_only"
+            "Attention-only recomputation": "attn_only",
+            # Direct values from new frontend sub-fields.
+            "full": "full",
+            "none": "none",
+            "attn_only": "attn_only",
         }
-        activation_recompute = strategy_map.get(trainning_config_dict.get("optimization_strategy"), "none")
+        # Prefer explicit activation_recompute; fall back to optimization_strategy.
+        raw_recompute = (
+            trainning_config_dict.get("activation_recompute")
+            or trainning_config_dict.get("optimization_strategy")
+        )
+        activation_recompute = strategy_map.get(raw_recompute, "none")
+        if activation_recompute not in ("full", "attn_only", "none"):
+            activation_recompute = "none"
+
+        data_par = trainning_config_dict.get("data_par") or 1
+        # Optimizer sharding (ZeRO-1) only when DP > 1.
+        optimizer_sharding = bool(trainning_config_dict.get("optimizer_sharding"))
+        if data_par <= 1:
+            optimizer_sharding = False
+
         # Auto-select MLA when model carries LoRA ranks (DeepSeek-V3 etc.).
         attention_type = "mla" if model_dict and model_dict.get("q_lora_rank") else "multihead"
+
+        # Tier assignment: 0 = intra (NVLink), 1 = inter (NIC).
+        # Single Machine → all collectives on tier 0. Inter BW comes from
+        # systems JSON / Gpu.network_bandwidth (GB/s), not a frontend Gb/s slider.
+        network_dict = network_dict or {}
+        topo = (network_dict.get("network_topology") or "").strip().lower()
+        inter_bw = gpu_dict.get("network_bandwidth")
+        if inter_bw is None:
+            inter_bw = network_dict.get("network_bandwidth")
+        if inter_bw is None:
+            _, systems_inter, _ = self.load_systems_network_bandwidths(gpu_dict.get("name"))
+            inter_bw = systems_inter
+        try:
+            inter_bw_val = float(inter_bw) if inter_bw is not None else None
+        except (TypeError, ValueError):
+            inter_bw_val = None
+        has_inter = (
+            (gpu_dict.get("num_networks") or 2) > 1
+            and "single machine" not in topo
+            and (inter_bw_val is None or inter_bw_val > 0)
+        )
+        inter_tier = 1 if has_inter else 0
+        if not has_inter and ("single machine" in topo or (inter_bw_val is not None and inter_bw_val <= 0)):
+            self.logger.info(
+                "Single-fabric mode (topo=%r, network_bandwidth=%s GB/s): "
+                "mapping PP/DP/EP to intra tier 0",
+                network_dict.get("network_topology"), inter_bw,
+            )
+
         exe_json = {
             "num_procs": gpu_dict.get("num_procs"),
             "tensor_par": trainning_config_dict.get("tensor_par"),
             "pipeline_par": trainning_config_dict.get("pipeline_par"),
-            "data_par": trainning_config_dict.get("data_par"),
+            "data_par": data_par,
             "expert_par": trainning_config_dict.get("expert_par") or 1,
             "context_par": trainning_config_dict.get("context_par") or 1,
             "tensor_par_net": 0,
-            "pipeline_par_net": 0,
-            "data_par_net": 0,
-            "expert_par_net": 0,
+            "pipeline_par_net": inter_tier,
+            "data_par_net": inter_tier,
+            "expert_par_net": inter_tier,
             "context_par_net": 0,
             "batch_size": trainning_config_dict.get("batch_size"),
             "microbatch_size": trainning_config_dict.get("microbatch_size"),
-            "datatype": trainning_config_dict.get("datatype"),
-            "fused_activation": False,
+            # Dual dtype is authoritative. `datatype` is only kept because
+            # Llm.Execution.fields() still requires it (alias of matrix_dtype).
+            "matrix_dtype": (
+                trainning_config_dict.get("matrix_dtype")
+                or trainning_config_dict.get("datatype")
+            ),
+            "vector_dtype": (
+                trainning_config_dict.get("vector_dtype")
+                or trainning_config_dict.get("matrix_dtype")
+                or trainning_config_dict.get("datatype")
+            ),
+            "datatype": (
+                trainning_config_dict.get("matrix_dtype")
+                or trainning_config_dict.get("datatype")
+            ),
+            "fused_activation": True,
             "attention_type": attention_type,
             "activation_recompute": activation_recompute,
             "pipeline_interleaving": 1,
-            "optimizer_sharding": False,
+            "optimizer_sharding": optimizer_sharding,
             "tensor_par_comm_type": "ar",
             "tensor_par_overlap": "none",
             "seq_par_ag_redo": False,
@@ -228,45 +319,71 @@ class CalculateRepository:
             "optimizer_offload": False,
             "training": True
         }
-        print(exe_json)
+        self.logger.debug("exe_json: %s", exe_json)
         return Llm.Execution.from_json(exe_json)
 
     def build_syst(self, gpu_dict, network_dict):
         try:
-            # 与 build_hybrid_profiler_config、api/v1/calculator.py 一致：<项目根>/systems/{gpu}.json
+            # Bandwidth source of truth: systems/<gpu>.json networks[].bandwidth (GB/s).
+            # networks[0] = intra (NVLink / scale-up), networks[1] = inter (NIC).
+            # Do NOT overwrite with frontend "Gb/s" slider or mem2/PCIe bus values.
             name = gpu_dict.get("name")
-            repo_file = os.path.dirname(os.path.abspath(__file__))
-            project_root = os.path.abspath(os.path.join(repo_file, "../../.."))
-            candidates = [
-                os.path.join(project_root, "systems", f"{name}.json"),
-                os.path.join(project_root, "systems", f"{(name or '').lower()}.json"),
-                os.path.join(project_root, "calculon", "systems", f"{name}.json"),
-            ]
-            system_json_path = next((p for p in candidates if p and os.path.exists(p)), None)
+            system_json_path = self.systems_json_path(name)
             if not system_json_path:
                 raise FileNotFoundError(
-                    f"System config file not found for GPU '{name}'. Tried: {candidates}"
+                    f"System config file not found for GPU '{name}'."
                 )
             with open(system_json_path, "r") as f:
                 sys_json = json.load(f)
-            # 处理sys_json.networks[0]，代表机内网络
-            if "networks" in sys_json and len(sys_json["networks"]) > 0:
-                sys_json["networks"][0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
-                sys_json["networks"][0]["topology"] = network_dict.get("network_topology")
-                sys_json["networks"][0]["size"] = gpu_dict.get("num_procs")
-            else:
+            if "networks" not in sys_json or not sys_json["networks"]:
                 raise ValueError("sys_json['networks'] is missing or empty")
-            # 处理sys_json.networks[1]，代表机间网络
-            if len(sys_json["networks"]) > 1:
-                sys_json["networks"][1]["bandwidth"] = network_dict.get("network_bandwidth")
-                sys_json["networks"][1]["topology"] = network_dict.get("network_topology")
+
+            # Optional GPU overrides only when systems values are missing; always GB/s.
+            nets = sys_json["networks"]
+            if nets[0].get("bandwidth") is None and gpu_dict.get("bus_bandwidth") is not None:
+                nets[0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
+            nets[0]["topology"] = network_dict.get("network_topology")
+            nets[0]["size"] = gpu_dict.get("num_procs")
+
+            inter_bw = None
+            if len(nets) > 1:
+                if nets[1].get("bandwidth") is None:
+                    inter_bw = gpu_dict.get("network_bandwidth")
+                    if inter_bw is None:
+                        inter_bw = network_dict.get("network_bandwidth")
+                    if inter_bw is not None:
+                        nets[1]["bandwidth"] = inter_bw
+                nets[1]["topology"] = network_dict.get("network_topology")
             else:
-                # 如果只有一个网络，可以选择添加一个新的网络
-                sys_json["networks"].append({
-                    "bandwidth": network_dict.get("network_bandwidth"),
-                    "topology": network_dict.get("network_topology")
+                inter_bw = (
+                    gpu_dict.get("network_bandwidth")
+                    if gpu_dict.get("network_bandwidth") is not None
+                    else network_dict.get("network_bandwidth")
+                )
+                nets.append({
+                    "bandwidth": inter_bw,
+                    "efficiency": 0.8,
+                    "size": 65536,
+                    "latency": 0.002,
+                    "topology": network_dict.get("network_topology"),
+                    "ops": {
+                        "p2p": [1.0, None],
+                        "reduce_scatter": [1.0, -1],
+                        "all_gather": [1.0, -1],
+                        "all_reduce": [2.0, -1],
+                    },
+                    "must_be_filled": False,
+                    "processor_usage": 0.02,
                 })
-            print(sys_json)
+
+            self.logger.info(
+                "systems BW (GB/s): intra=%s inter=%s topo=%s file=%s",
+                nets[0].get("bandwidth"),
+                nets[1].get("bandwidth") if len(nets) > 1 else None,
+                network_dict.get("network_topology"),
+                system_json_path,
+            )
+            self.logger.debug("sys_json: %s", sys_json)
             return System(sys_json, self.logger)
         except Llm.Error as e:
             return {"status": "error", "error": str(e)}
@@ -274,101 +391,16 @@ class CalculateRepository:
             return {"status": "error", "error": f"Internal error: {str(e)}"}
 
     def build_hybrid_profiler_config(self, gpu_dict):
-        """Build hybrid profiler configuration based on GPU name.
-        
-        This method automatically matches the GPU name (e.g., L20) to the corresponding
-        offline profiled data file (e.g., calculon_offline_data/L20.pkl).
-        
-        Args:
-            gpu_dict: Dictionary containing GPU configuration, must include 'name' field
-            
-        Returns:
-            HybridProfilerConfigs: Configured hybrid profiler with GPU-specific offline data
-        """
-        gpu_name = gpu_dict.get("name")
-        
-        if not gpu_name:
-            self.logger.warning("GPU name not provided, falling back to Calculon theoretical model")
-            # 如果没有GPU名称，使用默认配置
-            offline_data_dir = os.path.join(os.path.dirname(__file__), "../../../..", "calculon_offline_data")
-            offline_data_dir = os.path.abspath(offline_data_dir)
-            return HybridProfilerConfigs(
-                offline_data_dir=offline_data_dir,
-                fusion_strategy="calculon_only",
-                interpolation_enabled=False,
-                fallback_to_calculon=True,
-                enable_caching=True
-            )
-        
-        # 构建离线数据目录路径，支持多个可能的路径
-        # 从 backend/app/core/calculate_repository.py 到项目根目录需要向上3级
-        repo_file = os.path.dirname(os.path.abspath(__file__))  # backend/app/core
-        project_root = os.path.abspath(os.path.join(repo_file, "../../.."))  # 项目根目录
-        offline_data_dir = os.path.join(project_root, "calculon_offline_data")
-        offline_data_dir = os.path.abspath(offline_data_dir)
-        
-        # 如果第一个路径不存在，尝试其他可能的路径
-        if not os.path.exists(offline_data_dir):
-            self.logger.warning(f"Primary offline data directory not found: {offline_data_dir}")
-            # 尝试从当前工作目录或其他位置查找
-            alt_paths = [
-                os.path.join(project_root, "calculon", "calculon_offline_data"),  # 如果在calculon子目录下
-                "./calculon_offline_data",  # 当前工作目录
-                "../calculon_offline_data",  # 上级目录
-                os.path.join(os.getcwd(), "calculon_offline_data"),  # 当前工作目录（绝对路径）
-            ]
-            
-            for alt_path in alt_paths:
-                abs_path = os.path.abspath(alt_path)
-                if os.path.exists(abs_path):
-                    offline_data_dir = abs_path
-                    self.logger.info(f"Found offline data directory at: {offline_data_dir}")
-                    break
-            else:
-                # 如果所有路径都不存在，仍然使用项目根目录下的路径
-                self.logger.warning(f"Offline data directory not found in any alternative paths, using: {offline_data_dir}")
-        
-        # 构建GPU特定的离线数据文件路径
-        offline_data_filename = f"{gpu_name}.pkl"
-        offline_data_file = os.path.join(offline_data_dir, offline_data_filename)
-        
-        # 检查是否存在对应GPU的离线数据
-        if os.path.exists(offline_data_file):
-            self.logger.info(f"Found offline profiled data for GPU '{gpu_name}': {offline_data_file}")
-            
-            # 使用离线数据进行混合分析
-            return HybridProfilerConfigs(
-                offline_data_dir=offline_data_dir,
-                offline_data_filename=offline_data_filename,
-                fusion_strategy="offline_only",  # 优先使用离线数据
-                interpolation_enabled=True,
-                fallback_to_calculon=True,  # 如果离线数据不可用，回退到理论模型
-                min_confidence_threshold=0.01,  # 低阈值以使用更多离线数据
-                max_interpolation_distance=2000.0,  # 增大插值距离阈值以支持K近邻插值
-                k_neighbors=5,  # 使用5个最近邻进行加权插值
-                enable_caching=False  # 禁用缓存以强制使用离线数据
-            )
-        else:
-            # 列出目录中可用的pkl文件以便调试
-            available_files = []
-            if os.path.exists(offline_data_dir):
-                available_files = [f for f in os.listdir(offline_data_dir) if f.endswith('.pkl')]
-            
-            self.logger.warning(
-                f"No offline profiled data found for GPU '{gpu_name}': {offline_data_file}\n"
-                f"Available offline data files: {available_files}\n"
-                f"Falling back to Calculon theoretical model"
-            )
-            
-            # 回退到Calculon理论模型
-            return HybridProfilerConfigs(
-                offline_data_dir=offline_data_dir,
-                offline_data_filename=offline_data_filename,  # 仍然设置文件名，但会使用理论模型
-                fusion_strategy="calculon_only",  # 只使用Calculon理论模型
-                interpolation_enabled=False,
-                fallback_to_calculon=True,
-                enable_caching=True
-            )
+        """DISABLED: offline pkl matching. Timing uses systems/ efficiency curves."""
+        self.logger.warning(
+            "build_hybrid_profiler_config is disabled; ignoring offline data for GPU '%s'",
+            gpu_dict.get("name"),
+        )
+        return None
+        # --- previous offline-pkl matching logic (disabled) ---
+        # from calculon.hybrid_profiler import HybridProfilerConfigs
+        # gpu_name = gpu_dict.get("name")
+        # ... match calculon_offline_data/{gpu}.pkl → HybridProfilerConfigs(...)
 
     def calculate(self, gpu: Gpu, network: Network, model: Model, trainning_config: TrainningConfig):
         self.logger.info("Starting calculation...")
@@ -380,73 +412,57 @@ class CalculateRepository:
         try:
             app = self.build_app(model_dict)
             self.logger.info("wxftest build 0")
-            exe = self.build_exe(gpu_dict, trainning_config_dict, model_dict)
+            exe = self.build_exe(gpu_dict, trainning_config_dict, model_dict, network_dict)
             self.logger.info("wxftest build 1")
             syst = self.build_syst(gpu_dict, network_dict)
             if isinstance(syst, dict) and syst.get("status") == "error":
                 return syst
             self.logger.info("wxftest build 2")
-            
-            # 构建 hybrid profiler 配置
-            hybrid_config = self.build_hybrid_profiler_config(gpu_dict)
-            self.logger.info(f"Using hybrid profiler with strategy: {hybrid_config.fusion_strategy}")
-            
-            # 使用 hybrid profiler 运行计算
-            result = self.run_with_hybrid_profiler(app, exe, syst, hybrid_config)
+
+            # Use systems/ efficiency curves via Calculon Runner.
+            # Offline pkl / HybridLlm path is temporarily disabled (see above).
+            self.logger.info(
+                "Running Calculon Runner (hybrid/offline profiler disabled)"
+            )
+            with native_output_guard():
+                result = Runner.isinstance_run_command(self.logger, app, exe, syst)
+            # Runner catches Llm.Error internally and returns {status, error}.
+            if isinstance(result, dict) and result.get("status") == "error":
+                self.logger.error("Calculate rejected: %s", result.get("error"))
+                return {
+                    "status": "error",
+                    "error": result.get("error") or "Unknown calculation error",
+                }
+            # --- hybrid / offline path (disabled) ---
+            # hybrid_config = self.build_hybrid_profiler_config(gpu_dict)
+            # result = self.run_with_hybrid_profiler(app, exe, syst, hybrid_config)
         except Llm.Error as e:
+            self.logger.error("Calculate rejected: %s", e)
             return {"status": "error", "error": str(e)}
         except Exception as e:
+            self.logger.exception("Calculate internal error: %s", e)
             return {"status": "error", "error": f"Internal error: {str(e)}"}
         return result
 
     def run_with_hybrid_profiler(self, app, exe, syst, hybrid_config):
-        """Run calculation using hybrid profiler."""
-        try:
-            # 创建 hybrid LLM
-            hybrid_llm = create_hybrid_llm(app, self.logger, hybrid_config)
-            hybrid_llm.compile(syst, exe)
-            hybrid_llm.run(syst)
-            
-            # 获取结果，使用与原始 Runner 相同的方法
-            result = Runner.get_simulator_res_json(hybrid_llm)
-            
-            # 添加 hybrid profiler 统计信息
-            if hasattr(hybrid_llm, 'print_hybrid_profiling_summary'):
-                # 获取统计信息
-                stats = hybrid_llm.hybrid_profiler.get_statistics()
-                result["hybrid_profiling_stats"] = {
-                    "total_queries": stats.get("total_queries", 0),
-                    "offline_hits": stats.get("offline_hits", 0),
-                    "interpolation_hits": stats.get("interpolation_hits", 0),
-                    "calculon_fallback": stats.get("calculon_fallback", 0),
-                    "cache_hits": stats.get("cache_hits", 0),
-                    "fusion_strategy": hybrid_config.fusion_strategy
-                }
-                
-                # 计算命中率
-                total_queries = stats.get("total_queries", 0)
-                if total_queries > 0:
-                    result["hybrid_profiling_stats"]["offline_hit_rate"] = stats.get("offline_hits", 0) / total_queries
-                    result["hybrid_profiling_stats"]["interpolation_hit_rate"] = stats.get("interpolation_hits", 0) / total_queries
-                    result["hybrid_profiling_stats"]["calculon_fallback_rate"] = stats.get("calculon_fallback", 0) / total_queries
-                    result["hybrid_profiling_stats"]["cache_hit_rate"] = stats.get("cache_hits", 0) / total_queries
-                else:
-                    result["hybrid_profiling_stats"]["offline_hit_rate"] = 0.0
-                    result["hybrid_profiling_stats"]["interpolation_hit_rate"] = 0.0
-                    result["hybrid_profiling_stats"]["calculon_fallback_rate"] = 0.0
-                    result["hybrid_profiling_stats"]["cache_hit_rate"] = 0.0
-            
-            self.logger.info("Hybrid profiler calculation completed successfully")
-            return result
-            
-        except Exception as e:
-            # 排障：记录完整堆栈；稳定后改回 logger.error 即可
-            self.logger.exception(
-                "Error in hybrid profiler calculation: %s", e
-            )
-            # 如果 hybrid profiler 失败，回退到原始方法
-            self.logger.warning("Falling back to original Calculon method")
+        """DISABLED: offline/hybrid profiler path. Kept for reference only."""
+        self.logger.warning(
+            "run_with_hybrid_profiler called but hybrid path is disabled; "
+            "using Calculon Runner instead"
+        )
+        with native_output_guard():
             return Runner.isinstance_run_command(self.logger, app, exe, syst)
+        # try:
+        #     from calculon.hybrid_llm import create_hybrid_llm
+        #     hybrid_llm = create_hybrid_llm(app, self.logger, hybrid_config)
+        #     hybrid_llm.compile(syst, exe)
+        #     hybrid_llm.run(syst)
+        #     result = Runner.get_simulator_res_json(hybrid_llm)
+        #     ...
+        #     return result
+        # except Exception as e:
+        #     self.logger.exception("Error in hybrid profiler: %s", e)
+        #     return Runner.isinstance_run_command(self.logger, app, exe, syst)
 
     def optimal(self, gpu: Gpu, network: Network, model: Model, optimal_config: OptimalConfig):
         self.logger.info("Starting optimal...")
@@ -460,10 +476,19 @@ class CalculateRepository:
             syst = self.build_syst(gpu_dict, network_dict)
             if isinstance(syst, dict) and syst.get("status") == "error":
                 return syst
-            result = OptimalExecution.isinstance_run_command(self.logger, app, syst, optimal_config)
+            with native_output_guard():
+                result = OptimalExecution.isinstance_run_command(self.logger, app, syst, optimal_config)
+            if isinstance(result, dict) and result.get("status") == "error":
+                self.logger.error("Optimal rejected: %s", result.get("error"))
+                return {
+                    "status": "error",
+                    "error": result.get("error") or "Unknown optimal error",
+                }
         except Llm.Error as e:
+            self.logger.error("Optimal rejected: %s", e)
             return {"status": "error", "error": str(e)}
         except Exception as e:
+            self.logger.exception("Optimal internal error: %s", e)
             return {"status": "error", "error": f"Internal error: {str(e)}"}
         return result
 

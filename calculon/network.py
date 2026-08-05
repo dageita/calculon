@@ -51,8 +51,12 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         c_int,   # cp
         c_double, # inter
         c_double, # intra
-        c_double, # fwdCompTime
+        c_double, # fwdCompTime (legacy monolithic; used when layered times are 0)
         c_double, # bwdCompTime
+        c_double, # fwdMlaTime
+        c_double, # fwdFfnTime
+        c_double, # bwdMlaTime
+        c_double, # bwdFfnTime
         c_int,   # microbatches
         c_char_p, # topology_type
         c_uint64,   # fwdTPSize
@@ -60,8 +64,12 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         c_uint64,   # fwdPPSize
         c_uint64,   # bwdPPSize
         c_uint64,   # dpSize
-        c_uint64,   # fwdEPSize
+        c_uint64,   # fwdEPSize (legacy single-phase)
         c_uint64,   # bwdEPSize
+        c_uint64,   # fwdEPDispatchSize
+        c_uint64,   # fwdEPCombineSize
+        c_uint64,   # bwdEPDispatchSize
+        c_uint64,   # bwdEPCombineSize
         c_uint64,   # fwdCPSize
         c_uint64,   # bwdCPSize
         c_bool,     # enableTimeline
@@ -187,8 +195,15 @@ class Network:
     chunk_size = 1 / comm_size * op_size
     op_size += chunk_size * self._ops[op].offset
 
-    # Calculates time based on raw bandwidth,  bandwidth efficiency, and latency
-    return self._latency + op_size / (self._bw * self._eff)
+    # Calculates time based on raw bandwidth, bandwidth efficiency, and latency
+    denom = self._bw * self._eff
+    if denom <= 0:
+      raise ValueError(
+        f'Network bandwidth*efficiency is {denom} '
+        f'(bw={self._bw}, eff={self._eff}, topology={getattr(self, "_topology", None)}); '
+        f'cannot time op={op}. For Single Machine set network_bandwidth=0 is OK, '
+        f'but collectives must be mapped to the intra tier.')
+    return self._latency + op_size / denom
 
    # 显式转换函数
   def cast_uint64(self, value):
@@ -196,14 +211,23 @@ class Network:
   
 # unit: Bps
   def flow_network_init(self, inter, intra, topology):
+    """Store fabric BW for LLMFlowSimulator (``.so`` / ``pycall_main``).
+
+    The C++ engine only models two link classes:
+      inter — cross-host (NIC) capacity, B/s
+      intra — intra-host (NVLink) capacity, B/s
+    Callers (``Llm._check_network_assignments``) must derive these from the
+    tiers bound to DP/PP/EP (inter) and TP/CP (intra). EP/CP do not get
+    separate BW arguments today — only byte volumes via fwd/bwd EP/CP sizes.
+    """
     self._inter = inter # 机间网络带宽，单位Bps
     self._intra = intra # 机内网络带宽，单位Bps
     self._topology = topology # 网络拓扑类型
     self.log.info("wxftest flow network init: inter=%f, intra=%f, topology=%s", self._inter, self._intra, self._topology)
 
-  def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline, ep=1, fwd_ep_size=0, bwd_ep_size=0, cp=1, fwd_cp_size=0, bwd_cp_size=0):
+  def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline, ep=1, fwd_ep_size=0, bwd_ep_size=0, cp=1, fwd_cp_size=0, bwd_cp_size=0, fwd_mla_time=0.0, fwd_ffn_time=0.0, bwd_mla_time=0.0, bwd_ffn_time=0.0, fwd_ep_dispatch_size=0, fwd_ep_combine_size=0, bwd_ep_dispatch_size=0, bwd_ep_combine_size=0):
     topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
-    self.log.info("wxftest total flow network time: pp=%d, dp=%d, tp=%d, fwdCompTime=%f, bwdCompTime=%f, microbatches=%d, fwdTPSize=%d, bwdTPSize=%d, fwdPPSize=%d, bwdPPSize=%d, dpSize=%d, enable_timeline=%s", pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline)
+    self.log.info("wxftest total flow network time: pp=%d, dp=%d, tp=%d, fwdCompTime=%f, bwdCompTime=%f, mla/ffn=%f/%f, microbatches=%d, enable_timeline=%s", pp, dp, tp, fwdCompTime, bwdCompTime, fwd_mla_time, fwd_ffn_time, microbatches, enable_timeline)
     
     # 始终分配timeline相关内存，以匹配C++端的函数签名
     # 无论enable_timeline为true还是false，都需要传递所有参数
@@ -255,12 +279,16 @@ class Network:
         pycall_main(
             pp, dp, tp, ep, cp,
             self._inter, self._intra,
-            fwdCompTime, bwdCompTime, microbatches,
+            fwdCompTime, bwdCompTime,
+            fwd_mla_time, fwd_ffn_time, bwd_mla_time, bwd_ffn_time,
+            microbatches,
             topology_bytes,
             self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
             self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
             self.cast_uint64(dpSize),
             self.cast_uint64(fwd_ep_size), self.cast_uint64(bwd_ep_size),
+            self.cast_uint64(fwd_ep_dispatch_size), self.cast_uint64(fwd_ep_combine_size),
+            self.cast_uint64(bwd_ep_dispatch_size), self.cast_uint64(bwd_ep_combine_size),
             self.cast_uint64(fwd_cp_size), self.cast_uint64(bwd_cp_size),
             c_bool(enable_timeline),  # enableTimeline参数
             c_int(initial_max_events),  # maxEvents：timeline 缓冲区容量

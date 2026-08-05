@@ -307,11 +307,18 @@ class Layer:
       flops = 0
     else:
       raise Exception(f'Bad compute stage : {stage}')
+    if flops <= 0:
+      return 0
     if self.use_matrix_engine() and stage != "optim":
       throughput = self.sys.get_matrix_throughput(flops)
+      t = flops / throughput if throughput > 0 else 0
+      launch = getattr(self.sys, 'matrix_launch_s', 0.0) or 0.0
+      return max(t, launch)
     else:
       throughput = self.sys.get_vector_throughput(flops)
-    return flops / throughput
+      t = flops / throughput if throughput > 0 else 0
+      launch = getattr(self.sys, 'vector_launch_s', 0.0) or 0.0
+      return max(t, launch)
 
   def compute_mem_time(self, stage):
     if stage == "fw":
@@ -326,6 +333,8 @@ class Layer:
       mem = self.get_extra_and_embedding_mem_accessed()
     else:
       raise Exception(f'Bad compute stage : {stage}')
+    if mem <= 0:
+      return 0
     return mem / self.sys.get_mem1_throughput(mem)
 
   def compute_net_time(self, stage, baseblock=True):
@@ -356,9 +365,15 @@ class Linear(Layer):
     weight_multiplier / flop_multiplier scale stored weights and compute
     independently — used by MoE to store all local experts while only
     charging FLOPs for the activated (topk/EP + shared) equivalent.
+
+    flop_multiplier=0 (MLA absorb WUK/WUV): weights still reside for
+    capacity/optimizer, but fw/agrad/wgrad *processing* is not charged —
+    traffic is accounted in the absorb BatchMatMuls instead.
     """
     m, n, k = batch_seq, c_in, c_out
     wm, fm = float(weight_multiplier), float(flop_multiplier)
+    self.weight_multiplier = wm
+    self.flop_multiplier = fm
     super().__init__(name,
                      sys,
                      fw_flops=2*m*n*k*fm,
@@ -378,6 +393,21 @@ class Linear(Layer):
 
   def use_matrix_engine(self):
     return True
+
+  def get_fw_mem_accessed(self):
+    if self.flop_multiplier == 0:
+      return 0
+    return super().get_fw_mem_accessed()
+
+  def get_agrad_mem_accessed(self):
+    if self.flop_multiplier == 0:
+      return 0
+    return super().get_agrad_mem_accessed()
+
+  def get_wgrad_mem_accessed(self):
+    if self.flop_multiplier == 0:
+      return 0
+    return super().get_wgrad_mem_accessed()
 
 
 class LinearOverlapped(Layer):
@@ -624,8 +654,18 @@ class LinearOverlapped(Layer):
 class BatchMatMul(Layer):
   def __init__(self, name, sys, batch, size_a, contraction_size, size_b,
                needs_recompute=False, activation_reused=False,
-               activation_stored=True, output_stored=True):
+               activation_stored=True, output_stored=True,
+               time_scale=1.0):
+    """Batched GEMM.
+
+    Compute uses ``sys.bmm_dtype`` (default BF16 on H20) — matching DeepSeek
+    MLA absorb / score ``torch.bmm``, not FP8 Linear GEMM peaks.
+    time_scale multiplies flops_time only (not mem). Used to correct
+    attention Score/Attn BMMs that achieve lower efficiency than Linear GEMMs
+    of the same FLOP count (Phase2 G2 on H20); Absorb projections stay ~1.0.
+    """
     m, n, k = size_a, contraction_size, size_b
+    self.time_scale = float(time_scale)
     super().__init__(name,
                      sys,
                      fw_flops=batch*2*m*n*k,
@@ -642,9 +682,31 @@ class BatchMatMul(Layer):
   def use_matrix_engine(self):
     return True
 
+  def compute_flops_time(self, stage):
+    if stage == "fw":
+      flops = self.get_fw_flops()
+    elif stage == "agrad":
+      flops = self.get_agrad_flops()
+    elif stage == "wgrad":
+      flops = self.get_wgrad_flops()
+    elif stage == "optim":
+      flops = self.get_optim_step_flops()
+    elif stage == "extra":
+      flops = 0
+    else:
+      raise Exception(f'Bad compute stage : {stage}')
+    if flops <= 0:
+      return 0
+    throughput = self.sys.get_bmm_throughput(flops)
+    t = flops / throughput if throughput > 0 else 0
+    launch = getattr(self.sys, 'matrix_launch_s', 0.0) or 0.0
+    return max(t, launch) * self.time_scale
+
 # https://kratzert.github.io/2016/02/12/understanding-the-gradient-flow-through-the-batch-normalization-layer.html
 # https://cthorey.github.io./blog/2016/backpropagation/
 class LayerNorm(Layer):
+  """Classic LayerNorm (mean+var); keep for legacy dense GPT-style models."""
+
   def __init__(self, name, sys, act_size, hidden,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
@@ -660,6 +722,36 @@ class LayerNorm(Layer):
                      weight_space=2*hidden,
                      weight_grads=2*hidden,
                      optim_space=2*2*hidden,
+                     needs_recompute=needs_recompute,
+                     activation_reused=activation_reused,
+                     activation_stored=activation_stored,
+                     output_stored=output_stored)
+
+
+class RMSNorm(Layer):
+  """RMSNorm (DeepSeek-V3 / Llama-style): single scale, ~5 ops/elem fw.
+
+  Cheaper than classic LayerNorm (9 ops/elem). Used for MLA/MLP pre-norms.
+  """
+  FW_FLOPS_PER_ACT = 5
+  AGRAD_FLOPS_PER_ACT = 8
+  WGRAD_FLOPS_PER_ACT = 4
+
+  def __init__(self, name, sys, act_size, hidden,
+               needs_recompute=False, activation_reused=False,
+               activation_stored=True, output_stored=True):
+    super().__init__(name,
+                     sys,
+                     fw_flops=self.FW_FLOPS_PER_ACT * act_size,
+                     agrad_flops=self.AGRAD_FLOPS_PER_ACT * act_size,
+                     wgrad_flops=self.WGRAD_FLOPS_PER_ACT * act_size,
+                     inputs_size=act_size,
+                     output_size=act_size,
+                     activation_space=act_size,
+                     activation_grads=act_size,
+                     weight_space=hidden,       # single scale (no bias)
+                     weight_grads=hidden,
+                     optim_space=2 * hidden,
                      needs_recompute=needs_recompute,
                      activation_reused=activation_reused,
                      activation_stored=activation_stored,
@@ -705,21 +797,30 @@ class DropOut(Layer):
 
 # https://mlfromscratch.com/activation-functions-explained/#/
 class GeLU(Layer):
+  # Unfused flop constants (approx elementwise ops / activation).
+  FW_FLOPS_PER_ACT = 8
+  AGRAD_FLOPS_PER_ACT = 13
+
   def __init__(self, name, sys, act_size,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True,
                fused=False):
-    # Fused GeLU runs right after previous Linear layer and does not store
-    # activations or gradients
+    # Fused into previous Linear epilogue: no standalone compute / traffic.
     self._fused = fused
     if fused:
+      fw_flops = 0
+      agrad_flops = 0
+      io = 0
       eff_act_space = 0
       eff_act_grads = 0
     else:
+      fw_flops = self.FW_FLOPS_PER_ACT * act_size
+      agrad_flops = self.AGRAD_FLOPS_PER_ACT * act_size
+      io = act_size
       eff_act_space = act_size
       eff_act_grads = act_size
-    super().__init__(name, sys, fw_flops=8*act_size, agrad_flops=13*act_size,
-                     inputs_size=act_size, output_size=act_size,
+    super().__init__(name, sys, fw_flops=fw_flops, agrad_flops=agrad_flops,
+                     inputs_size=io, output_size=io,
                      activation_space=eff_act_space,
                      activation_grads=eff_act_grads,
                      needs_recompute=needs_recompute,
@@ -731,50 +832,97 @@ class GeLU(Layer):
     return self.get_fw_mem_accessed()
 
 
-# SiLU ≈ GeLU arithmetic intensity; alias for SwiGLU gate activation.
-SiLU = GeLU
+class SiLU(GeLU):
+  """SwiGLU gate activation; cheaper than GeLU when unfused.
+
+  With fused_activation=True (DeepSeek-V3 default path), compute is folded
+  into the preceding Gate GEMM epilogue and charged as 0 here.
+  """
+  FW_FLOPS_PER_ACT = 4
+  AGRAD_FLOPS_PER_ACT = 6
 
 
 # https://automata88.medium.com/how-to-implement-the-softmax-derivative-independently-from-any-loss-function-ae6d44363a9d
 class SoftMax(Layer):
   def __init__(self, name, sys, act_size,
                needs_recompute=False, activation_reused=False,
-               activation_stored=True, output_stored=True):
-    super().__init__(name,
-                     sys,
-                     fw_flops=5*act_size,
-                     agrad_flops=8*act_size,
-                     inputs_size=act_size,
-                     output_size=act_size,
-                     activation_space=act_size,
-                     activation_grads=act_size,
-                     needs_recompute=needs_recompute,
-                     activation_reused=activation_reused,
-                     activation_stored=activation_stored,
-                     output_stored=output_stored)
+               activation_stored=True, output_stored=True,
+               fused=False, time_scale=1.0):
+    """Attention softmax.
+
+    fused=True: folded into flash-attn / fused attention (no standalone time).
+    time_scale: optional discount when partially fused (ignored if fused).
+    """
+    self._fused = bool(fused)
+    self.time_scale = 0.0 if self._fused else float(time_scale)
+    if self._fused:
+      super().__init__(name, sys,
+                       fw_flops=0, agrad_flops=0,
+                       inputs_size=0, output_size=0,
+                       activation_space=0, activation_grads=0,
+                       needs_recompute=needs_recompute,
+                       activation_reused=activation_reused,
+                       activation_stored=activation_stored,
+                       output_stored=output_stored)
+    else:
+      super().__init__(name,
+                       sys,
+                       fw_flops=5*act_size,
+                       agrad_flops=8*act_size,
+                       inputs_size=act_size,
+                       output_size=act_size,
+                       activation_space=act_size,
+                       activation_grads=act_size,
+                       needs_recompute=needs_recompute,
+                       activation_reused=activation_reused,
+                       activation_stored=activation_stored,
+                       output_stored=output_stored)
 
   def get_agrad_mem_accessed(self):
     return self.get_fw_mem_accessed()
+
+  def compute_flops_time(self, stage):
+    if self._fused or self.time_scale == 0:
+      return 0
+    return super().compute_flops_time(stage) * self.time_scale
+
+  def compute_mem_time(self, stage):
+    if self._fused or self.time_scale == 0:
+      return 0
+    return super().compute_mem_time(stage) * self.time_scale
 
 
 # https://explained.ai/matrix-calculus/#sec:1.4.2
 class ElementWise(Layer):
   def __init__(self, name, sys, operand1, operand2,
                needs_recompute=False, activation_reused=False,
-               activation_stored=True, output_stored=True):
+               activation_stored=True, output_stored=True,
+               fused=False):
+    # fused=True: SwiGLU GateUp (silu(g)*up) folded into GEMM epilogue.
+    self._fused = fused
     act_size = max(operand1, operand2)
-    super().__init__(name,
-                     sys,
-                     fw_flops=act_size,
-                     agrad_flops=(operand1+operand2),
-                     inputs_size=(operand1+operand2),
-                     output_size=act_size,
-                     activation_space=(operand1+operand2),
-                     activation_grads=act_size,
-                     needs_recompute=needs_recompute,
-                     activation_reused=activation_reused,
-                     activation_stored=activation_stored,
-                     output_stored=output_stored)
+    if fused:
+      super().__init__(name, sys,
+                       fw_flops=0, agrad_flops=0,
+                       inputs_size=0, output_size=0,
+                       activation_space=0, activation_grads=0,
+                       needs_recompute=needs_recompute,
+                       activation_reused=activation_reused,
+                       activation_stored=activation_stored,
+                       output_stored=output_stored)
+    else:
+      super().__init__(name,
+                       sys,
+                       fw_flops=act_size,
+                       agrad_flops=(operand1+operand2),
+                       inputs_size=(operand1+operand2),
+                       output_size=act_size,
+                       activation_space=(operand1+operand2),
+                       activation_grads=act_size,
+                       needs_recompute=needs_recompute,
+                       activation_reused=activation_reused,
+                       activation_stored=activation_stored,
+                       output_stored=output_stored)
 
 
 # Splits activation on the forward pass, sums gradients on the backward

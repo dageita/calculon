@@ -127,11 +127,12 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
     )
   }
   const checkMemoryOverall = () => {
-    if (result.memory_usage && curGpu) {
-      return result.memory_usage.overall_usage >= curGpu.memory * 1024 * 1024 * 1024
-    }
-    return false
+    return !!(result?.memory_usage?.over_capacity
+      || result?.memory_usage?.tier1_over_capacity);
   }
+  const memOverStyle = checkMemoryOverall()
+    ? { color: '#cf1322', fontWeight: 600 as const }
+    : undefined;
   const exportResultFile = () => {
     exportResult({
       ...result, cluster: curGpu, model: curModel, other_config: otherConfig, input_config: totalConfig
@@ -152,15 +153,41 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
   if (loading) {
     return <div className={styles.loading}><LoadingOutlined /></div>
   }
-  if (result && result.error) {
+  const errorText = (() => {
+    if (!result) return '';
+    if (typeof result.error === 'string' && result.error) return result.error;
+    if (result.error?.message) return String(result.error.message);
+    if (result.status === 'error' && result.error) return String(result.error);
+    if (typeof result.detail === 'string' && result.detail) return result.detail;
+    return '';
+  })();
+  if (errorText) {
     return <Result
       status="error"
       title={t('Trainning failed')}
-      subTitle={t("Please check , modify the input and try again.")}
-      extra={[
-      ]}
-    >
-    </Result>
+      subTitle={
+        <div>
+          <div style={{ marginBottom: 8 }}>
+            {t("Please check , modify the input and try again.")}
+          </div>
+          <div style={{
+            textAlign: 'left',
+            maxWidth: 640,
+            margin: '0 auto',
+            padding: '12px 16px',
+            background: '#fff2f0',
+            border: '1px solid #ffccc7',
+            borderRadius: 4,
+            color: '#a8071a',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}>
+            {errorText}
+          </div>
+        </div>
+      }
+      extra={[]}
+    />
   }
   if (!result && curMode === 'guide' ) {
     return <div className={styles.content}>
@@ -209,6 +236,11 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
             <div className={styles.result_group_header}>
               <div className={styles.result_group_title}>
                 Memory
+                {checkMemoryOverall() && (
+                  <span style={{ color: '#cf1322', marginLeft: 8, fontSize: 13, fontWeight: 500 }}>
+                    (over capacity)
+                  </span>
+                )}
               </div>
               <div className={styles.result_group_collapse}>{!state.memoryCollapse ?
                 <CaretDownOutlined onClick={() => {
@@ -220,6 +252,14 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
               </div>
             </div>
             {!state.memoryCollapse && <div className={styles.result_group_content}>
+              {checkMemoryOverall() && (
+                <Alert
+                  type="warning"
+                  showIcon
+                  style={{ marginBottom: 12 }}
+                  message={result.warning || 'Memory demand exceeds device capacity'}
+                />
+              )}
               <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
                 <Descriptions.Item label="Optimizer States">
                   {result.memory_usage.optimizer}
@@ -227,7 +267,14 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                 <Descriptions.Item label="Weights">{result.memory_usage.weights}</Descriptions.Item>
                 <Descriptions.Item label="Activation">{result.memory_usage.activation}</Descriptions.Item>
                 <Descriptions.Item label="Activation Gradients">{result.memory_usage.activation_gradients}</Descriptions.Item>
-                <Descriptions.Item span={1} label="Overall Usage">{result.memory_usage.overall_usage}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Overall Usage">
+                  <span style={memOverStyle}>{result.memory_usage.overall_usage}</span>
+                  {result.memory_usage.tier1_capacity && (
+                    <span style={{ marginLeft: 8, color: checkMemoryOverall() ? '#cf1322' : undefined }}>
+                      / {result.memory_usage.tier1_capacity}
+                    </span>
+                  )}
+                </Descriptions.Item>
               </Descriptions>
             </div>}
             <Divider />
@@ -247,14 +294,19 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
             </div>
             {!state.computationCollapse && <div className={styles.result_group_content}>
               <Descriptions colon={false} className='customize-des' column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }} title="">
-                {/* <Descriptions.Item label="Per-device LLM blocks">
-                  {result.computation.per_device_blocks}
-                </Descriptions.Item> */}
                 <Descriptions.Item label="Number of microbatches">{result.computation.num_microbatches}</Descriptions.Item>
-                <Descriptions.Item label="Per-batch forward computation time(s)">{result.computation.batch_forward_computation_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-microbatch forward computation time(s)">{result.computation.microbatch_forward_computation_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-batch backward computation time(s)">{result.computation.batch_backward_computation_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item span={1} label="Per-microbatch backward computation time(s)">{result.computation.microbatch_backward_computation_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch forward computation time(s)">{Number(result.computation.batch_forward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch forward computation time(s)">{Number(result.computation.microbatch_forward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch Attn/MLA forward time(s)">{Number(result.computation.batch_attn_forward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch Attn/MLA forward time(s)">{Number(result.computation.microbatch_attn_forward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch FFN forward time(s)">{Number(result.computation.batch_ffn_forward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch FFN forward time(s)">{Number(result.computation.microbatch_ffn_forward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch backward computation time(s)">{Number(result.computation.batch_backward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch backward computation time(s)">{Number(result.computation.microbatch_backward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch Attn/MLA backward time(s)">{Number(result.computation.batch_attn_backward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch Attn/MLA backward time(s)">{Number(result.computation.microbatch_attn_backward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch FFN backward time(s)">{Number(result.computation.batch_ffn_backward_computation_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item span={1} label="Per-microbatch FFN backward time(s)">{Number(result.computation.microbatch_ffn_backward_computation_time || 0).toFixed(6)}</Descriptions.Item>
               </Descriptions>
             </div>}
             <Divider />
@@ -281,20 +333,40 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                 <Descriptions.Item label="TP backward communication size">{result.communication.tp_comm_bw_size}</Descriptions.Item>
                 <Descriptions.Item label="PP forward communication size">{result.communication.pp_comm_fw_size}</Descriptions.Item>
                 <Descriptions.Item label="PP backward communication size">{result.communication.pp_comm_bw_size}</Descriptions.Item>
-                <Descriptions.Item label="Per-batch DP communication time(s)">{result.communication.batch_dp_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="EP forward communication size">{result.communication.ep_comm_fw_size ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="EP backward communication size">{result.communication.ep_comm_bw_size ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="EP forward dispatch size">{result.communication.ep_comm_fw_dispatch_size ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="EP forward combine size">{result.communication.ep_comm_fw_combine_size ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="CP forward communication size">{result.communication.cp_comm_fw_size ?? '-'}</Descriptions.Item>
+                <Descriptions.Item label="CP backward communication size">{result.communication.cp_comm_bw_size ?? '-'}</Descriptions.Item>
 
-                <Descriptions.Item label="Per-batch TP communication time(s)">{result.communication.batch_tp_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-batch TP forward communication time(s)">{result.communication.batch_tp_fw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-microbatch TP forward communication time(s)">{result.communication.microbatch_tp_fw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-batch TP backward communication time(s)">{result.communication.batch_tp_bw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-microbatch TP backward communication time(s)">{result.communication.microbatch_tp_bw_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch DP communication time(s)">{Number(result.communication.batch_dp_comm_time || 0).toFixed(6)}</Descriptions.Item>
 
-                <Descriptions.Item label="Per-batch PP communication time(s)">{result.communication.batch_pp_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-batch PP forward communication time(s)">{result.communication.batch_pp_fw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-microbatch PP forward communication time(s)">{result.communication.microbatch_pp_fw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item label="Per-batch PP backward communication time(s)">{result.communication.batch_pp_bw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item  label="Per-microbatch PP backward communication time(s)">{result.communication.microbatch_pp_bw_comm_time.toFixed(6)}</Descriptions.Item>
-                <Descriptions.Item span={1} label="Total Comm Time">{result.communication.total_comm_time.toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch TP communication time(s)">{Number(result.communication.batch_tp_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch TP forward communication time(s)">{Number(result.communication.batch_tp_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch TP forward communication time(s)">{Number(result.communication.microbatch_tp_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch TP backward communication time(s)">{Number(result.communication.batch_tp_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch TP backward communication time(s)">{Number(result.communication.microbatch_tp_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+
+                <Descriptions.Item label="Per-batch PP communication time(s)">{Number(result.communication.batch_pp_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch PP forward communication time(s)">{Number(result.communication.batch_pp_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch PP forward communication time(s)">{Number(result.communication.microbatch_pp_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch PP backward communication time(s)">{Number(result.communication.batch_pp_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch PP backward communication time(s)">{Number(result.communication.microbatch_pp_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+
+                <Descriptions.Item label="Per-batch EP communication time(s)">{Number(result.communication.batch_ep_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch EP forward communication time(s)">{Number(result.communication.batch_ep_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch EP forward communication time(s)">{Number(result.communication.microbatch_ep_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch EP backward communication time(s)">{Number(result.communication.batch_ep_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch EP backward communication time(s)">{Number(result.communication.microbatch_ep_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+
+                <Descriptions.Item label="Per-batch CP communication time(s)">{Number(result.communication.batch_cp_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch CP forward communication time(s)">{Number(result.communication.batch_cp_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch CP forward communication time(s)">{Number(result.communication.microbatch_cp_fw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-batch CP backward communication time(s)">{Number(result.communication.batch_cp_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+                <Descriptions.Item label="Per-microbatch CP backward communication time(s)">{Number(result.communication.microbatch_cp_bw_comm_time || 0).toFixed(6)}</Descriptions.Item>
+
+                <Descriptions.Item span={1} label="Total Comm Time">{Number(result.communication.total_comm_time || 0).toFixed(6)}</Descriptions.Item>
 
               </Descriptions>
             </div>}
@@ -309,7 +381,9 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                   Totoal number of gpus:
                 </div>
                 <div>
-                  {result.total_time.totoal_number_of_gpus}</div>
+                  {result.summary?.totoal_number_of_gpus ??
+                    result.total_time?.totoal_number_of_gpus ??
+                    '-'}</div>
               </div> :
                 <div className={styles.result_group_collapse}>{!state.timelineCollapse ?
                   <CaretDownOutlined onClick={() => {
@@ -336,7 +410,9 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
         {/* <BaseTL result={{ ...result, other_config: curMode === 'guide' ? otherConfig : result.other_config }} latest_result={latest_result} curMode={curMode}></BaseTL> */}
         
         
-        {!state.timelineCollapse && curMode !=='optimal' &&<TLEventChart  result={result.timeline_events}></TLEventChart>}
+        {!state.timelineCollapse && curMode !== 'optimal' && (
+          <TLEventChart result={result.timeline_events || []} />
+        )}
 
         {/* {curMode === 'guide' && <div className={styles.export_btn}>
           <Button type="primary" icon={<ExportOutlined />} onClick={exportResultFile}>
@@ -434,7 +510,13 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                 </Descriptions.Item>
                 <Descriptions.Item label="Global Batch Size">{result.summary.global_batch_size}</Descriptions.Item>
                 <Descriptions.Item label="Local Batch Size">{result.summary.local_batch_size}</Descriptions.Item>
-                <Descriptions.Item  label="Total Efficiency">{result.summary.total_efficiency}</Descriptions.Item>
+                <Descriptions.Item label="Total Efficiency (≈MFU)">{result.summary.total_efficiency}</Descriptions.Item>
+                {result.summary.compute_efficiency != null && (
+                  <Descriptions.Item label="Compute Efficiency">{result.summary.compute_efficiency}</Descriptions.Item>
+                )}
+                {result.summary.system_efficiency != null && (
+                  <Descriptions.Item label="System Efficiency">{result.summary.system_efficiency}</Descriptions.Item>
+                )}
                 <Descriptions.Item span={1} label="Totoal Number Of Gpus">{result.summary.totoal_number_of_gpus}</Descriptions.Item>
               </Descriptions>
             </div>}
