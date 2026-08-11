@@ -8,47 +8,63 @@ import GpuSelection from './gpus';
 import ModelSelection from './models';
 import OtherSetting from './others';
 import Optimal from './optimal';
-import GlobalSetting from './globals'
-import FileSaver from 'file-saver'
-import CustomSteps from './../custom-steps'
-import BenchmarkSteps from './../benchmark-steps'
+import GlobalSetting from './globals';
+import FileSaver from 'file-saver';
+import CustomSteps from './../custom-steps';
+import BenchmarkSteps from './../benchmark-steps';
 import {
-  calculate, optimal, getRecommendedTenser, getRecommendedPipeline,
-  getRecommendedMicrobatch, downloadTemplate
+  calculate,
+  optimal,
+  getRecommendedTenser,
+  getRecommendedPipeline,
+  getRecommendedMicrobatch,
+  downloadTemplate,
 } from '@/services';
 import type { UploadProps } from 'antd';
-import { service_base_url } from '@/utils/constant'
+import { service_base_url } from '@/utils/constant';
 import styles from './index.less';
 import { debounce, mixin } from 'lodash';
 import LogModel from '@/models/logModel';
 import { useTranslation } from 'react-i18next';
 
-
-export interface IPanelLeftProps { }
+export interface IPanelLeftProps {}
 const PanelLeft: FC<IPanelLeftProps> = (props) => {
   const { t } = useTranslation();
   const [state, setState] = useImmer({
     active: 'gpu',
   });
-  const { curMode, curGpu, curNetwork, curModel, autoRecalc, otherConfig, totalConfig, result, setProject,
-    checkSize, checkPipeline, checkTotalConfig, setRecommendConfig } = useModel(ProjectModel);
+  const {
+    curMode,
+    curGpu,
+    curNetwork,
+    curModel,
+    autoRecalc,
+    otherConfig,
+    totalConfig,
+    result,
+    setProject,
+    checkSize,
+    checkPipeline,
+    checkTotalConfig,
+    setRecommendConfig,
+  } = useModel(ProjectModel);
   // const { changeLog, setAutoCalculated } = useModel(LogModel);
   const { history_results, pushHistory } = useModel(LogModel);
   const itemData = [
     {
       id: 'gpu',
       name: t('cluster'),
-      icon: 'llm-gpu'
+      icon: 'llm-gpu',
     },
     {
       id: 'model',
       name: t('models'),
-      icon: 'llm-model'
+      icon: 'llm-model',
     },
     {
       id: 'others',
       name: t('input'),
-      icon: 'llm-others'
+      icon: 'llm-others',
     },
     // {
     //   id: 'global',
@@ -58,14 +74,14 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
   ] as any[];
   const handleItemClick = (key: string) => {
     if (key === 'others' && !curGpu.value) {
-      message.warn(`GPU ${t('shouldset')}!`)
+      message.warn(`GPU ${t('shouldset')}!`);
       setState({ active: 'gpu' });
-      return
+      return;
     }
     if (key === 'others' && !curModel) {
-      message.warn(`Model ${t('shouldset')}!`)
+      message.warn(`Model ${t('shouldset')}!`);
       setState({ active: 'model' });
-      return
+      return;
     }
     // if (key === 'others' && !curNetwork.network_bandwidth) {
     //   message.warn(`Per-host network bandwidth ${t('shouldset')}!`)
@@ -78,133 +94,156 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
   // && otherConfig.per_host_network_bandwidth
   const validateInput = () => {
     if (state.active == 'gpu') {
-      return curGpu && curNetwork && curGpu?.num_procs ? true : false
+      return curGpu && curNetwork && curGpu?.num_procs ? true : false;
     }
     if (state.active == 'model') {
-      return curModel ? true : false
+      return curModel ? true : false;
     }
     if (state.active == 'others') {
-      if (curMode === 'guide' && otherConfig && otherConfig.microbatch_size
-        && otherConfig.activation_recompute
-        && otherConfig.tensor_par
-        && otherConfig.pipeline_par
-        && otherConfig.data_par
-        && otherConfig.matrix_dtype
-        && otherConfig.vector_dtype
+      if (
+        curMode === 'guide' &&
+        otherConfig &&
+        otherConfig.microbatch_size &&
+        otherConfig.activation_recompute &&
+        otherConfig.tensor_par &&
+        otherConfig.pipeline_par &&
+        otherConfig.data_par &&
+        otherConfig.matrix_dtype &&
+        otherConfig.vector_dtype
       ) {
-        return true
-      } else if (curMode === 'optimal' && otherConfig && otherConfig.max_batch_size
-        && otherConfig.matrix_dtype
-        && otherConfig.vector_dtype) {
-        return true
+        return true;
+      } else if (
+        curMode === 'optimal' &&
+        otherConfig &&
+        otherConfig.max_batch_size &&
+        otherConfig.matrix_dtype &&
+        otherConfig.vector_dtype
+      ) {
+        return true;
       }
-
     }
     if (state.active == 'global' && checkTotalConfig()) {
-      return true
+      return true;
     }
-    return false
-  }
+    return false;
+  };
   const genHistoryTitle = () => {
     // return `${curGpu.name}_${curModel.name}_parallel[${totalConfig.data_parallel_degree}, ${otherConfig.pipeline_par}, ${otherConfig.tensor_par}]
     // _batch_size[${curModel.minibatch_size}, ${otherConfig.microbatch_size}]`
-    return `${curGpu.name}_${curModel.name}`
-  }
+    return `${curGpu.name}_${curModel.name}`;
+  };
   const doCalculate = async () => {
     setProject({
-      loading: true
+      loading: true,
     });
-    const params:any = {
+    const params: any = {
       gpu: {
-        "name": curGpu['name'],
-        "sparse_tensor_fp16_processing_power": curGpu['sparse_tensor_fp16_processing_power'],
-        "sparse_tensor_fp32_processing_power": curGpu['sparse_tensor_fp32_processing_power'],
-        "memory": curGpu['memory'],
-        "memory_bandwidth": curGpu['memory_bandwidth'],
-        "bus_bandwidth": curGpu['bus_bandwidth'],
-        "network_bandwidth": curGpu['network_bandwidth'],
-        "support_p2p": curGpu['support_p2p'],
-        "num_procs": curGpu['num_procs']
+        name: curGpu['name'],
+        sparse_tensor_fp16_processing_power:
+          curGpu['sparse_tensor_fp16_processing_power'],
+        sparse_tensor_fp32_processing_power:
+          curGpu['sparse_tensor_fp32_processing_power'],
+        memory: curGpu['memory'],
+        memory_bandwidth: curGpu['memory_bandwidth'],
+        bus_bandwidth: curGpu['bus_bandwidth'],
+        network_bandwidth: curGpu['network_bandwidth'],
+        support_p2p: curGpu['support_p2p'],
+        num_procs: curGpu['num_procs'],
       },
-      "network": {
+      network: {
         // GB/s from systems/<gpu>.json (same as GPU Inter-node Bandwidth); not user Gb/s.
-        "network_bandwidth": curGpu['network_bandwidth'] ?? curNetwork['network_bandwidth'],
-        "network_topology": curNetwork['network_topology']
+        network_bandwidth:
+          curGpu['network_bandwidth'] ?? curNetwork['network_bandwidth'],
+        network_topology: curNetwork['network_topology'],
       },
-      "model": {
-        "name": curModel['name'],
-        "seq_size": curModel['seq_size'],
-        "hidden": curModel['hidden'],
-        "feedforward": curModel['feedforward'],
-        "attn_heads": curModel['attn_heads'],
-        "attn_size": curModel['attn_size'],
-        "num_blocks": curModel['num_blocks'],
-        "vocab_size": curModel['vocab_size'],
-        "num_experts": curModel['num_experts'],
-        "moe_topk": curModel['moe_topk'],
-        "num_shared_experts": curModel['num_shared_experts'],
-        "moe_feedforward": curModel['moe_feedforward'],
-        "first_k_dense": curModel['first_k_dense'],
-        "moe_layer_freq": curModel['moe_layer_freq'],
-        "kv_size": curModel['kv_size'],
-        "q_lora_rank": curModel['q_lora_rank'],
-        "kv_lora_rank": curModel['kv_lora_rank'],
-        "qk_nope_head_dim": curModel['qk_nope_head_dim'],
-        "qk_rope_head_dim": curModel['qk_rope_head_dim'],
-        "v_head_dim": curModel['v_head_dim']
-      }
-    }
-    let calcRes: any ;
-    if (curMode ==='guide') {
+      model: {
+        name: curModel['name'],
+        seq_size: curModel['seq_size'],
+        hidden: curModel['hidden'],
+        feedforward: curModel['feedforward'],
+        attn_heads: curModel['attn_heads'],
+        kv_heads: curModel['kv_heads'],
+        attn_size: curModel['attn_size'],
+        rope_theta: curModel['rope_theta'],
+        rms_norm: curModel['rms_norm'],
+        qk_norm: curModel['qk_norm'],
+        ffn_type: curModel['ffn_type'],
+        untied_embeddings: curModel['untied_embeddings'],
+        num_blocks: curModel['num_blocks'],
+        vocab_size: curModel['vocab_size'],
+        num_experts: curModel['num_experts'],
+        moe_topk: curModel['moe_topk'],
+        norm_topk_prob: curModel['norm_topk_prob'],
+        router_aux_loss_coef: curModel['router_aux_loss_coef'],
+        num_shared_experts: curModel['num_shared_experts'],
+        moe_feedforward: curModel['moe_feedforward'],
+        first_k_dense: curModel['first_k_dense'],
+        moe_layer_freq: curModel['moe_layer_freq'],
+        kv_size: curModel['kv_size'],
+        q_lora_rank: curModel['q_lora_rank'],
+        kv_lora_rank: curModel['kv_lora_rank'],
+        qk_nope_head_dim: curModel['qk_nope_head_dim'],
+        qk_rope_head_dim: curModel['qk_rope_head_dim'],
+        v_head_dim: curModel['v_head_dim'],
+      },
+    };
+    let calcRes: any;
+    if (curMode === 'guide') {
       params['trainning_config'] = {
-        "optimization_strategy": otherConfig['optimization_strategy'],
-        "activation_recompute": otherConfig['activation_recompute'],
-        "optimizer_sharding": Boolean(otherConfig['optimizer_sharding']) && (otherConfig['data_par'] || 0) > 1,
-        "tensor_par": otherConfig['tensor_par'],
-        "pipeline_par": otherConfig['pipeline_par'],
-        "data_par": otherConfig['data_par'],
-        "expert_par": otherConfig['expert_par'] || 1,
-        "context_par": otherConfig['context_par'] || 1,
-        "batch_size": otherConfig['batch_size'],
-        "microbatch_size": otherConfig['microbatch_size'],
-        "matrix_dtype": otherConfig['matrix_dtype'],
-        "vector_dtype": otherConfig['vector_dtype']
-      }
-      calcRes = await calculate(params)
+        optimization_strategy: otherConfig['optimization_strategy'],
+        activation_recompute: otherConfig['activation_recompute'],
+        optimizer_sharding:
+          Boolean(otherConfig['optimizer_sharding']) &&
+          (otherConfig['data_par'] || 0) > 1,
+        tensor_par: otherConfig['tensor_par'],
+        pipeline_par: otherConfig['pipeline_par'],
+        data_par: otherConfig['data_par'],
+        expert_par: otherConfig['expert_par'] || 1,
+        context_par: otherConfig['context_par'] || 1,
+        batch_size: otherConfig['batch_size'],
+        microbatch_size: otherConfig['microbatch_size'],
+        matrix_dtype: otherConfig['matrix_dtype'],
+        vector_dtype: otherConfig['vector_dtype'],
+      };
+      calcRes = await calculate(params);
     } else {
       params['optimal_config'] = {
-        "num_procs": curGpu['num_procs'],
-        "max_batch_size": otherConfig['max_batch_size'],
-        "matrix_dtype": otherConfig['matrix_dtype'],
-        "vector_dtype": otherConfig['vector_dtype']
-      }
-      calcRes = await optimal(params)
+        num_procs: curGpu['num_procs'],
+        max_batch_size: otherConfig['max_batch_size'],
+        matrix_dtype: otherConfig['matrix_dtype'],
+        vector_dtype: otherConfig['vector_dtype'],
+      };
+      calcRes = await optimal(params);
     }
 
-    
     setProject({
       latest_result: autoRecalc ? { ...result } : null,
-      result: calcRes
+      result: calcRes,
     });
-    pushHistory('guide', { ...calcRes, other_config: otherConfig }, genHistoryTitle(),
+    pushHistory(
+      'guide',
+      { ...calcRes, other_config: otherConfig },
+      genHistoryTitle(),
       {
-        ...params
-      }
-    )
+        ...params,
+      },
+    );
     setTimeout(() => {
       setProject({
-        loading: false
+        loading: false,
       });
-    }, 300)
-  }
+    }, 300);
+  };
   const doCalculateOrNext = () => {
     if (state.active === 'others') {
-      doCalculate()
+      doCalculate();
     } else {
-      const curModeIndex = itemData.findIndex((item: any) => item.id === state.active)
-      handleItemClick(itemData[curModeIndex + 1].id)
+      const curModeIndex = itemData.findIndex(
+        (item: any) => item.id === state.active,
+      );
+      handleItemClick(itemData[curModeIndex + 1].id);
     }
-  }
+  };
   // const readExcelFile = async () => {
   //   const readRes = await readFile()
   //   setProject({
@@ -231,43 +270,39 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
       const recommendRes: any = await getRecommendedTenser({
         cluster: curGpu,
         model: curModel,
-        optimization_strategy: otherConfig.optimization_strategy
-      })
+        optimization_strategy: otherConfig.optimization_strategy,
+      });
       setRecommendConfig('recomended_tensor_par', recommendRes);
     }
-  }
+  };
   const refreshRecommendPipeline = async () => {
     if (curGpu?.name && curModel?.minibatch_size && otherConfig.tensor_par) {
       const recommendRes: any = await getRecommendedPipeline({
         cluster: curGpu,
         model: curModel,
         optimization_strategy: otherConfig.optimization_strategy,
-        tensor_par: otherConfig.tensor_par
-      })
-      setRecommendConfig(
-        'recomended_pipeline_par', recommendRes
-      );
+        tensor_par: otherConfig.tensor_par,
+      });
+      setRecommendConfig('recomended_pipeline_par', recommendRes);
     }
-  }
+  };
   const refreshRecommendMicrobatch = async () => {
     if (curModel?.minibatch_size && otherConfig.pipeline_par) {
       const recommendRes: any = await getRecommendedMicrobatch({
         model: curModel,
-        pipeline_par: otherConfig.pipeline_par
-      })
-      setRecommendConfig(
-        'recomended_microbatch', recommendRes
-      );
+        pipeline_par: otherConfig.pipeline_par,
+      });
+      setRecommendConfig('recomended_microbatch', recommendRes);
     }
-  }
+  };
   const exportResultFile = () => {
     downloadTemplate({}).then((res: any) => {
-      FileSaver.saveAs(res, "calculator-template.xlsx");
-    })
-  }
+      FileSaver.saveAs(res, 'calculator-template.xlsx');
+    });
+  };
   const cleanFileName = (nameStr: string) => {
-    return nameStr.split('.')[0]
-  }
+    return nameStr.split('.')[0];
+  };
   const upProps: UploadProps = {
     name: 'file',
     action: `${service_base_url}/llm_training_calculator/calculator/upload`,
@@ -278,19 +313,23 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
       }
       if (info.file.status === 'done') {
         message.success(`${info.file.name} file uploaded successfully`);
-        const res = info.file.response
+        const res = info.file.response;
         setProject({
           result: {
-            ...res
+            ...res,
           },
           // otherConfig: {
           //   tensor_par: res.tensor_par,
           //   pipeline_par: res.pipeline_par
           // }
         });
-        pushHistory('custom', {
-          ...res
-        }, cleanFileName(info.file.name))
+        pushHistory(
+          'custom',
+          {
+            ...res,
+          },
+          cleanFileName(info.file.name),
+        );
       } else if (info.file.status === 'error') {
         message.error(`${info.file.name} file upload failed.`);
       }
@@ -298,45 +337,46 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
   };
   const formatBMResult = (res: any[]) => {
     return res.map((items: any[]) => {
-      let itemObj = {} as any
-      let group = [] as any[]
-      let totalTime = 0
+      let itemObj = {} as any;
+      let group = [] as any[];
+      let totalTime = 0;
       items.forEach((rowItem: any, idx: number) => {
         if (!rowItem || rowItem.length < 2) {
-          return
+          return;
         }
-        const label = rowItem[0]
-        const time = Number(rowItem[1])
-        if (idx > 0) { // && items[idx - 1][0].indexOf('1F1B') < 0
-          totalTime += time
+        const label = rowItem[0];
+        const time = Number(rowItem[1]);
+        if (idx > 0) {
+          // && items[idx - 1][0].indexOf('1F1B') < 0
+          totalTime += time;
         }
         if (label.indexOf('warmup start') > -1) {
-          itemObj.start_time = time
-          itemObj.warmup_time = Number(items[idx + 1][1])
+          itemObj.start_time = time;
+          itemObj.warmup_time = Number(items[idx + 1][1]);
         }
         // if (label.indexOf('1F1B start') > -1) {
         //   itemObj.warmup_time = time
         // }
         if (label.indexOf('allreduce start') > -1) {
-          itemObj.cooldown_time = time
+          itemObj.cooldown_time = time;
         }
         if (label.indexOf('iteration end') > -1) {
-          itemObj.allreduce_time = time
+          itemObj.allreduce_time = time;
         }
         if (label.indexOf('forward start') > -1) {
           group.push({
-            forward: Number(items[idx + 1][1])
-          })
+            forward: Number(items[idx + 1][1]),
+          });
         }
         if (label.indexOf('backward start') > -1) {
-          group[group.length - 1]['backward'] = Number(items[idx + 1][1])
+          group[group.length - 1]['backward'] = Number(items[idx + 1][1]);
         }
-      })
-      itemObj.groups = group
-      itemObj.totalTime = totalTime
-      return itemObj
-    })
-  }
+      });
+      itemObj.groups = group;
+      itemObj.totalTime = totalTime;
+      return itemObj;
+    });
+  };
   const upBenchProps: UploadProps = {
     name: 'file',
     action: `${service_base_url}/llm_training_calculator/benchmark/upload`,
@@ -344,12 +384,12 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
     onChange(info) {
       if (info.file.status === 'done') {
         message.success(`${info.file.name} file uploaded successfully`);
-        const res = info.file.response
-        const formatRes = formatBMResult(res)
+        const res = info.file.response;
+        const formatRes = formatBMResult(res);
         setProject({
-          bm_result: formatRes
+          bm_result: formatRes,
         });
-        pushHistory('benchmark', formatRes, cleanFileName(info.file.name))
+        pushHistory('benchmark', formatRes, cleanFileName(info.file.name));
       } else if (info.file.status === 'error') {
         message.error(`${info.file.name} file upload failed.`);
       }
@@ -370,55 +410,61 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
 
   useEffect(() => {
     if (validateInput() && autoRecalc) {
-      debounce(doCalculate, 200)()//消抖
+      debounce(doCalculate, 200)(); //消抖
       // setAutoCalculated()
       // message.success(`${changeLog.field} changed!`)
     }
   }, [curGpu, curModel, otherConfig, totalConfig]);
   if (curMode === 'custom') {
-    return <div className={styles.notice}>
-      <div className={styles.notice_panel}>
-        <div className={styles.notice_title}>
-          {t('custom process')}
-          {/* Customize the computation process */}
+    return (
+      <div className={styles.notice}>
+        <div className={styles.notice_panel}>
+          <div className={styles.notice_title}>
+            {t('custom process')}
+            {/* Customize the computation process */}
+          </div>
+          <div className={styles.notice_content}>
+            <CustomSteps />
+          </div>
         </div>
-        <div className={styles.notice_content}>
-          <CustomSteps />
-        </div>
-      </div>
-      <Upload {...upProps}>
-        <Button type="primary" className={styles.gen_btn}>
-          {t('import')}
-        </Button>
-      </Upload>
+        <Upload {...upProps}>
+          <Button type="primary" className={styles.gen_btn}>
+            {t('import')}
+          </Button>
+        </Upload>
 
-      <Button className={styles.gen_btn}
-        onClick={() => {
-          exportResultFile()
-        }}>
-        {/* DOWNLOAD TEMPLATE */}
-        {t('download tem')}
-      </Button>
-    </div>
+        <Button
+          className={styles.gen_btn}
+          onClick={() => {
+            exportResultFile();
+          }}
+        >
+          {/* DOWNLOAD TEMPLATE */}
+          {t('download tem')}
+        </Button>
+      </div>
+    );
   }
   if (curMode === 'benchmark') {
-    return <div className={styles.notice}>
-      <div className={styles.bm_notice_panel}>
-        <div className={styles.notice_title}>
-          {/* Benchmark your training with our tracing program: */}
-          {t('benchmark progress')}
+    return (
+      <div className={styles.notice}>
+        <div className={styles.bm_notice_panel}>
+          <div className={styles.notice_title}>
+            {/* Benchmark your training with our tracing program: */}
+            {t('benchmark progress')}
+          </div>
+          <div className={styles.notice_content}>
+            <BenchmarkSteps />
+          </div>
         </div>
-        <div className={styles.notice_content}>
-          <BenchmarkSteps />
-        </div>
+        <Upload {...upBenchProps}>
+          <Button type="primary" className={styles.gen_btn}>
+            {/* IMPORT */}
+            {t('import')}
+          </Button>
+        </Upload>
       </div>
-      <Upload {...upBenchProps}>
-        <Button type="primary" className={styles.gen_btn}>
-          {/* IMPORT */}
-          {t('import')}
-        </Button>
-      </Upload>
-    </div>
+    );
   }
 
   return (
@@ -429,17 +475,24 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
             <Tooltip key={item.id} placement="right" title={item.name}>
               <div
                 onClick={() => handleItemClick(item.id)}
-                className={`${styles.item} ${state.active === item.id ? styles.active : ''
-                  }`}
+                className={`${styles.item} ${
+                  state.active === item.id ? styles.active : ''
+                }`}
               >
                 <div>
-                  <AiIcon type={item.icon} style={{
-                    fontSize: 16,
-                    padding: 10,
-                    // color: state.active === item.id ? '#3893FF' : '#303133;',
-                    background: state.active === item.id ? 'rgba(5,130,255,0.1)' : '#E1E2E6',
-                    borderRadius: 20,
-                  }} />
+                  <AiIcon
+                    type={item.icon}
+                    style={{
+                      fontSize: 16,
+                      padding: 10,
+                      // color: state.active === item.id ? '#3893FF' : '#303133;',
+                      background:
+                        state.active === item.id
+                          ? 'rgba(5,130,255,0.1)'
+                          : '#E1E2E6',
+                      borderRadius: 20,
+                    }}
+                  />
                 </div>
                 <div>{item.name}</div>
               </div>
@@ -466,10 +519,12 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
             <span style={{ color: autoRecalc ? '#1989FA' : '' }}>
               {t('autocalc')}</span>
           </div> */}
-          <Button type="primary"
+          <Button
+            type="primary"
             disabled={!validateInput()}
             className={styles.area_btn_btn}
-            onClick={doCalculateOrNext}>
+            onClick={doCalculateOrNext}
+          >
             {state.active === 'others' ? t('calculate') : t('next')}
           </Button>
         </div>

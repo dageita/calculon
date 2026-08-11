@@ -223,6 +223,36 @@ class Settings(BaseSettings):
         # https://huggingface.co/deepseek-ai/DeepSeek-V3/blob/main/config.json
         # MoE: 61 层 = 3 dense + 58 MoE；256 路由专家 + 1 共享专家，topk=8；
         # kv_size = kv_lora_rank(512) + qk_rope_head_dim(64)（MLA 压缩 KV）。
+        # https://huggingface.co/Qwen/Qwen3-32B/blob/main/config.json
+        Model(name="Qwen3-32B", seq_size=40960, hidden=5120, feedforward=25600,
+              attn_heads=64, kv_heads=8, attn_size=128, rope_theta=1000000.0,
+              rms_norm=True, qk_norm=True, ffn_type="swiglu", untied_embeddings=True,
+              num_blocks=64, vocab_size=151936, kv_size=1024),
+        # https://huggingface.co/Qwen/Qwen3-30B-A3B/blob/main/config.json
+        # Qwen3 MoE: 48 sparse layers, GQA (32 Q / 4 KV heads), 128 experts top-8.
+        Model(
+            name="Qwen3-30B-A3B",
+            seq_size=40960,
+            hidden=2048,
+            feedforward=6144,
+            attn_heads=32,
+            kv_heads=4,
+            attn_size=128,
+            rope_theta=1000000.0,
+            qk_norm=True,
+            num_blocks=48,
+            vocab_size=151936,
+            num_experts=128,
+            moe_topk=8,
+            norm_topk_prob=True,
+            router_aux_loss_coef=0.001,
+            num_shared_experts=0,
+            moe_feedforward=768,
+            first_k_dense=0,
+            moe_layer_freq=1,
+            kv_size=512,
+        ),
+
         Model(
             name="DeepSeek-V3 671B",
             seq_size=4096,

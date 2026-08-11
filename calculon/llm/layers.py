@@ -1107,3 +1107,57 @@ class TPComm(Layer):
 
   def compute_processing_time(self, stage):
     return 0
+
+
+class RotaryEmbedding(Layer):
+  """Per-element rotary position embedding for Q/K; theta sets frequencies."""
+  def __init__(self, name, sys, act_size, theta, **kwargs):
+    assert theta > 0
+    self.theta = float(theta)
+    super().__init__(
+      name, sys, fw_flops=6 * act_size, agrad_flops=8 * act_size,
+      inputs_size=act_size, output_size=act_size,
+      activation_space=act_size, activation_grads=act_size, **kwargs)
+
+  def get_agrad_mem_accessed(self):
+    return self.get_fw_mem_accessed()
+
+
+class RouterSigmoid(Layer):
+  """Qwen MoE router score activation over all expert logits."""
+  def __init__(self, name, sys, act_size, **kwargs):
+    super().__init__(
+      name, sys, fw_flops=4 * act_size, agrad_flops=6 * act_size,
+      inputs_size=act_size, output_size=act_size,
+      activation_space=act_size, activation_grads=act_size, **kwargs)
+
+  def get_agrad_mem_accessed(self):
+    return self.get_fw_mem_accessed()
+
+
+class RouterTopKNormalize(Layer):
+  """Top-k selection plus Qwen norm_topk_prob score renormalization."""
+  def __init__(self, name, sys, tokens, topk, experts, **kwargs):
+    assert 0 < topk <= experts
+    self.topk = topk
+    self.experts = experts
+    # Read all scores to select top-k; normalize only selected scores.
+    score_count = tokens * experts
+    selected_count = tokens * topk
+    super().__init__(
+      name, sys, fw_flops=score_count + 3 * selected_count,
+      agrad_flops=2 * score_count + 5 * selected_count,
+      inputs_size=score_count, output_size=selected_count,
+      activation_space=selected_count, activation_grads=selected_count,
+      **kwargs)
+
+
+class RouterAuxiliaryLoss(Layer):
+  """Training-time router load-balance auxiliary loss and its gradient."""
+  def __init__(self, name, sys, score_count, coefficient, **kwargs):
+    assert coefficient > 0
+    self.coefficient = float(coefficient)
+    super().__init__(
+      name, sys, fw_flops=7 * score_count, agrad_flops=10 * score_count,
+      inputs_size=score_count, output_size=1,
+      activation_space=0, activation_grads=score_count, **kwargs)

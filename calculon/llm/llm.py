@@ -37,6 +37,16 @@ class Llm:
       self.seq_size = cfg['seq_size']
       self.attn_heads = cfg['attn_heads']
       self.attn_size = cfg['attn_size']
+      # GQA: defaults preserve existing MHA behavior.
+      self.kv_heads = cfg.get('kv_heads') or self.attn_heads
+      assert 0 < self.kv_heads <= self.attn_heads
+      assert self.attn_heads % self.kv_heads == 0
+      self.rope_theta = cfg.get('rope_theta')
+      if self.rope_theta is not None:
+        assert self.rope_theta > 0
+      self.norm_topk_prob = bool(cfg.get('norm_topk_prob', False))
+      self.router_aux_loss_coef = float(cfg.get('router_aux_loss_coef') or 0.0)
+      assert self.router_aux_loss_coef >= 0.0
       self.num_blocks = cfg['num_blocks']
       self.vocab_size = cfg.get('vocab_size') or 51200
       # MoE architecture fields (absent/zero => dense model, behavior unchanged).
@@ -52,6 +62,12 @@ class Llm:
       self.qk_nope_head_dim = cfg.get('qk_nope_head_dim') or self.attn_size
       self.qk_rope_head_dim = cfg.get('qk_rope_head_dim') or 0
       self.v_head_dim = cfg.get('v_head_dim') or self.attn_size
+      # Architecture switches for modern dense decoders such as Qwen3.
+      self.ffn_type = cfg.get('ffn_type') or ('swiglu' if self.num_experts else 'gelu')
+      assert self.ffn_type in ('gelu', 'swiglu')
+      self.rms_norm = bool(cfg.get('rms_norm', self.num_experts > 0 or (self.q_lora_rank and self.kv_lora_rank)))
+      self.qk_norm = bool(cfg.get('qk_norm', False))
+      self.untied_embeddings = bool(cfg.get('untied_embeddings', self.num_experts > 0))
       # MLA attention impl: 'absorb' matches DeepSeek-V3/inference/model.py default;
       # 'naive' keeps decompressed K/V path.
       self.mla_attn_impl = cfg.get('mla_attn_impl') or 'absorb'
@@ -66,7 +82,7 @@ class Llm:
       elif self.is_mla:
         self.kv_size = self.kv_lora_rank + self.qk_rope_head_dim
       else:
-        self.kv_size = self.attn_heads * self.attn_size
+        self.kv_size = self.kv_heads * self.attn_size
       if self.num_experts > 0:
         assert self.moe_topk > 0, 'MoE model requires moe_topk > 0'
         assert self.moe_feedforward > 0, 'MoE model requires moe_feedforward > 0'
@@ -87,6 +103,10 @@ class Llm:
     @property
     def is_mla(self):
       return self.q_lora_rank > 0 and self.kv_lora_rank > 0
+
+    @property
+    def is_gqa(self):
+      return not self.is_mla and self.kv_heads < self.attn_heads
 
     @property
     def num_moe_blocks(self):
@@ -112,7 +132,11 @@ class Llm:
           h * (n_h * self.v_head_dim) +                             # wo
           self.q_lora_rank + self.kv_lora_rank                      # q/kv RMSNorm
         )
-      return 4 * self.hidden * self.attn_heads * self.attn_size
+      # Wq/Wo use all query heads; Wk/Wv use only KV heads for GQA.
+      params = 2 * self.hidden * (self.attn_heads + self.kv_heads) * self.attn_size
+      if self.qk_norm:
+        params += (self.attn_heads + self.kv_heads) * self.attn_size
+      return params
 
     def mtp_params(self):
       """HF MTP estimate (not in inference/model.py). One block ≈ MLA+FFN/MoE."""
@@ -152,6 +176,14 @@ class Llm:
         p += self.hidden                                         # final norm
         if self.include_mtp:
           p += self.mtp_params()
+      elif self.ffn_type == 'swiglu':
+        # Bias-free modern dense decoder (e.g. Qwen3), with optional GQA/QK-Norm.
+        dense_ffn = 3 * self.hidden * self.feedforward
+        p = self.num_blocks * (attn + dense_ffn)
+        p += self.vocab_size * self.hidden
+        if self.untied_embeddings:
+          p += self.vocab_size * self.hidden
+        p += self.hidden if self.rms_norm else 2 * self.hidden
       else:
         # Legacy dense: 2-matrix GeLU FFN + Megatron-style biases/LN/pos-emb.
         dense_ffn = 2 * self.hidden * self.feedforward
@@ -836,8 +868,8 @@ class Llm:
       name, self.sys, batch, size_a, contraction_size, size_b, **kwargs))
 
   def _norm_cls(self):
-    """DeepSeek/MLA uses RMSNorm; legacy dense GPT path keeps LayerNorm."""
-    return RMSNorm if (self.app.is_mla or self.app.is_moe) else LayerNorm
+    """Use configured RMSNorm; legacy dense GPT path keeps LayerNorm."""
+    return RMSNorm if self.app.rms_norm else LayerNorm
 
   def _append_attn_softmax(self, name, act_size, **kwargs):
     """Append attention SoftMax; fused into flash-attn when configured."""
@@ -1050,6 +1082,8 @@ class Llm:
     recompute_attn_flag = self.exe.activation_recompute in \
       ["full", "attn_only"]
     recompute_ag_flag = recompute_attn_flag or self.exe.seq_par_ag_redo
+    tp = self.exe.tensor_par
+    Norm = self._norm_cls()
 
     assert self.app.hidden % self.exe.tensor_par == 0, (
       f"We should split hidden={self.app.hidden} between"
@@ -1059,6 +1093,9 @@ class Llm:
       f" {self.exe.tensor_par} TP partitions evenly")
     assert self.app.attn_heads % self.exe.tensor_par == 0, (
       f"We should split {self.app.attn_heads} attn_heads between"
+      f" {self.exe.tensor_par} TP partitions evenly")
+    assert self.app.kv_heads % self.exe.tensor_par == 0, (
+      f"We should split {self.app.kv_heads} K/V heads between"
       f" {self.exe.tensor_par} TP partitions evenly")
 
     self._llm_block.append(Fork(
@@ -1070,7 +1107,7 @@ class Llm:
       needs_recompute=recompute_flag,
       # We account this activation when consider Residual and LayerNorm
       activation_stored=True))
-    self._llm_block.append(LayerNorm(
+    self._llm_block.append(Norm(
       "AttnBlock_LayerNorm",
       self.sys,
       pick(self.exe._sequence_par, self._seq_par_activation_size,
@@ -1113,13 +1150,13 @@ class Llm:
         # Activation is stored in Fork instead,
         activation_stored=False,
         activation_reused=True))
-      if self.exe.attention_type == 'multihead':
+      if self.exe.attention_type == 'multihead' or self.app.is_gqa:
         self._llm_block.append(Linear(
           "AttnBlock_Key",
           self.sys,
           self._batch_seq,
           self.app.hidden,
-          self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
+          self.app.kv_heads * self.app.attn_size // self.exe.tensor_par,
           needs_recompute=recompute_flag,
           # Activation is stored in Fork instead,
           activation_stored=False,
@@ -1129,7 +1166,7 @@ class Llm:
           self.sys,
           self._batch_seq,
           self.app.hidden,
-          self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
+          self.app.kv_heads * self.app.attn_size // self.exe.tensor_par,
           needs_recompute=recompute_flag,
           # Activation is stored in Fork instead,
           activation_stored=False,
@@ -1166,7 +1203,7 @@ class Llm:
           self.sys,
           self._batch_seq,
           self.app.hidden,
-          self.app.attn_heads * self.app.attn_size *3,          # Q, K, V
+          (self.app.attn_heads + 2 * self.app.kv_heads) * self.app.attn_size,
           self.exe.tensor_par_comm_type,
           self.exe.tensor_par,
           self.exe.tensor_par_net,
@@ -1221,6 +1258,32 @@ class Llm:
           activation_reused=True))
       else:
         raise self.Error('Wrong attention type', self.exe.attention_type)
+    if self.app.qk_norm:
+      # Qwen3 normalizes Q/K per head after projection and before RoPE.
+      self._llm_block.append(RMSNorm(
+        "AttnBlock_QKNorm_Q", self.sys,
+        self._batch_seq * self.app.attn_heads * self.app.attn_size // tp,
+        self.app.attn_heads * self.app.attn_size // tp,
+        needs_recompute=recompute_flag, activation_stored=False, activation_reused=True))
+      self._llm_block.append(RMSNorm(
+        "AttnBlock_QKNorm_K", self.sys,
+        self._batch_seq * self.app.kv_heads * self.app.attn_size // tp,
+        self.app.kv_heads * self.app.attn_size // tp,
+        needs_recompute=recompute_flag, activation_stored=False, activation_reused=True))
+    if self.app.rope_theta is not None:
+      # RoPE changes Q/K values but not shapes; model its vector rotations.
+      self._llm_block.append(RotaryEmbedding(
+        "AttnBlock_RoPE_Q", self.sys,
+        self._batch_seq * self.app.attn_heads * self.app.attn_size //
+        self.exe.tensor_par, self.app.rope_theta,
+        needs_recompute=recompute_flag,
+        activation_stored=False, activation_reused=True))
+      self._llm_block.append(RotaryEmbedding(
+        "AttnBlock_RoPE_K", self.sys,
+        self._batch_seq * self.app.kv_heads * self.app.attn_size //
+        self.exe.tensor_par, self.app.rope_theta,
+        needs_recompute=recompute_flag,
+        activation_stored=False, activation_reused=True))
     self._append_bmm(
       "AttnBlock_Multihead_Key_Query",
       self.exe.microbatch_size * self.app.attn_heads // self.exe.tensor_par,
@@ -1477,6 +1540,24 @@ class Llm:
       needs_recompute=recompute_flag,
       activation_stored=(not recompute_ag_flag)))
 
+    # Qwen3 router uses sigmoid scores, optional top-k probability
+    # renormalization, and (during training) an auxiliary balancing loss.
+    router_scores = self._batch_seq * app.num_experts
+    self._llm_block.append(RouterSigmoid(
+      "MlpBlock_RouterSigmoid", self.sys, router_scores,
+      needs_recompute=recompute_flag,
+      activation_stored=(not recompute_ag_flag)))
+    if app.norm_topk_prob:
+      self._llm_block.append(RouterTopKNormalize(
+        "MlpBlock_RouterTopKNormalize", self.sys,
+        self._batch_seq, app.moe_topk, app.num_experts,
+        needs_recompute=recompute_flag,
+        activation_stored=False, activation_reused=True))
+    if app.router_aux_loss_coef > 0:
+      self._llm_block.append(RouterAuxiliaryLoss(
+        "MlpBlock_RouterAuxLoss", self.sys, router_scores,
+        app.router_aux_loss_coef, needs_recompute=recompute_flag,
+        activation_stored=False, activation_reused=True))
     self._build_swiglu_ffn(
       app.moe_feedforward, recompute_flag, recompute_ag_flag,
       weight_multiplier=experts_stored, flop_multiplier=active_equiv,
@@ -1561,7 +1642,7 @@ class Llm:
       self._llm_block = self._moe_layers
     else:
       self._build_attn_block()
-      self._build_mlp_block(ffn_mode='gelu')
+      self._build_mlp_block(ffn_mode=self.app.ffn_type)
     def _assign_layer_bpe(layer):
       # Linear GEMM → matrix_dtype (FP8); BatchMatMul → bmm_dtype (BF16);
       # vector ops → vector_dtype.

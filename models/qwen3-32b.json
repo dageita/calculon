@@ -1,0 +1,15 @@
+{
+  "hidden": 5120,
+  "feedforward": 25600,
+  "seq_size": 40960,
+  "attn_heads": 64,
+  "kv_heads": 8,
+  "attn_size": 128,
+  "rope_theta": 1000000.0,
+  "rms_norm": true,
+  "qk_norm": true,
+  "ffn_type": "swiglu",
+  "untied_embeddings": true,
+  "num_blocks": 64,
+  "vocab_size": 151936
+}

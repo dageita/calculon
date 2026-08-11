@@ -280,6 +280,11 @@ class Runner(calculon.CommandLine):
             "global_batch_size": model.exe.global_batch_size,
             "local_batch_size": model.exe._local_batch_size,
             "batch_total_time": global_time,
+            # Match the displayed flow-simulator step time, rather than the
+            # analytical model time returned by model.get_total_time().
+            # Unit: global samples / second.
+            "linear_scaling_throughput": (
+                model.exe.global_batch_size / global_time if global_time > 0 else 0.0),
             "totoal_number_of_gpus": model.exe.num_procs,
             # total_efficiency ≈ MFU: useful_flops / (peak_tflops * step_time).
             # compute_efficiency: same but vs compute-only time (excl. exposed comm).

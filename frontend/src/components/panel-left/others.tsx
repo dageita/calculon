@@ -1,9 +1,4 @@
-import {
-  Select,
-  InputNumber,
-  Slider,
-  Popover
-} from 'antd';
+import { Select, InputNumber, Slider, Popover } from 'antd';
 import useModel from 'flooks';
 import styles from './index.less';
 import ProjectModel from '@/models/projectModel';
@@ -13,7 +8,6 @@ import { getDataTypes } from '@/services';
 import { useImmer } from 'use-immer';
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-
 
 const RECOMPUTE_OPTIONS = [
   { key: 'full', label: 'full', value: 'full' },
@@ -41,7 +35,7 @@ const PARAMS_LIST = [
     min: 0,
     max: 8,
     precision: 0,
-    step: 1
+    step: 1,
   },
   {
     title: 'Pipeline parallel degree',
@@ -49,7 +43,7 @@ const PARAMS_LIST = [
     min: 0,
     max: 10000,
     precision: 0,
-    step: 1
+    step: 1,
   },
   {
     title: 'Data parallel degree',
@@ -57,7 +51,7 @@ const PARAMS_LIST = [
     min: 0,
     max: 10000,
     precision: 0,
-    step: 1
+    step: 1,
   },
   {
     title: 'Expert parallel degree',
@@ -65,7 +59,7 @@ const PARAMS_LIST = [
     min: 1,
     max: 10000,
     precision: 0,
-    step: 1
+    step: 1,
   },
   {
     title: 'Context parallel degree',
@@ -73,13 +67,21 @@ const PARAMS_LIST = [
     min: 1,
     max: 10000,
     precision: 0,
-    step: 1
-  }
+    step: 1,
+  },
 ];
 
 const OtherPanel = (props) => {
-  const { setProject, setOtherConfig, otherConfig, recommendConfig, curModel, curGpu,
-    checkSize, checkPipeline } = useModel(ProjectModel);
+  const {
+    setProject,
+    setOtherConfig,
+    otherConfig,
+    recommendConfig,
+    curModel,
+    curGpu,
+    checkSize,
+    checkPipeline,
+  } = useModel(ProjectModel);
   const { t } = useTranslation();
   const { setChangeLog } = useModel(LogModel);
 
@@ -91,6 +93,7 @@ const OtherPanel = (props) => {
 
   const dpDegree = otherConfig?.data_par || 0;
   const optimizerShardingEnabled = dpDegree > 1;
+  const expertParallelEnabled = Boolean(curModel?.num_experts);
 
   // 设置参数值并记录变更日志
   const setParamValue = (key, val, title) => {
@@ -99,7 +102,11 @@ const OtherPanel = (props) => {
   };
 
   const setActivationRecompute = (val: string) => {
-    setChangeLog('Activation recompute', val, otherConfig?.activation_recompute);
+    setChangeLog(
+      'Activation recompute',
+      val,
+      otherConfig?.activation_recompute,
+    );
     setOtherConfig({
       activation_recompute: val,
       optimization_strategy: recomputeToStrategy(val),
@@ -110,7 +117,11 @@ const OtherPanel = (props) => {
     if (!optimizerShardingEnabled && val) {
       return;
     }
-    setChangeLog('Optimizer sharding', String(val), String(otherConfig?.optimizer_sharding));
+    setChangeLog(
+      'Optimizer sharding',
+      String(val),
+      String(otherConfig?.optimizer_sharding),
+    );
     setOtherConfig({ optimizer_sharding: val });
   };
 
@@ -123,30 +134,35 @@ const OtherPanel = (props) => {
   };
 
   const loadDataTypes = async (gpuName?: string) => {
-      const name = gpuName || curGpu?.value || curGpu?.name;
-      if (!name) return;
-      try {
-        const result = await getDataTypes(name) as any;
-        const toOpts = (arr: string[] = []) => arr.map((item: string) => ({
-            key: item,
-            label: item,
-            value: item,
+    const name = gpuName || curGpu?.value || curGpu?.name;
+    if (!name) return;
+    try {
+      const result = (await getDataTypes(name)) as any;
+      const toOpts = (arr: string[] = []) =>
+        arr.map((item: string) => ({
+          key: item,
+          label: item,
+          value: item,
         }));
-        const matrixList = toOpts(result.matrix_datatypes || result.datatypes || []);
-        const vectorList = toOpts(result.vector_datatypes || result.datatypes || []);
-        setState(prev => ({
-            ...prev,
-            matrixDataTypeList: matrixList,
-            vectorDataTypeList: vectorList,
-        }));
-      } catch (e) {
-        console.error('loadDataTypes failed', e);
-        setState(prev => ({
-          ...prev,
-          matrixDataTypeList: [],
-          vectorDataTypeList: [],
-        }));
-      }
+      const matrixList = toOpts(
+        result.matrix_datatypes || result.datatypes || [],
+      );
+      const vectorList = toOpts(
+        result.vector_datatypes || result.datatypes || [],
+      );
+      setState((prev) => ({
+        ...prev,
+        matrixDataTypeList: matrixList,
+        vectorDataTypeList: vectorList,
+      }));
+    } catch (e) {
+      console.error('loadDataTypes failed', e);
+      setState((prev) => ({
+        ...prev,
+        matrixDataTypeList: [],
+        vectorDataTypeList: [],
+      }));
+    }
   };
 
   // GPU 变化时重新拉取 matrix/vector dtype
@@ -159,7 +175,7 @@ const OtherPanel = (props) => {
         vector_dtype: undefined,
       });
     }
-    setState(prev => ({ ...prev, lastGpuValue: gpuName }));
+    setState((prev) => ({ ...prev, lastGpuValue: gpuName }));
     loadDataTypes(gpuName);
   }, [curGpu?.value, curGpu?.name]);
 
@@ -175,7 +191,9 @@ const OtherPanel = (props) => {
     <div>
       {recommendConfig.recomended_microbatch && (
         <div className={styles.slider_tip}>
-          {t('microbatch recommend', { value: recommendConfig.recomended_microbatch })}
+          {t('microbatch recommend', {
+            value: recommendConfig.recomended_microbatch,
+          })}
         </div>
       )}
       <InputNumber
@@ -184,12 +202,16 @@ const OtherPanel = (props) => {
         min={1}
         max={curModel?.minibatch_size}
         value={otherConfig?.microbatch_size}
-        onChange={(val) => setParamValue('microbatch_size', val, 'Microbatch size')}
-        addonAfter={(
-          <Popover content={<div>Need to be able to divide minibatch size.</div>}>
+        onChange={(val) =>
+          setParamValue('microbatch_size', val, 'Microbatch size')
+        }
+        addonAfter={
+          <Popover
+            content={<div>Need to be able to divide minibatch size.</div>}
+          >
             <InfoCircleOutlined style={{ cursor: 'pointer' }} />
           </Popover>
-        )}
+        }
       />
       {!checkSize() && curModel?.minibatch_size && (
         <div className={styles.error_tip}>
@@ -203,7 +225,9 @@ const OtherPanel = (props) => {
     <div>
       {recommendConfig.recomended_microbatch && (
         <div className={styles.slider_tip}>
-          {t('microbatch recommend', { value: recommendConfig.recomended_microbatch })}
+          {t('microbatch recommend', {
+            value: recommendConfig.recomended_microbatch,
+          })}
         </div>
       )}
       <InputNumber
@@ -213,15 +237,23 @@ const OtherPanel = (props) => {
         max={curModel?.batch_size}
         value={otherConfig?.batch_size}
         onChange={(val) => setParamValue('batch_size', val, 'Batch size')}
-        addonAfter={(
-          <Popover content={<div>Need to be able to divide (data parallel degree * microbatch size).</div>}>
+        addonAfter={
+          <Popover
+            content={
+              <div>
+                Need to be able to divide (data parallel degree * microbatch
+                size).
+              </div>
+            }
+          >
             <InfoCircleOutlined style={{ cursor: 'pointer' }} />
           </Popover>
-        )}
+        }
       />
       {!checkSize() && curModel?.batch_size && (
         <div className={styles.error_tip}>
-          Need to be able to divide data parallel degree ({curModel?.batch_size}).
+          Need to be able to divide data parallel degree ({curModel?.batch_size}
+          ).
         </div>
       )}
     </div>
@@ -231,7 +263,9 @@ const OtherPanel = (props) => {
     <div className={styles.nest}>
       <p className={styles.section_title}>{t('optimization strategy')}</p>
 
-      <p className={styles.section_title} style={{ marginTop: 8 }}>{t('activation_recompute')}</p>
+      <p className={styles.section_title} style={{ marginTop: 8 }}>
+        {t('activation_recompute')}
+      </p>
       <div className={styles['group-content']}>
         <Select
           options={RECOMPUTE_OPTIONS}
@@ -241,9 +275,13 @@ const OtherPanel = (props) => {
         />
       </div>
 
-      <p className={styles.section_title} style={{ marginTop: 8 }}>{t('optimizer_sharding')}</p>
+      <p className={styles.section_title} style={{ marginTop: 8 }}>
+        {t('optimizer_sharding')}
+      </p>
       <div className={styles.slider_tip}>
-        <span style={{ color: optimizerShardingEnabled ? undefined : '#ff4d4f' }}>
+        <span
+          style={{ color: optimizerShardingEnabled ? undefined : '#ff4d4f' }}
+        >
           {optimizerShardingEnabled
             ? t('optimizer_sharding_tip')
             : t('optimizer_sharding_dp_tip')}
@@ -260,7 +298,21 @@ const OtherPanel = (props) => {
       </div>
 
       <div className={styles.slider_tip}>
-        <span style={{color:otherConfig['tensor_par'] * otherConfig['pipeline_par'] *otherConfig['data_par'] * (otherConfig['expert_par'] || 1) * (otherConfig['context_par'] || 1) ==curGpu.num_procs? '': '#ff4d4f'}} >{t('pp_dp_tp_recommend', {value: curGpu.num_procs})}</span>
+        <span
+          style={{
+            color:
+              otherConfig['tensor_par'] *
+                otherConfig['pipeline_par'] *
+                otherConfig['data_par'] *
+                (otherConfig['expert_par'] || 1) *
+                (otherConfig['context_par'] || 1) ==
+              curGpu.num_procs
+                ? ''
+                : '#ff4d4f',
+          }}
+        >
+          {t('pp_dp_tp_recommend', { value: curGpu.num_procs })}
+        </span>
       </div>
 
       <div className={styles['group_slider']}>
@@ -274,6 +326,10 @@ const OtherPanel = (props) => {
                 min={calcMin(cf)}
                 max={calcMax()}
                 value={otherConfig[cf.key]}
+                disabled={
+                  ['expert_par', 'context_par'].includes(cf.key) &&
+                  !expertParallelEnabled
+                }
                 onChange={(val) => setParamValue(cf.key, val, cf.title)}
               />
             </div>
@@ -283,42 +339,58 @@ const OtherPanel = (props) => {
               max={calcMax()}
               onChange={(val) => setParamValue(cf.key, val, cf.title)}
               value={otherConfig[cf.key]}
+              disabled={
+                ['expert_par', 'context_par'].includes(cf.key) &&
+                !expertParallelEnabled
+              }
               step={cf.step}
             />
 
-            {cf.key === 'pipeline_par' && !checkPipeline() && curModel?.minibatch_size && (
-              <div className={styles.error_tip}>
-                {t('pipeline divide tips')}({curModel?.num_layers}).
-              </div>
-            )}
+            {cf.key === 'pipeline_par' &&
+              !checkPipeline() &&
+              curModel?.minibatch_size && (
+                <div className={styles.error_tip}>
+                  {t('pipeline divide tips')}({curModel?.num_layers}).
+                </div>
+              )}
           </div>
         ))}
       </div>
 
       <p className={styles.section_title}>{t('batch size')}</p>
       <div className={styles.batch_size}>
-        <span style={{color: otherConfig['microbatch_size'] *otherConfig['data_par'] <= otherConfig['batch_size']? '': '#ff4d4f'}} >{t('batch_recommend')}</span>
+        <span
+          style={{
+            color:
+              otherConfig['microbatch_size'] * otherConfig['data_par'] <=
+              otherConfig['batch_size']
+                ? ''
+                : '#ff4d4f',
+          }}
+        >
+          {t('batch_recommend')}
+        </span>
       </div>
-      <div className={styles.section_content}>
-        {renderBatchSize()}
-      </div>
+      <div className={styles.section_content}>{renderBatchSize()}</div>
 
       <p className={styles.section_title}>{t('microbatch')}</p>
-      <div className={styles.section_content}>
-        {renderMicrobatchSize()}
-      </div>
+      <div className={styles.section_content}>{renderMicrobatchSize()}</div>
 
       <p className={styles.section_title}>{t('compute_precision')}</p>
       <div className={styles.slider_tip}>
         <span>{t('compute_precision_tip')}</span>
       </div>
-      <p className={styles.section_title} style={{ marginTop: 8 }}>{t('matrix_dtype')}</p>
+      <p className={styles.section_title} style={{ marginTop: 8 }}>
+        {t('matrix_dtype')}
+      </p>
       <div className={styles['group-content']}>
         <Select
           options={state.matrixDataTypeList}
           placeholder={t('Select matrix datatype')}
           value={otherConfig['matrix_dtype']}
-          onChange={(val) => setParamValue('matrix_dtype', val, 'Matrix Data Type')}
+          onChange={(val) =>
+            setParamValue('matrix_dtype', val, 'Matrix Data Type')
+          }
         />
       </div>
 
@@ -328,7 +400,9 @@ const OtherPanel = (props) => {
           options={state.vectorDataTypeList}
           placeholder={t('Select vector datatype')}
           value={otherConfig['vector_dtype']}
-          onChange={(val) => setParamValue('vector_dtype', val, 'Vector Data Type')}
+          onChange={(val) =>
+            setParamValue('vector_dtype', val, 'Vector Data Type')
+          }
         />
       </div>
     </div>

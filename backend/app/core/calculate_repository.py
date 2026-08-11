@@ -240,6 +240,13 @@ class CalculateRepository:
             activation_recompute = "none"
 
         data_par = trainning_config_dict.get("data_par") or 1
+        expert_par = trainning_config_dict.get("expert_par") or 1
+        # EP is a MoE-only dimension. Do not silently drop it in the flow
+        # simulator, which would make Summary report more GPUs than timeline.
+        if expert_par > 1 and not (model_dict or {}).get("num_experts"):
+            raise Llm.Error(
+                "expert_par must be 1 for a dense model; use data_par to scale "
+                "across replicas (and make global batch size divisible by data_par)")
         # Optimizer sharding (ZeRO-1) only when DP > 1.
         optimizer_sharding = bool(trainning_config_dict.get("optimizer_sharding"))
         if data_par <= 1:
@@ -281,7 +288,7 @@ class CalculateRepository:
             "tensor_par": trainning_config_dict.get("tensor_par"),
             "pipeline_par": trainning_config_dict.get("pipeline_par"),
             "data_par": data_par,
-            "expert_par": trainning_config_dict.get("expert_par") or 1,
+            "expert_par": expert_par,
             "context_par": trainning_config_dict.get("context_par") or 1,
             "tensor_par_net": 0,
             "pipeline_par_net": inter_tier,

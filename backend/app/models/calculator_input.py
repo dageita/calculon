@@ -30,12 +30,20 @@ class Model(BaseModel):
     hidden: Optional[int] = None
     feedforward: Optional[int] = None
     attn_heads: Optional[int] = None
+    kv_heads: Optional[int] = None          # GQA KV heads; defaults to attn_heads
     attn_size: Optional[int] = None
+    rope_theta: Optional[float] = None      # RoPE frequency base
+    rms_norm: Optional[bool] = None
+    qk_norm: Optional[bool] = None
+    ffn_type: Optional[str] = None            # gelu | swiglu
+    untied_embeddings: Optional[bool] = None
     num_blocks: Optional[int] = None
     vocab_size: Optional[int] = None
     # MoE 架构字段（缺省表示 dense 模型；前端对 dense 模型会传 null）
     num_experts: Optional[int] = None        # n_routed_experts
     moe_topk: Optional[int] = None           # num_experts_per_tok
+    norm_topk_prob: Optional[bool] = None    # Qwen top-k score renormalization
+    router_aux_loss_coef: Optional[float] = None
     num_shared_experts: Optional[int] = None
     moe_feedforward: Optional[int] = None    # moe_intermediate_size
     first_k_dense: Optional[int] = None      # first_k_dense_replace
