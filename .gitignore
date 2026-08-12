@@ -47,4 +47,6 @@ nosetests.xml
 .cursor/
 
 # Local test / calibration artifacts (entire directory)
-test/
+test/*.csv
+test/*.log
+test/*.png
