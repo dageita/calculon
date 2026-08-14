@@ -151,7 +151,8 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         num_procs: curGpu['num_procs'],
       },
       network: {
-        // GB/s from systems/<gpu>.json (same as GPU Inter-node Bandwidth); not user Gb/s.
+        // GB/s. The selected GPU starts with systems/<gpu>.json defaults and
+        // may carry a user override for the current calculation.
         network_bandwidth:
           curGpu['network_bandwidth'] ?? curNetwork['network_bandwidth'],
         network_topology: curNetwork['network_topology'],

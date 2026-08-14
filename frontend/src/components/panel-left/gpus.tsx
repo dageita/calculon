@@ -9,7 +9,8 @@ import styles from './index.less';
 import LogModel from '@/models/logModel';
 import { useTranslation } from 'react-i18next';
 
-// Bandwidth fields are read-only from systems/<gpu>.json (GB/s, unidirectional).
+// Bandwidth defaults come from systems/<gpu>.json, but may be overridden for
+// the current calculation without modifying the catalog file.
 const PARAMS_LIST = [
   {
     title: 'GPU Type',
@@ -46,6 +47,8 @@ const PARAMS_LIST = [
     key: 'support_p2p'
   }
 ]
+const EDITABLE_BANDWIDTH_KEYS = new Set(['bus_bandwidth', 'network_bandwidth'])
+
 export interface IGPUSelectionProps { }
 const GpuSelection: FC<IGPUSelectionProps> = (props) => {
   const { setProject, curGpu, curNetwork,curCouHasChanged } = useModel(ProjectModel);
@@ -66,6 +69,22 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
       }
     });
   };
+
+  const handleBandwidthChange = (key: string, value: number | null) => {
+    const projectUpdate: any = {
+      curGpu: {
+        ...curGpu,
+        [key]: value,
+      },
+    }
+    if (key === 'network_bandwidth') {
+      projectUpdate.curNetwork = {
+        ...curNetwork,
+        network_bandwidth: value,
+      }
+    }
+    setProject(projectUpdate)
+  }
 
 
   const [state, setState] = useImmer({
@@ -237,7 +256,18 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
               <div key={_idx}>
                 <div className={styles.gpu_params_item}>
                   <div className={styles.gpu_params_label}>{pItem.title}</div>
-                  <div className={styles.gpu_params_value}>{curGpu[pItem.key]?.toString?.() ?? String(curGpu[pItem.key])}
+                  <div className={styles.gpu_params_value}>
+                    {EDITABLE_BANDWIDTH_KEYS.has(pItem.key)
+                      ? <InputNumber
+                          controls={false}
+                          min={0}
+                          step={1}
+                          style={{ width: '100%' }}
+                          value={curGpu[pItem.key]}
+                          onChange={(value) => handleBandwidthChange(pItem.key, value)}
+                        />
+                      : (curGpu[pItem.key]?.toString?.() ?? String(curGpu[pItem.key]))
+                    }
                   </div>
                 </div>
                 {_idx < PARAMS_LIST.length - 1 && <Divider />}
@@ -249,6 +279,11 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
           </div>
         }
       </div>
+      {curGpu?.value && (
+        <div className={styles.to_tips}>
+          Bandwidth overrides apply to the current configuration only and do not modify the systems JSON.
+        </div>
+      )}
 
       <div className={styles.cluster_param_item}>
         <div className={styles.param_item_label}>Gpu Numbers</div>

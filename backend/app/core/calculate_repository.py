@@ -345,28 +345,22 @@ class CalculateRepository:
             if "networks" not in sys_json or not sys_json["networks"]:
                 raise ValueError("sys_json['networks'] is missing or empty")
 
-            # Optional GPU overrides only when systems values are missing; always GB/s.
+            # Request values override the in-memory systems defaults for this
+            # calculation only; the source JSON is never written.
             nets = sys_json["networks"]
-            if nets[0].get("bandwidth") is None and gpu_dict.get("bus_bandwidth") is not None:
+            if gpu_dict.get("bus_bandwidth") is not None:
                 nets[0]["bandwidth"] = gpu_dict.get("bus_bandwidth")
             nets[0]["topology"] = network_dict.get("network_topology")
             nets[0]["size"] = gpu_dict.get("num_procs")
 
-            inter_bw = None
+            inter_bw = gpu_dict.get("network_bandwidth")
+            if inter_bw is None:
+                inter_bw = network_dict.get("network_bandwidth")
             if len(nets) > 1:
-                if nets[1].get("bandwidth") is None:
-                    inter_bw = gpu_dict.get("network_bandwidth")
-                    if inter_bw is None:
-                        inter_bw = network_dict.get("network_bandwidth")
-                    if inter_bw is not None:
-                        nets[1]["bandwidth"] = inter_bw
+                if inter_bw is not None:
+                    nets[1]["bandwidth"] = inter_bw
                 nets[1]["topology"] = network_dict.get("network_topology")
             else:
-                inter_bw = (
-                    gpu_dict.get("network_bandwidth")
-                    if gpu_dict.get("network_bandwidth") is not None
-                    else network_dict.get("network_bandwidth")
-                )
                 nets.append({
                     "bandwidth": inter_bw,
                     "efficiency": 0.8,
