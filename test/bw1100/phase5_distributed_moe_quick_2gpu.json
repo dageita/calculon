@@ -1,0 +1,119 @@
+{
+  "schema": "bw1100.phase5.distributed_moe_quick.v1",
+  "world_size": 2,
+  "backend": "nccl",
+  "shape": {
+    "tokens_per_rank": 128,
+    "hidden": 7168,
+    "ffn_hidden": 2048,
+    "experts_per_rank": 1,
+    "dtype": "bfloat16",
+    "max_received_tokens": 132
+  },
+  "network_model": {
+    "tier": 0,
+    "bandwidth_GBps": 158.51514702896458,
+    "latency_us": 98.35987538099289,
+    "max_remote_bytes_per_rank": 831488.0
+  },
+  "rows": [
+    {
+      "component": "router",
+      "measured_ms": 0.2332790046930313,
+      "predicted_ms": 0.042199660301208496,
+      "error_pct": -81.91021932867963,
+      "gate_pct": "",
+      "pass": ""
+    },
+    {
+      "component": "ep_dispatch",
+      "measured_ms": 0.22767899930477142,
+      "predicted_ms": 0.10360535517005094,
+      "error_pct": -54.49498834481231,
+      "gate_pct": "",
+      "pass": ""
+    },
+    {
+      "component": "expert_forward",
+      "measured_ms": 0.8188790082931519,
+      "predicted_ms": 0.11915061813972162,
+      "error_pct": -85.44954542331281,
+      "gate_pct": "",
+      "pass": ""
+    },
+    {
+      "component": "expert_backward",
+      "measured_ms": 0.6879990100860596,
+      "predicted_ms": 0.23830123627944325,
+      "error_pct": -65.3631425647495,
+      "gate_pct": "",
+      "pass": ""
+    },
+    {
+      "component": "forward_core",
+      "measured_ms": 0.4737589955329895,
+      "predicted_ms": 0.3263613284798235,
+      "error_pct": -31.11237326213517,
+      "gate_pct": 55.0,
+      "pass": true
+    },
+    {
+      "component": "backward_core",
+      "measured_ms": 0.8643180131912231,
+      "predicted_ms": 0.44551194661954513,
+      "error_pct": -48.45508946705484,
+      "gate_pct": 55.0,
+      "pass": true
+    },
+    {
+      "component": "train_core",
+      "measured_ms": 1.2495980262756348,
+      "predicted_ms": 0.7718732750993686,
+      "error_pct": -38.230274146647076,
+      "gate_pct": 55.0,
+      "pass": true
+    },
+    {
+      "component": "overlap_serial",
+      "measured_ms": 2.70255708694458,
+      "predicted_ms": 2.504045041892693,
+      "error_pct": -7.345341417979745,
+      "gate_pct": "",
+      "pass": ""
+    },
+    {
+      "component": "overlap_async",
+      "measured_ms": 2.6379170417785645,
+      "predicted_ms": 2.400439686722642,
+      "error_pct": -9.002457290916476,
+      "gate_pct": "",
+      "pass": ""
+    }
+  ],
+  "overlap_gain_pct": 2.3918105367052758,
+  "checks": {
+    "forward_core": true,
+    "backward_core": true,
+    "train_core": true
+  },
+  "pass": true,
+  "scope": {
+    "validated": [
+      "router",
+      "EP dispatch/combine",
+      "expert FFN",
+      "backward",
+      "end-to-end MoE core",
+      "overlap"
+    ],
+    "report_only": [
+      "router (sort has no Phase0 parametric model)",
+      "overlap_serial"
+    ],
+    "not_covered": [
+      "optimizer",
+      "PP bubble",
+      "full-model extrapolation"
+    ]
+  }
+}

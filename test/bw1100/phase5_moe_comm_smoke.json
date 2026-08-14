@@ -1,0 +1,23 @@
+{
+  "world_size": 2,
+  "tokens_per_rank": 256,
+  "hidden": 2048,
+  "payload_bytes_per_rank": 1048576,
+  "equal_dispatch_ms": 0.1475200057029724,
+  "skewed_dispatch_ms": 0.14688000082969666,
+  "skew_penalty_pct": -0.4338427660885463,
+  "two_phase_communication_ms": 0.2614389955997467,
+  "route_sort_ms": 0.2264000028371811,
+  "expert_compute_ms": 0.04608000069856644,
+  "serial_moe_step_ms": 0.39136001467704773,
+  "overlap_moe_step_ms": 0.40703898668289185,
+  "overlap_gain_pct": -4.006278469399201,
+  "calibrated_two_phase_model_ms": 0.32726478227638306,
+  "calibrated_two_phase_model_error_pct": 25.178258708357784,
+  "checks": {
+    "communication_positive": true,
+    "model_within_gate": true,
+    "overlap_not_slower": true
+  },
+  "pass": true
+}

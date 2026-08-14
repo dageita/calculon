@@ -1,0 +1,381 @@
+{
+  "world_size": 2,
+  "backend": "nccl API (RCCL implementation on DTK/ROCm)",
+  "torch_version": "2.5.1",
+  "hip_version": "6.3.26045",
+  "time_model": "latency_s + wire_bytes / bandwidth_Bps",
+  "fits": {
+    "tp": {
+      "latency_s": 0.00016335742287698992,
+      "latency_us": 163.35742287698992,
+      "bandwidth_Bps": 156527427755.17072,
+      "bandwidth_GBps": 156.52742775517072,
+      "median_abs_error_pct": 2.527145977923624,
+      "max_abs_error_pct": 17.618302581025084
+    },
+    "dp": {
+      "latency_s": 0.00015670466762359033,
+      "latency_us": 156.70466762359032,
+      "bandwidth_Bps": 125660169133.49605,
+      "bandwidth_GBps": 125.66016913349605,
+      "median_abs_error_pct": 4.283184643198947,
+      "max_abs_error_pct": 14.316511702477198
+    },
+    "ep": {
+      "latency_s": 0.00013904753389789884,
+      "latency_us": 139.04753389789883,
+      "bandwidth_Bps": 42651295053.3414,
+      "bandwidth_GBps": 42.6512950533414,
+      "median_abs_error_pct": 1.7462675906697263,
+      "max_abs_error_pct": 27.46292936856373
+    },
+    "cp": {
+      "latency_s": 0.00019587455988512943,
+      "latency_us": 195.87455988512943,
+      "bandwidth_Bps": 130617462858.26723,
+      "bandwidth_GBps": 130.61746285826723,
+      "median_abs_error_pct": 0.8610716443483843,
+      "max_abs_error_pct": 9.692995495476193
+    },
+    "pp": {
+      "latency_s": 0.00019215773437537397,
+      "latency_us": 192.15773437537396,
+      "bandwidth_Bps": 136176186355.68112,
+      "bandwidth_GBps": 136.17618635568112,
+      "median_abs_error_pct": 1.4782104493139894,
+      "max_abs_error_pct": 4.291330997039352
+    }
+  },
+  "samples": {
+    "tp": [
+      {
+        "size_kb": 4,
+        "payload_bytes": 4096,
+        "wire_bytes": 4096.0,
+        "measured_ms": 0.16335999965667725,
+        "model_ms": 0.1633835908148315,
+        "error_pct": 0.014441208498921256
+      },
+      {
+        "size_kb": 16,
+        "payload_bytes": 16384,
+        "wire_bytes": 16384.0,
+        "measured_ms": 0.16752000153064728,
+        "model_ms": 0.16346209462835626,
+        "error_pct": -2.422341729473206
+      },
+      {
+        "size_kb": 64,
+        "payload_bytes": 65536,
+        "wire_bytes": 65536.0,
+        "measured_ms": 0.1695999950170517,
+        "model_ms": 0.16377610988245525,
+        "error_pct": -3.4338946377981485
+      },
+      {
+        "size_kb": 256,
+        "payload_bytes": 262144,
+        "wire_bytes": 262144.0,
+        "measured_ms": 0.1607999950647354,
+        "model_ms": 0.16503217089885117,
+        "error_pct": 2.631950226374041
+      },
+      {
+        "size_kb": 1024,
+        "payload_bytes": 1048576,
+        "wire_bytes": 1048576.0,
+        "measured_ms": 0.1700800061225891,
+        "model_ms": 0.17005641496443488,
+        "error_pct": -0.013870624003403921
+      },
+      {
+        "size_kb": 4096,
+        "payload_bytes": 4194304,
+        "wire_bytes": 4194304.0,
+        "measured_ms": 0.16976000368595123,
+        "model_ms": 0.19015339122676975,
+        "error_pct": 12.013069685451589
+      },
+      {
+        "size_kb": 16384,
+        "payload_bytes": 16777216,
+        "wire_bytes": 16777216.0,
+        "measured_ms": 0.26976001262664795,
+        "model_ms": 0.2705412962761091,
+        "error_pct": 0.28962174261997764
+      },
+      {
+        "size_kb": 65536,
+        "payload_bytes": 67108864,
+        "wire_bytes": 67108864.0,
+        "measured_ms": 0.7187190055847168,
+        "model_ms": 0.5920929164734667,
+        "error_pct": -17.618302581025084
+      }
+    ],
+    "dp": [
+      {
+        "size_kb": 4,
+        "payload_bytes": 4096,
+        "wire_bytes": 4096.0,
+        "measured_ms": 0.17711900174617767,
+        "model_ms": 0.15673726347339895,
+        "error_pct": -11.507369662113947
+      },
+      {
+        "size_kb": 16,
+        "payload_bytes": 16384,
+        "wire_bytes": 16384.0,
+        "measured_ms": 0.18303999304771423,
+        "model_ms": 0.15683505102282477,
+        "error_pct": -14.316511702477198
+      },
+      {
+        "size_kb": 64,
+        "payload_bytes": 65536,
+        "wire_bytes": 65536.0,
+        "measured_ms": 0.15056000649929047,
+        "model_ms": 0.15722620122052808,
+        "error_pct": 4.427599915963763
+      },
+      {
+        "size_kb": 256,
+        "payload_bytes": 262144,
+        "wire_bytes": 262144.0,
+        "measured_ms": 0.15248000621795654,
+        "model_ms": 0.15879080201134138,
+        "error_pct": 4.1387693704341295
+      },
+      {
+        "size_kb": 1024,
+        "payload_bytes": 1048576,
+        "wire_bytes": 1048576.0,
+        "measured_ms": 0.17136000096797943,
+        "model_ms": 0.16504920517459457,
+        "error_pct": -3.6827706335996773
+      },
+      {
+        "size_kb": 4096,
+        "payload_bytes": 4194304,
+        "wire_bytes": 4194304.0,
+        "measured_ms": 0.1748799979686737,
+        "model_ms": 0.19008281782760722,
+        "error_pct": 8.693286845564131
+      },
+      {
+        "size_kb": 16384,
+        "payload_bytes": 16777216,
+        "wire_bytes": 16777216.0,
+        "measured_ms": 0.2803199887275696,
+        "model_ms": 0.29021726843965795,
+        "error_pct": 3.530707801828252
+      },
+      {
+        "size_kb": 65536,
+        "payload_bytes": 67108864,
+        "wire_bytes": 67108864.0,
+        "measured_ms": 0.7169600129127502,
+        "model_ms": 0.6907550708878608,
+        "error_pct": -3.6550074694442465
+      }
+    ],
+    "ep": [
+      {
+        "size_kb": 4,
+        "payload_bytes": 4096,
+        "wire_bytes": 4096.0,
+        "measured_ms": 0.14256000518798828,
+        "model_ms": 0.13914356849649373,
+        "error_pct": -2.396490296832854
+      },
+      {
+        "size_kb": 16,
+        "payload_bytes": 16384,
+        "wire_bytes": 16384.0,
+        "measured_ms": 0.13792000710964203,
+        "model_ms": 0.1394316722922784,
+        "error_pct": 1.0960448845065986
+      },
+      {
+        "size_kb": 64,
+        "payload_bytes": 65536,
+        "wire_bytes": 65536.0,
+        "measured_ms": 0.14127999544143677,
+        "model_ms": 0.14058408747541715,
+        "error_pct": -0.4925736045256857
+      },
+      {
+        "size_kb": 256,
+        "payload_bytes": 262144,
+        "wire_bytes": 262144.0,
+        "measured_ms": 0.14560000598430634,
+        "model_ms": 0.145193748207972,
+        "error_pct": -0.27902318656367836
+      },
+      {
+        "size_kb": 1024,
+        "payload_bytes": 1048576,
+        "wire_bytes": 1048576.0,
+        "measured_ms": 0.1499200016260147,
+        "model_ms": 0.16363239113819153,
+        "error_pct": 9.146471026850232
+      },
+      {
+        "size_kb": 4096,
+        "payload_bytes": 4194304,
+        "wire_bytes": 4194304.0,
+        "measured_ms": 0.18624000251293182,
+        "model_ms": 0.2373869628590696,
+        "error_pct": 27.46292936856373
+      },
+      {
+        "size_kb": 16384,
+        "payload_bytes": 16777216,
+        "wire_bytes": 16777216.0,
+        "measured_ms": 0.5319989919662476,
+        "model_ms": 0.5324052497425819,
+        "error_pct": 0.07636438836713433
+      },
+      {
+        "size_kb": 65536,
+        "payload_bytes": 67108864,
+        "wire_bytes": 67108864.0,
+        "measured_ms": 1.801116943359375,
+        "model_ms": 1.7124783972766309,
+        "error_pct": -4.921309879935888
+      }
+    ],
+    "cp": [
+      {
+        "size_kb": 4,
+        "payload_bytes": 4096,
+        "wire_bytes": 4096.0,
+        "measured_ms": 0.19616000354290009,
+        "model_ms": 0.19590591863234721,
+        "error_pct": -0.1295294178037264
+      },
+      {
+        "size_kb": 16,
+        "payload_bytes": 16384,
+        "wire_bytes": 16384.0,
+        "measured_ms": 0.19599999487400055,
+        "model_ms": 0.19599999487400055,
+        "error_pct": 0.0
+      },
+      {
+        "size_kb": 64,
+        "payload_bytes": 65536,
+        "wire_bytes": 65536.0,
+        "measured_ms": 0.1990399956703186,
+        "model_ms": 0.1963762998406139,
+        "error_pct": -1.3382716477329304
+      },
+      {
+        "size_kb": 256,
+        "payload_bytes": 262144,
+        "wire_bytes": 262144.0,
+        "measured_ms": 0.19568000733852386,
+        "model_ms": 0.19788151970706727,
+        "error_pct": 1.1250573824513541
+      },
+      {
+        "size_kb": 1024,
+        "payload_bytes": 1048576,
+        "wire_bytes": 1048576.0,
+        "measured_ms": 0.19392000138759613,
+        "model_ms": 0.20390239917288078,
+        "error_pct": 5.147688590065761
+      },
+      {
+        "size_kb": 4096,
+        "payload_bytes": 4194304,
+        "wire_bytes": 4194304.0,
+        "measured_ms": 0.2078399956226349,
+        "model_ms": 0.22798591703613483,
+        "error_pct": 9.692995495476193
+      },
+      {
+        "size_kb": 16384,
+        "payload_bytes": 16777216,
+        "wire_bytes": 16777216.0,
+        "measured_ms": 0.324319988489151,
+        "model_ms": 0.324319988489151,
+        "error_pct": 0.0
+      },
+      {
+        "size_kb": 65536,
+        "payload_bytes": 67108864,
+        "wire_bytes": 67108864.0,
+        "measured_ms": 0.7139189839363098,
+        "model_ms": 0.7096562743012157,
+        "error_pct": -0.5970859062454145
+      }
+    ],
+    "pp": [
+      {
+        "size_kb": 4,
+        "payload_bytes": 4096,
+        "wire_bytes": 4096.0,
+        "measured_ms": 0.1958400011062622,
+        "model_ms": 0.19218781305586588,
+        "error_pct": -1.864883593630431
+      },
+      {
+        "size_kb": 16,
+        "payload_bytes": 16384,
+        "wire_bytes": 16384.0,
+        "measured_ms": 0.19439999759197235,
+        "model_ms": 0.19227804909734164,
+        "error_pct": -1.0915373049975476
+      },
+      {
+        "size_kb": 64,
+        "payload_bytes": 65536,
+        "wire_bytes": 65536.0,
+        "measured_ms": 0.19263899326324463,
+        "model_ms": 0.19263899326324463,
+        "error_pct": 0.0
+      },
+      {
+        "size_kb": 256,
+        "payload_bytes": 262144,
+        "wire_bytes": 262144.0,
+        "measured_ms": 0.1929599940776825,
+        "model_ms": 0.19408276992685652,
+        "error_pct": 0.5818697572731231
+      },
+      {
+        "size_kb": 1024,
+        "payload_bytes": 1048576,
+        "wire_bytes": 1048576.0,
+        "measured_ms": 0.19359999895095825,
+        "model_ms": 0.1998578765813042,
+        "error_pct": 3.232374826577944
+      },
+      {
+        "size_kb": 4096,
+        "payload_bytes": 4194304,
+        "wire_bytes": 4194304.0,
+        "measured_ms": 0.21727900207042694,
+        "model_ms": 0.22295830319909488,
+        "error_pct": 2.6138287982504225
+      },
+      {
+        "size_kb": 16384,
+        "payload_bytes": 16777216,
+        "wire_bytes": 16777216.0,
+        "measured_ms": 0.31536000967025757,
+        "model_ms": 0.31536000967025757,
+        "error_pct": 0.0
+      },
+      {
+        "size_kb": 65536,
+        "payload_bytes": 67108864,
+        "wire_bytes": 67108864.0,
+        "measured_ms": 0.7156789898872375,
+        "model_ms": 0.6849668355549084,
+        "error_pct": -4.291330997039352
+      }
+    ]
+  }
+}

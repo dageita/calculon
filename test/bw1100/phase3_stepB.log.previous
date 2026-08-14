@@ -1,0 +1,35 @@
+Could not open /var/log/hylog/.
+Invalid address access: 0x7f6426e0e000, Error code: 1.
+
+>>>>>>>> KERNEL VMFault !!!! <<<<<<
+
+>>>>>>>> PID: 29803, SIGNAL: 0 !!!! <<<<<<
+
+>>>>>>>> FOR DEVICE 0x55d4ec1eec60 <<<<<<
+
+Invalid address access: 0x7f6426e0e000, Error code: 1.
+
+>>>>>>>> KERNEL VMFault !!!! <<<<<<
+
+>>>>>>>> PID: 29803, SIGNAL: 0 !!!! <<<<<<
+
+>>>>>>>> FOR DEVICE 0x55d4ec1eec60 <<<<<<
+
+
+===========================================================================================
+=========> HOSTQUEUE <0x55d4ecae91e0>: VMFault HSA QUEUE ANALYSIS <=========
+HOSTQUEUE <0x55d4ecae91e0>: base_address 0x7f6760e00000
+HOSTQUEUE <0x55d4ecae91e0>: hsa queue id 1, stream id 0
+HOSTQUEUE <0x55d4ecae91e0>: get hsa queue W/R ptr: write index: 26, read index: 25
+
+HOSTQUEUE <0x55d4ecae91e0>: >>>>>>>> DUMP AQL 0x7f70c5420000 PACKET WITH INDEX 25 <<<<<<<<<
+HOSTQUEUE <0x55d4ecae91e0>: >>>>>>>> MATCH KERNEL COMMAND <<<<<<<<<
+HOSTQUEUE <0x55d4ecae91e0>: header: 0xb02
+HOSTQUEUE <0x55d4ecae91e0>: setup: 3
+HOSTQUEUE <0x55d4ecae91e0>: workgroup: x:256, y:1, z:1
+HOSTQUEUE <0x55d4ecae91e0>: grid: x:2097152, y:1, z:1
+HOSTQUEUE <0x55d4ecae91e0>: group_segment_size: 4608
+HOSTQUEUE <0x55d4ecae91e0>: private_segment_size: 0
+HOSTQUEUE <0x55d4ecae91e0>: completion_signal: 0x0
+HOSTQUEUE <0x55d4ecae91e0>: kernel_object: 0x7f70bffb05c0
+HOSTQUEUE <0x55d4ecae91e0>: device id: 0

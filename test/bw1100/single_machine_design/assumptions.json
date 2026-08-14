@@ -1,0 +1,72 @@
+{
+  "selection_rule": "TP×PP×DP×EP×CP must equal num_procs",
+  "batch_rule": "microbatch_size=1; batch_size=DP",
+  "scale_strategy": "32→512 grows scale-up dimensions; 1024→4096 doubles DP and batch together",
+  "threshold_story": "128 DCUs is the first balanced TP8×PP2×EP8 point; compare its latency/MFU/throughput to 64.",
+  "cases": [
+    {
+      "num_procs": 32,
+      "tp": 4,
+      "pp": 2,
+      "dp": 1,
+      "ep": 4,
+      "cp": 1
+    },
+    {
+      "num_procs": 64,
+      "tp": 4,
+      "pp": 2,
+      "dp": 1,
+      "ep": 8,
+      "cp": 1
+    },
+    {
+      "num_procs": 128,
+      "tp": 8,
+      "pp": 2,
+      "dp": 1,
+      "ep": 8,
+      "cp": 1
+    },
+    {
+      "num_procs": 256,
+      "tp": 8,
+      "pp": 2,
+      "dp": 1,
+      "ep": 16,
+      "cp": 1
+    },
+    {
+      "num_procs": 512,
+      "tp": 8,
+      "pp": 4,
+      "dp": 1,
+      "ep": 16,
+      "cp": 1
+    },
+    {
+      "num_procs": 1024,
+      "tp": 8,
+      "pp": 4,
+      "dp": 2,
+      "ep": 16,
+      "cp": 1
+    },
+    {
+      "num_procs": 2048,
+      "tp": 8,
+      "pp": 4,
+      "dp": 4,
+      "ep": 16,
+      "cp": 1
+    },
+    {
+      "num_procs": 4096,
+      "tp": 8,
+      "pp": 4,
+      "dp": 8,
+      "ep": 16,
+      "cp": 1
+    }
+  ]
+}

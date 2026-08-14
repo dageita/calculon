@@ -1,0 +1,102 @@
+{
+  "world_size": 2,
+  "backend": "nccl (RCCL on DTK/ROCm)",
+  "torch_version": "2.5.1",
+  "hip_version": "6.3.26045",
+  "nccl_compatible_version": [
+    2,
+    22,
+    3
+  ],
+  "system": "systems/BW1100.json",
+  "network_index": 0,
+  "current_effective_bw_gbps": 326.578112,
+  "fit_min_mb": 16.0,
+  "fit_ops": [
+    "ep",
+    "cp"
+  ],
+  "per_op_flow_bw_gbps": {
+    "ep": 66.20959867719007,
+    "cp": 128.11752160826344
+  },
+  "recommended_flow_bw_gbps": 92.10108408264992,
+  "samples": [
+    {
+      "op": "tp_all_reduce",
+      "size_mb": 16.0,
+      "nbytes": 16777216,
+      "measured_ms": 0.26767900586128235,
+      "payload_algbw_gbps": 62.67662249423607
+    },
+    {
+      "op": "ep_all_to_all",
+      "size_mb": 16.0,
+      "nbytes": 16777216,
+      "measured_ms": 0.5313590168952942,
+      "payload_algbw_gbps": 31.574162602958136,
+      "flow_fitted_bw_gbps": 63.148325205916265,
+      "current_flow_model_ms": 0.10274550181734163,
+      "current_flow_error_pct": -80.66363822756246,
+      "fitted_flow_model_ms": 0.36432179202026366,
+      "fitted_flow_error_pct": -31.435850256389966
+    },
+    {
+      "op": "cp_ring",
+      "size_mb": 16.0,
+      "nbytes": 16777216,
+      "measured_ms": 0.31488001346588135,
+      "payload_algbw_gbps": 53.28129853442694,
+      "flow_fitted_bw_gbps": 106.56259706885386,
+      "current_flow_model_ms": 0.10274550181734163,
+      "current_flow_error_pct": -67.36995127559133,
+      "fitted_flow_model_ms": 0.36432179202026366,
+      "fitted_flow_error_pct": 15.701783676320742
+    },
+    {
+      "op": "all_gather_diagnostic",
+      "size_mb": 16.0,
+      "nbytes": 16777216,
+      "measured_ms": 0.2433599978685379,
+      "payload_algbw_gbps": 68.93990855910093
+    },
+    {
+      "op": "tp_all_reduce",
+      "size_mb": 32.0,
+      "nbytes": 33554432,
+      "measured_ms": 0.39935898780822754,
+      "payload_algbw_gbps": 84.02072577395668
+    },
+    {
+      "op": "ep_all_to_all",
+      "size_mb": 32.0,
+      "nbytes": 33554432,
+      "measured_ms": 0.9667180180549622,
+      "payload_algbw_gbps": 34.70963752957823,
+      "flow_fitted_bw_gbps": 69.41927505915645,
+      "current_flow_model_ms": 0.20549100363468326,
+      "current_flow_error_pct": -78.74343916252523,
+      "fitted_flow_model_ms": 0.7286435840405273,
+      "fitted_flow_error_pct": -24.627081482710015
+    },
+    {
+      "op": "cp_ring",
+      "size_mb": 32.0,
+      "nbytes": 33554432,
+      "measured_ms": 0.43568000197410583,
+      "payload_algbw_gbps": 77.01623174798432,
+      "flow_fitted_bw_gbps": 154.0324634959686,
+      "current_flow_model_ms": 0.20549100363468326,
+      "current_flow_error_pct": -52.83441913707657,
+      "fitted_flow_model_ms": 0.7286435840405273,
+      "fitted_flow_error_pct": 67.24283435984593
+    },
+    {
+      "op": "all_gather_diagnostic",
+      "size_mb": 32.0,
+      "nbytes": 33554432,
+      "measured_ms": 0.39023900032043457,
+      "payload_algbw_gbps": 85.98431210731796
+    }
+  ]
+}

@@ -1746,34 +1746,10 @@ class Llm:
     _mark(self.exe.expert_par, self.exe.expert_par_net)
     _mark(self.exe.context_par, self.exe.context_par_net)
 
-    # --- Derive inter / intra for LLMFlowSimulator topology ---
-    # Intra-node roles: TP (always), CP when colocated with TP or marked as
-    # the same tier family (tier index <= TP's tier when tiers are ordered
-    # fast→slow is not guaranteed; use explicit assignment).
-    intra_nets = [self._tp_net]
-    if self.exe.context_par > 1:
-      intra_nets.append(self._cp_net)
-    intra_bw = min(n.effective_bandwidth for n in intra_nets)
-
-    inter_nets = []
-    if self.exe.data_par > 1:
-      inter_nets.append(self._dp_net)
-    if self.exe.pipeline_par > 1:
-      inter_nets.append(self._pp_net)
-    if self.exe.expert_par > 1:
-      inter_nets.append(self._ep_net)
-    if not inter_nets:
-      # Single-host / no cross-node collectives: still pass DP tier BW.
-      inter_nets = [self._dp_net]
-    inter_bw = min(n.effective_bandwidth for n in inter_nets)
-    # Single Machine fabric: C++ path uses only intra; keep inter>=intra so
-    # any residual inter usage cannot see a zero BW.
+    # Each parallelism now retains the BW and latency of its assigned tier.
+    # The C++ water-filler applies these capacities by GroupType.
     topo_str = (getattr(self._dp_net, '_topology', None)
                 or getattr(self._tp_net, '_topology', '') or '')
-    if isinstance(topo_str, str) and 'single machine' in topo_str.lower():
-      if inter_bw <= 0:
-        inter_bw = intra_bw
-
     # Topology description: prefer DP fabric; if EP-only cross-node, use EP.
     topo_net = self._dp_net
     if self.exe.data_par <= 1 and self.exe.expert_par > 1:
@@ -1782,18 +1758,24 @@ class Llm:
       topo_net = self._pp_net
 
     self._flow_net = self.sys.get_network(0)
-    self._flow_net.flow_network_init(inter_bw, intra_bw, topo_net._topology)
+    self._flow_net.flow_network_init(
+      tp_bw=self._tp_net.flow_bandwidth('tp'),
+      cp_bw=self._cp_net.flow_bandwidth('cp'),
+      ep_bw=self._ep_net.flow_bandwidth('ep'),
+      pp_bw=self._pp_net.flow_bandwidth('pp'),
+      dp_bw=self._dp_net.flow_bandwidth('dp'),
+      topology=topo_net._topology,
+      tp_latency=self._tp_net.flow_latency('tp'),
+      cp_latency=self._cp_net.flow_latency('cp'),
+      ep_latency=self._ep_net.flow_latency('ep'),
+      pp_latency=self._pp_net.flow_latency('pp'),
+      dp_latency=self._dp_net.flow_latency('dp'))
     self.log.info(
-      'flow BW assignment: inter=%.3e (from %s) intra=%.3e (from %s) topo=%s; '
+      'flow BW assignment: TP=%.3e CP=%.3e EP=%.3e PP=%.3e DP=%.3e topo=%s; '
       'tiers TP=%d PP=%d DP=%d EP=%d CP=%d',
-      inter_bw,
-      '/'.join(
-        t for t, d in (('DP', self.exe.data_par), ('PP', self.exe.pipeline_par),
-                       ('EP', self.exe.expert_par)) if d > 1) or 'DP',
-      intra_bw,
-      '/'.join(
-        t for t, d in (('TP', self.exe.tensor_par),
-                       ('CP', self.exe.context_par)) if d > 1) or 'TP',
+      self._tp_net.flow_bandwidth('tp'), self._cp_net.flow_bandwidth('cp'),
+      self._ep_net.flow_bandwidth('ep'), self._pp_net.flow_bandwidth('pp'),
+      self._dp_net.flow_bandwidth('dp'),
       topo_net._topology,
       self.exe.tensor_par_net, self.exe.pipeline_par_net,
       self.exe.data_par_net, self.exe.expert_par_net,

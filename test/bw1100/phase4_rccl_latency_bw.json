@@ -1,0 +1,193 @@
+{
+  "world_size": 4,
+  "backend": "nccl API (RCCL implementation on DTK/ROCm)",
+  "torch_version": "2.5.1",
+  "hip_version": "6.3.26045",
+  "time_model": "physical_link_latency_s + bytes / physical_link_bandwidth_Bps",
+  "physical_link_fit": {
+    "latency_s": 9.835987538099288e-05,
+    "latency_us": 98.35987538099289,
+    "bandwidth_Bps": 158515147028.96457,
+    "bandwidth_GBps": 158.51514702896458,
+    "median_abs_error_pct": 4.072629919672014,
+    "max_abs_error_pct": 12.942468801612574,
+    "measurement": "two-way ping-pong; latency from small-message median/2, bandwidth from largest-two incremental slope"
+  },
+  "physical_link_samples": [
+    {
+      "size_kb": 4,
+      "payload_bytes": 4096,
+      "wire_bytes": 8192,
+      "measured_ms": 0.19487950205802917,
+      "model_ms": 0.19677143036581884,
+      "error_pct": 0.9708195514715113
+    },
+    {
+      "size_kb": 16,
+      "payload_bytes": 16384,
+      "wire_bytes": 32768,
+      "measured_ms": 0.19855999946594238,
+      "model_ms": 0.1969264691773181,
+      "error_pct": -0.8226885037358537
+    },
+    {
+      "size_kb": 64,
+      "payload_bytes": 65536,
+      "wire_bytes": 131072,
+      "measured_ms": 0.19095950573682785,
+      "model_ms": 0.1975466244233151,
+      "error_pct": 3.449484570600704
+    },
+    {
+      "size_kb": 256,
+      "payload_bytes": 262144,
+      "wire_bytes": 524288,
+      "measured_ms": 0.210719995200634,
+      "model_ms": 0.20002724540730316,
+      "error_pct": -5.074387830708665
+    },
+    {
+      "size_kb": 1024,
+      "payload_bytes": 1048576,
+      "wire_bytes": 2097152,
+      "measured_ms": 0.22392000257968903,
+      "model_ms": 0.20994972934325534,
+      "error_pct": -6.238957250575195
+    },
+    {
+      "size_kb": 4096,
+      "payload_bytes": 4194304,
+      "wire_bytes": 8388608,
+      "measured_ms": 0.25231999158859253,
+      "model_ms": 0.24963966508706412,
+      "error_pct": -1.0622727452760412
+    },
+    {
+      "size_kb": 16384,
+      "payload_bytes": 16777216,
+      "wire_bytes": 33554432,
+      "measured_ms": 0.36159950494766235,
+      "model_ms": 0.4083994080622991,
+      "error_pct": 12.942468801612574
+    },
+    {
+      "size_kb": 65536,
+      "payload_bytes": 67108864,
+      "wire_bytes": 134217728,
+      "measured_ms": 0.9966384768486023,
+      "model_ms": 1.0434383799632392,
+      "error_pct": 4.695775268743324
+    }
+  ],
+  "collective_validation_samples": {
+    "all_reduce": [
+      {
+        "size_kb": 4,
+        "payload_bytes": 4096,
+        "wire_bytes": 6144.0,
+        "measured_ms": 0.10807999968528748
+      },
+      {
+        "size_kb": 16,
+        "payload_bytes": 16384,
+        "wire_bytes": 24576.0,
+        "measured_ms": 0.10584000125527382
+      },
+      {
+        "size_kb": 64,
+        "payload_bytes": 65536,
+        "wire_bytes": 98304.0,
+        "measured_ms": 0.10520000010728836
+      },
+      {
+        "size_kb": 256,
+        "payload_bytes": 262144,
+        "wire_bytes": 393216.0,
+        "measured_ms": 0.10679949820041656
+      },
+      {
+        "size_kb": 1024,
+        "payload_bytes": 1048576,
+        "wire_bytes": 1572864.0,
+        "measured_ms": 0.14655999839305878
+      },
+      {
+        "size_kb": 4096,
+        "payload_bytes": 4194304,
+        "wire_bytes": 6291456.0,
+        "measured_ms": 0.175199493765831
+      },
+      {
+        "size_kb": 16384,
+        "payload_bytes": 16777216,
+        "wire_bytes": 25165824.0,
+        "measured_ms": 0.3076004981994629
+      },
+      {
+        "size_kb": 65536,
+        "payload_bytes": 67108864,
+        "wire_bytes": 100663296.0,
+        "measured_ms": 1.01247900724411
+      }
+    ],
+    "all_to_all": [
+      {
+        "size_kb": 4,
+        "payload_bytes": 4096,
+        "wire_bytes": 4096.0,
+        "measured_ms": 0.1162399984896183
+      },
+      {
+        "size_kb": 16,
+        "payload_bytes": 16384,
+        "wire_bytes": 16384.0,
+        "measured_ms": 0.11799949780106544
+      },
+      {
+        "size_kb": 64,
+        "payload_bytes": 65536,
+        "wire_bytes": 65536.0,
+        "measured_ms": 0.12111900001764297
+      },
+      {
+        "size_kb": 256,
+        "payload_bytes": 262144,
+        "wire_bytes": 262144.0,
+        "measured_ms": 0.12415999919176102
+      },
+      {
+        "size_kb": 1024,
+        "payload_bytes": 1048576,
+        "wire_bytes": 1048576.0,
+        "measured_ms": 0.15263999998569489
+      },
+      {
+        "size_kb": 4096,
+        "payload_bytes": 4194304,
+        "wire_bytes": 4194304.0,
+        "measured_ms": 0.15608000010252
+      },
+      {
+        "size_kb": 16384,
+        "payload_bytes": 16777216,
+        "wire_bytes": 16777216.0,
+        "measured_ms": 0.35384050011634827
+      },
+      {
+        "size_kb": 65536,
+        "payload_bytes": 67108864,
+        "wire_bytes": 67108864.0,
+        "measured_ms": 1.0573624968528748
+      }
+    ]
+  },
+  "collective_parameters_are_not_written": true,
+  "updated_system": "systems/BW1100.json",
+  "network_index": 0,
+  "backup_system": "systems/BW1100.json.before-flow-calibration",
+  "generic_network_parameters": {
+    "bandwidth": 158.51514702896458,
+    "efficiency": 1.0,
+    "latency": 9.835987538099288e-05
+  }
+}

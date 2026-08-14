@@ -374,6 +374,9 @@ class Linear(Layer):
     wm, fm = float(weight_multiplier), float(flop_multiplier)
     self.weight_multiplier = wm
     self.flop_multiplier = fm
+    self.batch_seq = m
+    self.c_in = n
+    self.c_out = k
     super().__init__(name,
                      sys,
                      fw_flops=2*m*n*k*fm,
@@ -393,6 +396,39 @@ class Linear(Layer):
 
   def use_matrix_engine(self):
     return True
+
+  def compute_flops_time(self, stage):
+    # The generic matrix_launch_s is intentionally replaced by the measured
+    # shape compute time for a matching forward Linear.  Applying the global launch
+    # floor here would mask the shape-specific calibration; gradients have
+    # different GEMM orientations and retain the normal generic model.
+    grouped_moe_time = self.sys.get_grouped_moe_time(
+      self.name, self.batch_seq, self.c_in, self.c_out,
+      self.weight_multiplier, self.flop_multiplier,
+      self.bytes_per_element) if stage == 'fw' else 0.0
+    if grouped_moe_time > 0:
+      return grouped_moe_time
+    workload_time = self.sys.get_parametric_operator_linear_time(
+      self.batch_seq, self.c_in, self.c_out) if stage == 'fw' else 0.0
+    if workload_time > 0 and self.name.startswith('AttnBlock_MLA_'):
+      return workload_time
+    param_time = self.sys.get_parametric_linear_time(
+      self.batch_seq, self.c_in, self.c_out) if stage == 'fw' else 0.0
+    if param_time > 0:
+      return param_time
+    op_time = self.sys.get_linear_op_time(
+      self.name, self.batch_seq, self.c_in, self.c_out) if stage == 'fw' else 0.0
+    if op_time > 0:
+      return op_time
+    shape_time = self.sys.get_linear_shape_time(
+      self.batch_seq, self.c_in, self.c_out) if stage == 'fw' else 0.0
+    if shape_time <= 0:
+      t = super().compute_flops_time(stage)
+    else:
+      t = shape_time
+    if stage == 'fw' and self.name == 'MlpBlock_Router':
+      t *= self.sys.router_linear_time_scale
+    return t
 
   def get_fw_mem_accessed(self):
     if self.flop_multiplier == 0:
@@ -666,6 +702,10 @@ class BatchMatMul(Layer):
     """
     m, n, k = size_a, contraction_size, size_b
     self.time_scale = float(time_scale)
+    self.batch = int(batch)
+    self.m = int(m)
+    self.n = int(n)
+    self.k = int(k)
     super().__init__(name,
                      sys,
                      fw_flops=batch*2*m*n*k,
@@ -683,6 +723,15 @@ class BatchMatMul(Layer):
     return True
 
   def compute_flops_time(self, stage):
+    if stage == 'fw':
+      param_time = self.sys.get_parametric_bmm_time(
+        self.batch, self.m, self.n, self.k)
+      if param_time > 0:
+        return param_time
+      op_time = self.sys.get_bmm_op_time(
+        self.name, self.batch, self.m, self.n, self.k)
+      if op_time > 0:
+        return op_time
     if stage == "fw":
       flops = self.get_fw_flops()
     elif stage == "agrad":
@@ -740,6 +789,7 @@ class RMSNorm(Layer):
   def __init__(self, name, sys, act_size, hidden,
                needs_recompute=False, activation_reused=False,
                activation_stored=True, output_stored=True):
+    self.hidden = int(hidden)
     super().__init__(name,
                      sys,
                      fw_flops=self.FW_FLOPS_PER_ACT * act_size,
@@ -756,6 +806,12 @@ class RMSNorm(Layer):
                      activation_reused=activation_reused,
                      activation_stored=activation_stored,
                      output_stored=output_stored)
+
+  def compute_flops_time(self, stage):
+    t = super().compute_flops_time(stage)
+    if stage == 'fw':
+      t *= self.sys.get_rmsnorm_time_scale(self.hidden)
+    return t
 
 
 class DropOut(Layer):
@@ -1133,6 +1189,12 @@ class RouterSigmoid(Layer):
 
   def get_agrad_mem_accessed(self):
     return self.get_fw_mem_accessed()
+
+  def compute_flops_time(self, stage):
+    t = super().compute_flops_time(stage)
+    if stage == 'fw':
+      t *= self.sys.router_sigmoid_time_scale
+    return t
 
 
 class RouterTopKNormalize(Layer):

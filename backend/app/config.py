@@ -63,6 +63,20 @@ class Settings(BaseSettings):
             pcie_bandwidth=64,
             support_p2p=True,
         ),
+        # Calibrated Hygon BW1100 DCU.  The /gpu endpoint refreshes the
+        # bandwidth fields from systems/BW1100.json, keeping this catalog
+        # metadata and the simulator's calibrated system configuration aligned.
+        Gpu(
+            name="BW1100",
+            sparse_tensor_fp16_processing_power=354,
+            sparse_tensor_fp32_processing_power=44,
+            memory=144,
+            memory_bandwidth=2400,
+            bus_bandwidth=158.51514702896458,
+            network_bandwidth=25,
+            pcie_bandwidth=30.18469694968826,
+            support_p2p=True,
+        ),
         Gpu(
             name="L20",
             sparse_tensor_fp16_processing_power=119.5,

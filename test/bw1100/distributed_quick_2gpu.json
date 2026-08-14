@@ -1,0 +1,31 @@
+{
+  "world_size": 2,
+  "backend": "nccl",
+  "tensor_mb": 32.0,
+  "tp_all_reduce_ms": 0.3882399946451187,
+  "ep_all_to_all_ms": 0.9507209956645966,
+  "cp_all_gather_ms": 0.3924800008535385,
+  "tp_model_ms": 0.5027455018173417,
+  "tp_model_error_pct": 29.493485666485704,
+  "cp_model_ms": 0.4770591263630063,
+  "cp_model_error_pct": 21.549919824075346,
+  "ep_model_p2p_approx_ms": 0.5027455018173417,
+  "ep_model_p2p_approx_error_pct": -47.1195540952685,
+  "compute_ms": 0.10200000181794167,
+  "serial_comm_compute_ms": 0.45816050469875336,
+  "overlap_ms": 0.4564004987478256,
+  "overlap_gain_pct": 0.3841461524678915,
+  "overlap_overhead_vs_ideal_pct": 17.556280919746783,
+  "pp_pipeline_ms": 1.3833609819412231,
+  "pp_excess_vs_compute_pct": 69.5295290791225,
+  "pp_analytic_bubble_fraction": 0.1111111111111111,
+  "checks": {
+    "tp_positive": true,
+    "ep_positive": true,
+    "cp_positive": true,
+    "overlap_not_worse_than_serial": true,
+    "overlap_near_ideal": true,
+    "pp_positive": true
+  },
+  "pass": true
+}

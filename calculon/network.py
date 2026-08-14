@@ -49,8 +49,16 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         c_int,   # tp
         c_int,   # ep
         c_int,   # cp
-        c_double, # inter
-        c_double, # intra
+        c_double, # tpBw
+        c_double, # cpBw
+        c_double, # epBw
+        c_double, # ppBw
+        c_double, # dpBw
+        c_double, # tpLatency
+        c_double, # cpLatency
+        c_double, # epLatency
+        c_double, # ppLatency
+        c_double, # dpLatency
         c_double, # fwdCompTime (legacy monolithic; used when layered times are 0)
         c_double, # bwdCompTime
         c_double, # fwdMlaTime
@@ -109,6 +117,8 @@ class Network:
 
   kKeys = set(['bandwidth', 'topology', 'efficiency', 'size', 'latency', 'ops',
                'must_be_filled', 'processor_usage'])
+  kOptionalKeys = set(['flow_parameters'])
+  kFlowGroups = set(['tp', 'cp', 'ep', 'pp', 'dp'])
   kNetOps = set(['p2p', 'reduce_scatter', 'all_gather', 'all_reduce'])
   kCollectives = set(['reduce_scatter', 'all_gather', 'all_reduce'])
 
@@ -129,7 +139,10 @@ class Network:
       return Network.Op(scalar, 0)
 
   def __init__(self, cfg, log=None):
-    assert Network.kKeys == set(cfg.keys())
+    keys = set(cfg.keys())
+    assert Network.kKeys <= keys, f'Missing network keys: {Network.kKeys - keys}'
+    assert keys <= Network.kKeys | Network.kOptionalKeys, \
+      f'Unexpected network keys: {keys - Network.kKeys - Network.kOptionalKeys}'
     self._bw = cfg['bandwidth'] * 1e9  # Specified in GB/s
     # assert self._bw > 0
     self._eff = cfg['efficiency']
@@ -137,6 +150,16 @@ class Network:
     self._size = cfg['size']
     assert self._size >= 0
     self._latency = cfg['latency']
+    self._flow_parameters = cfg.get('flow_parameters', {})
+    assert set(self._flow_parameters) <= Network.kFlowGroups, \
+      f'Invalid flow group(s): {set(self._flow_parameters) - Network.kFlowGroups}'
+    for group, params in self._flow_parameters.items():
+      assert set(params) == {'bandwidth', 'latency'}, \
+        f'flow_parameters.{group} requires bandwidth and latency'
+      assert float(params['bandwidth']) > 0, \
+        f'flow_parameters.{group}.bandwidth must be positive'
+      assert float(params['latency']) >= 0, \
+        f'flow_parameters.{group}.latency must be non-negative'
     self._topology = cfg.get('topology', 'default')  # Default to 'default' if not specified
     self._ops = {}
     for op in cfg['ops']:
@@ -169,6 +192,17 @@ class Network:
   def effective_bandwidth(self):
     # Keeps the flow-level simulator on the same bandwidth basis as time().
     return self._bw * self._eff
+
+  def flow_bandwidth(self, group):
+    """Effective Flow capacity in B/s for a parallelism group."""
+    params = self._flow_parameters.get(group.lower())
+    return (float(params['bandwidth']) * 1e9 if params
+            else self.effective_bandwidth)
+
+  def flow_latency(self, group):
+    """Flow startup latency in seconds for a parallelism group."""
+    params = self._flow_parameters.get(group.lower())
+    return float(params['latency']) if params else float(self._latency)
 
   def time(self, op, op_size, comm_size):
     """ Computes the time taken for a network operation.
@@ -210,20 +244,32 @@ class Network:
       return c_uint64(int(value) & 0xFFFFFFFFFFFFFFFF)  # 强制64位掩码
   
 # unit: Bps
-  def flow_network_init(self, inter, intra, topology):
-    """Store fabric BW for LLMFlowSimulator (``.so`` / ``pycall_main``).
+  def flow_network_init(self, tp_bw, cp_bw=None, ep_bw=None, pp_bw=None,
+                        dp_bw=None, topology=None, tp_latency=None,
+                        cp_latency=None, ep_latency=None, pp_latency=None,
+                        dp_latency=None):
+    """Store per-parallelism BW/latency for LLMFlowSimulator.
 
-    The C++ engine only models two link classes:
-      inter — cross-host (NIC) capacity, B/s
-      intra — intra-host (NVLink) capacity, B/s
-    Callers (``Llm._check_network_assignments``) must derive these from the
-    tiers bound to DP/PP/EP (inter) and TP/CP (intra). EP/CP do not get
-    separate BW arguments today — only byte volumes via fwd/bwd EP/CP sizes.
+    Bandwidth is B/s and latency is seconds.  The old three-positional-argument
+    form ``(inter, intra, topology)`` is accepted for calibration utilities.
     """
-    self._inter = inter # 机间网络带宽，单位Bps
-    self._intra = intra # 机内网络带宽，单位Bps
-    self._topology = topology # 网络拓扑类型
-    self.log.info("wxftest flow network init: inter=%f, intra=%f, topology=%s", self._inter, self._intra, self._topology)
+    if isinstance(ep_bw, (str, bytes)) and pp_bw is None:
+      inter, intra, topology = tp_bw, cp_bw, ep_bw
+      tp_bw = cp_bw = intra
+      ep_bw = pp_bw = dp_bw = inter
+    values = (tp_bw, cp_bw, ep_bw, pp_bw, dp_bw)
+    if any(v is None or v <= 0 for v in values):
+      raise ValueError(f'all flow bandwidths must be positive, got {values}')
+    self._flow_bw = tuple(float(v) for v in values)
+    default_latency = float(self._latency)
+    latencies = (tp_latency, cp_latency, ep_latency, pp_latency, dp_latency)
+    self._flow_latency = tuple(default_latency if v is None else float(v)
+                               for v in latencies)
+    if any(v < 0 for v in self._flow_latency):
+      raise ValueError(f'flow latencies must be non-negative: {self._flow_latency}')
+    self._topology = topology
+    self.log.info('flow network init: bw(tp/cp/ep/pp/dp)=%s latency=%s topo=%s',
+                  self._flow_bw, self._flow_latency, self._topology)
 
   def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline, ep=1, fwd_ep_size=0, bwd_ep_size=0, cp=1, fwd_cp_size=0, bwd_cp_size=0, fwd_mla_time=0.0, fwd_ffn_time=0.0, bwd_mla_time=0.0, bwd_ffn_time=0.0, fwd_ep_dispatch_size=0, fwd_ep_combine_size=0, bwd_ep_dispatch_size=0, bwd_ep_combine_size=0):
     topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
@@ -235,7 +281,12 @@ class Network:
     
     # 预分配一个较大的缓冲区（MoE/EP/CP 场景事件数 = ranks × microbatches ×
     # 每 microbatch 的通信事件数，1000 很容易不够；C++ 侧会按 maxEvents 截断）
-    initial_max_events = 50000
+    # Do not allocate ~3.5 MiB of string buffers when callers only request
+    # aggregate statistics.  Timeline cardinality scales with ranks ×
+    # microbatches; use a workload-derived bound when it is requested.
+    initial_max_events = (max(1024, min(200000,
+                                pp * dp * tp * ep * cp * microbatches * 16))
+                          if enable_timeline else 1)
     timelineRanks = (c_int * initial_max_events)()
     timelineMicrobatches = (c_int * initial_max_events)()
     timelineStartTimes = (c_double * initial_max_events)()
@@ -278,7 +329,7 @@ class Network:
         # C++端会根据enableTimeline参数决定是否使用timeline相关参数
         pycall_main(
             pp, dp, tp, ep, cp,
-            self._inter, self._intra,
+            *self._flow_bw, *self._flow_latency,
             fwdCompTime, bwdCompTime,
             fwd_mla_time, fwd_ffn_time, bwd_mla_time, bwd_ffn_time,
             microbatches,
@@ -312,9 +363,12 @@ class Network:
                 self.log.warning("Event count (%d) exceeds buffer size (%d). Some timeline events may be truncated. Consider increasing max_events parameter.", actual_events, initial_max_events)
         
     except Exception as e:
-        self.log.error("Error in pycall main: %s", e)
-        # 返回默认值
-        return (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, [], [], [], [], [], 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        # A zero-filled result is indistinguishable from a valid zero-cost
+        # simulation and silently corrupts accuracy reports.  Propagate the
+        # failure with context so callers cannot consume fabricated timings.
+        raise RuntimeError(
+            f'LLMFlowSimulator failed for pp={pp}, dp={dp}, tp={tp}, '
+            f'ep={ep}, cp={cp}, microbatches={microbatches}') from e
 
     self.log.debug("wxftest - New return values:")
     self.log.debug("  globalTime: %f", globalTime.value)
