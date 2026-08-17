@@ -12,7 +12,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--nproc', type=int, choices=(2, 3, 4), default=2)
     p.add_argument('--devices', help='comma-separated physical HCU ids')
-    p.add_argument('--min-free-gb', type=float, default=2.0)
+    p.add_argument('--min-free-gb', type=float, default=16.0,
+                   help='default covers FP8 grouped fw/agrad/wgrad workspace')
     p.add_argument('--dry-run', action='store_true')
     args, rest = p.parse_known_args()
     if rest and rest[0] == '--': rest = rest[1:]
@@ -43,6 +44,9 @@ def main():
     env.pop('CUDA_VISIBLE_DEVICES', None)
     env.pop('ROCR_VISIBLE_DEVICES', None)
     env['HIP_VISIBLE_DEVICES'] = ','.join(map(str, devices))
+    # Worker-side quality reporting must use physical HCU ids; after HIP
+    # remapping local ranks are only 0..nproc-1.
+    env['PHASE5_PHYSICAL_DEVICES'] = ','.join(map(str, devices))
     probe = [sys.executable, '-c',
              ('import torch; print(torch.cuda.device_count()); '
               f'assert torch.cuda.device_count()=={args.nproc}')]

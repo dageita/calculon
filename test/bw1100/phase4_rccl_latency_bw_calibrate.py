@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-"""Fit physical point-to-point link latency/bandwidth on BW1100.
+"""Calibrate BW1100 HSL P2P efficiency and software-visible latency.
 
 Launch with 2-4 processes.  The PyTorch backend name is ``nccl`` for API
 compatibility; DTK/ROCm executes these calls with RCCL.
+
+Calculon network bandwidth is unidirectional. BW1100 HSL is advertised as
+448 GB/s bidirectional, so the nominal link peak is 224 GB/s one-way; measured
+asymptotic P2P throughput is written as ``efficiency``, not as the peak.
 """
 from __future__ import annotations
 
@@ -116,7 +120,13 @@ def main() -> None:
     p.add_argument('--system', type=Path, default=Path('systems/BW1100.json'))
     p.add_argument('--network-index', type=int, default=0)
     p.add_argument('--update-json', action='store_true',
-                   help='Write per-group Flow bandwidth/latency into the selected network')
+                   help='Write nominal HSL bandwidth, measured efficiency, and latency')
+    p.add_argument('--peak-bidirectional-gbps', type=float, default=448.0,
+                   help='HSL advertised duplex peak; 448 GB/s by default')
+    p.add_argument('--peak-unidirectional-gbps', type=float, default=None,
+                   help='Override duplex/2 when the vendor spec is already one-way')
+    p.add_argument('--allow-overpeak', action='store_true',
+                   help='Allow a measured rate above nominal peak')
     p.add_argument('--max-fit-error-pct', type=float, default=15.0,
                    help='Reject --update-json if any median fit error exceeds this value')
     p.add_argument('--allow-nonlocal-tier', action='store_true',
@@ -181,6 +191,17 @@ def main() -> None:
         del x, y
 
     physical_fit = fit_physical_pingpong(physical_rows)
+    nominal_bw_gbps = (args.peak_unidirectional_gbps
+                       if args.peak_unidirectional_gbps is not None
+                       else args.peak_bidirectional_gbps / 2.0)
+    if nominal_bw_gbps <= 0:
+        raise ValueError('nominal HSL unidirectional bandwidth must be positive')
+    measured_efficiency = physical_fit['bandwidth_GBps'] / nominal_bw_gbps
+    if measured_efficiency > 1.0 and not args.allow_overpeak:
+        raise RuntimeError(
+            f'measured P2P {physical_fit["bandwidth_GBps"]:.3f} GB/s exceeds '
+            f'nominal one-way HSL peak {nominal_bw_gbps:.3f} GB/s; verify the '
+            'vendor specification or pass --allow-overpeak')
     result = {
         'world_size': world,
         'backend': 'nccl API (RCCL implementation on DTK/ROCm)',
@@ -188,6 +209,12 @@ def main() -> None:
         'hip_version': torch.version.hip,
         'time_model': 'physical_link_latency_s + bytes / physical_link_bandwidth_Bps',
         'physical_link_fit': physical_fit,
+        'nominal_link': {
+            'technology': 'HSL',
+            'bidirectional_peak_GBps': args.peak_bidirectional_gbps,
+            'unidirectional_peak_GBps': nominal_bw_gbps,
+            'measured_p2p_efficiency': measured_efficiency,
+        },
         'physical_link_samples': physical_rows,
         'collective_validation_samples': validation_rows,
         'collective_parameters_are_not_written': True,
@@ -219,8 +246,8 @@ def main() -> None:
             # One physical parameter set for every GroupType.  C++ derives
             # collective rounds, traffic expansion and contention.
             updated_tier.pop('flow_parameters', None)
-            updated_tier['bandwidth'] = physical_fit['bandwidth_GBps']
-            updated_tier['efficiency'] = 1.0
+            updated_tier['bandwidth'] = nominal_bw_gbps
+            updated_tier['efficiency'] = measured_efficiency
             updated_tier['latency'] = physical_fit['latency_s']
             backup = args.system.with_suffix(args.system.suffix + '.before-flow-calibration')
             if not backup.exists():
@@ -232,8 +259,9 @@ def main() -> None:
             result['network_index'] = args.network_index
             result['backup_system'] = str(backup)
             result['generic_network_parameters'] = {
-                'bandwidth': physical_fit['bandwidth_GBps'],
-                'efficiency': 1.0,
+                'bandwidth': nominal_bw_gbps,
+                'efficiency': measured_efficiency,
+                'effective_bandwidth': nominal_bw_gbps * measured_efficiency,
                 'latency': physical_fit['latency_s'],
             }
         args.output.parent.mkdir(parents=True, exist_ok=True)

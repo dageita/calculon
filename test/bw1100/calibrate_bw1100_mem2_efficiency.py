@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Calibrate BW1100 mem2: pinned-host to HBM transfer efficiency.
+"""Calibrate BW1100 PCIe mem2: pinned-host to HBM transfer efficiency.
 
 mem2 is the offload tier, not HBM3. Its bandwidth and capacity are host-specific,
-so both default to measurements: peak is the best observed direction throughput
-and capacity is read from MemTotal. For direction=both, the slower direction is
-used for each size.
+so capacity defaults to MemTotal. ``mem2.GBps`` is the nominal one-way PCIe
+peak and ``MB_efficiency`` stores observed pinned-copy bandwidth / peak. PCIe
+5.0 x16 is 128 GB/s bidirectional, hence the default one-way peak is 64 GB/s.
+For direction=both, the slower direction is used for each size.
 """
 from __future__ import annotations
 
@@ -54,7 +55,12 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sizes-mb", type=float, nargs="+", default=DEFAULT_SIZES_MB)
     parser.add_argument("--direction", choices=("both", "h2d", "d2h"), default="both")
-    parser.add_argument("--peak-gbps", default="auto", help="numeric override, or auto=best measured throughput")
+    parser.add_argument("--peak-bidirectional-gbps", type=float, default=128.0,
+                        help="PCIe advertised duplex peak (default: 128 GB/s)")
+    parser.add_argument("--peak-unidirectional-gbps", type=float, default=None,
+                        help="override duplex/2 if the supplied spec is already one-way")
+    parser.add_argument("--allow-overpeak", action="store_true",
+                        help="allow observed copy rate > nominal one-way peak")
     parser.add_argument("--capacity-gib", type=float, default=None, help="default: host MemTotal")
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--iterations", type=int, default=50)
@@ -83,13 +89,19 @@ def main() -> None:
         print(f"[{index:2d}] DONE {mb:g} MB  bottleneck={gbps:.2f} GB/s ({detail})", flush=True)
         rows.append((float(mb), gbps)); torch.cuda.empty_cache()
     if not rows: raise RuntimeError("No successful host/HBM transfer measurements")
-    peak = max(gbps for _, gbps in rows) if args.peak_gbps == "auto" else float(args.peak_gbps)
+    peak = (args.peak_unidirectional_gbps if args.peak_unidirectional_gbps is not None
+            else args.peak_bidirectional_gbps / 2.0)
     if peak <= 0 or capacity <= 0: raise ValueError("peak and capacity must be positive")
+    observed_peak = max(gbps for _, gbps in rows)
+    if observed_peak > peak and not args.allow_overpeak:
+        raise RuntimeError(
+            f'observed pinned-copy rate {observed_peak:.3f} GB/s exceeds nominal '
+            f'one-way PCIe peak {peak:.3f} GB/s; verify the vendor specification')
     curve = [[mb, round(min(1.0, max(args.floor_eff, gbps / peak)), 6)] for mb, gbps in rows] + [[0.0, args.floor_eff]]
     fragment = {"GiB": capacity, "GBps": peak, "MB_efficiency": curve}
     output = args.output or Path(__file__).resolve().parent / "bw1100_mem2.json"
     output.write_text(json.dumps(fragment, indent=2) + "\n", encoding="utf-8")
-    print(f"Auto/selected mem2 peak: {peak:.3f} GB/s", flush=True)
+    print(f"Nominal mem2 one-way peak: {peak:.3f} GB/s; best observed: {observed_peak:.3f} GB/s", flush=True)
     print(json.dumps(fragment, indent=2), flush=True)
     print(f"wrote {output}", flush=True)
     if args.update_json:

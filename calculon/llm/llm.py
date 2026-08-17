@@ -1547,6 +1547,14 @@ class Llm:
       "MlpBlock_RouterSigmoid", self.sys, router_scores,
       needs_recompute=recompute_flag,
       activation_stored=(not recompute_ag_flag)))
+    # Expert selection is mandatory even when selected probabilities are not
+    # renormalized.  Previously it was charged only when norm_topk_prob=True,
+    # which made DeepSeek-style routing systematically too cheap.
+    self._llm_block.append(RouterTopK(
+      "MlpBlock_RouterTopK", self.sys,
+      self._batch_seq, app.moe_topk, app.num_experts,
+      needs_recompute=False,
+      activation_stored=True, activation_reused=True))
     if app.norm_topk_prob:
       self._llm_block.append(RouterTopKNormalize(
         "MlpBlock_RouterTopKNormalize", self.sys,
@@ -1558,6 +1566,11 @@ class Llm:
         "MlpBlock_RouterAuxLoss", self.sys, router_scores,
         app.router_aux_loss_coef, needs_recompute=recompute_flag,
         activation_stored=False, activation_reused=True))
+    self._llm_block.append(RouterPermutation(
+      "MlpBlock_RouterPermutation", self.sys,
+      self._batch_seq, app.moe_topk, app.num_experts,
+      needs_recompute=False,
+      activation_stored=True, activation_reused=True))
     self._build_swiglu_ffn(
       app.moe_feedforward, recompute_flag, recompute_ag_flag,
       weight_multiplier=experts_stored, flop_multiplier=active_equiv,

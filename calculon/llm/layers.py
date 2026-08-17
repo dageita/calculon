@@ -405,7 +405,7 @@ class Linear(Layer):
     grouped_moe_time = self.sys.get_grouped_moe_time(
       self.name, self.batch_seq, self.c_in, self.c_out,
       self.weight_multiplier, self.flop_multiplier,
-      self.bytes_per_element) if stage == 'fw' else 0.0
+      self.bytes_per_element, stage=stage)
     if grouped_moe_time > 0:
       return grouped_moe_time
     workload_time = self.sys.get_parametric_operator_linear_time(
@@ -428,6 +428,8 @@ class Linear(Layer):
       t = shape_time
     if stage == 'fw' and self.name == 'MlpBlock_Router':
       t *= self.sys.router_linear_time_scale
+    elif stage in ('agrad', 'wgrad') and self.name == 'MlpBlock_Router':
+      t *= self.sys.router_backward_time_scale
     return t
 
   def get_fw_mem_accessed(self):
@@ -1194,22 +1196,65 @@ class RouterSigmoid(Layer):
     t = super().compute_flops_time(stage)
     if stage == 'fw':
       t *= self.sys.router_sigmoid_time_scale
+    elif stage in ('agrad', 'wgrad'):
+      t *= self.sys.router_backward_time_scale
     return t
 
 
+class RouterTopK(Layer):
+  """Expert selection cost, separate from optional score normalization."""
+  def __init__(self, name, sys, tokens, topk, experts, **kwargs):
+    assert 0 < topk <= experts
+    self.tokens = int(tokens)
+    self.topk = int(topk)
+    self.experts = int(experts)
+    score_count = tokens * experts
+    selected_count = tokens * topk
+    super().__init__(
+      name, sys, fw_flops=score_count, agrad_flops=0,
+      inputs_size=score_count, output_size=selected_count,
+      activation_space=selected_count, activation_grads=selected_count,
+      **kwargs)
+
+  def compute_flops_time(self, stage):
+    if stage != 'fw':
+      return 0.0
+    return self.sys.get_router_structural_time(
+      'topk', self.tokens, self.experts, self.topk, stage)
+
+
+class RouterPermutation(Layer):
+  """Histogram/prefix-sum and token permutation/unpermutation overhead."""
+  def __init__(self, name, sys, tokens, topk, experts, **kwargs):
+    assert 0 < topk <= experts
+    self.tokens = int(tokens)
+    self.topk = int(topk)
+    self.experts = int(experts)
+    assignments = tokens * topk
+    super().__init__(
+      name, sys, fw_flops=4 * assignments, agrad_flops=0,
+      inputs_size=assignments, output_size=assignments,
+      activation_space=assignments, activation_grads=assignments,
+      **kwargs)
+
+  def compute_flops_time(self, stage):
+    if stage != 'fw':
+      return 0.0
+    return self.sys.get_router_structural_time(
+      'permutation', self.tokens, self.experts, self.topk, stage)
+
+
 class RouterTopKNormalize(Layer):
-  """Top-k selection plus Qwen norm_topk_prob score renormalization."""
+  """Optional score renormalization after RouterTopK selection."""
   def __init__(self, name, sys, tokens, topk, experts, **kwargs):
     assert 0 < topk <= experts
     self.topk = topk
     self.experts = experts
-    # Read all scores to select top-k; normalize only selected scores.
-    score_count = tokens * experts
     selected_count = tokens * topk
     super().__init__(
-      name, sys, fw_flops=score_count + 3 * selected_count,
-      agrad_flops=2 * score_count + 5 * selected_count,
-      inputs_size=score_count, output_size=selected_count,
+      name, sys, fw_flops=3 * selected_count,
+      agrad_flops=5 * selected_count,
+      inputs_size=selected_count, output_size=selected_count,
       activation_space=selected_count, activation_grads=selected_count,
       **kwargs)
 

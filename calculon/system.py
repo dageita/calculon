@@ -67,6 +67,12 @@ class System:
       cfg.get('router_linear_time_scale', 1.0) or 1.0)
     self.router_sigmoid_time_scale = float(
       cfg.get('router_sigmoid_time_scale', 1.0) or 1.0)
+    self.router_backward_time_scale = float(
+      cfg.get('router_backward_time_scale', 1.0) or 1.0)
+    # Algorithmic router terms stay separate from generic vector efficiency.
+    # Coefficients are hardware/runtime parameters; tokens/experts/top-k are
+    # workload inputs, so one model extrapolates across sequence lengths.
+    self.router_model = cfg.get('router_parametric_model') or {}
     # Phase2 exact-shape operator tables.  These are intentionally keyed by
     # both layer name and full shape: they correct MLA's unusual aspect ratios
     # without leaking workload-specific timings into generic efficiency curves.
@@ -257,6 +263,36 @@ class System:
     return self.rmsnorm_time_scale.get(
       str(int(width)), self.rmsnorm_default_scale)
 
+  def get_router_structural_time(self, op, tokens, experts, topk, stage='fw'):
+    """Parametric top-k/permutation time in seconds.
+
+    The fallback is a launch-aware bandwidth model.  Optional coefficients
+    add comparison/sort work without creating a per-seq lookup table.
+    """
+    if min(int(tokens), int(experts), int(topk)) <= 0:
+      return 0.0
+    model = self.router_model.get(op, {})
+    launches = float(model.get('launches', 1.0))
+    score_items = float(tokens) * float(experts)
+    selected = float(tokens) * float(topk)
+    if op == 'topk':
+      flops = score_items * max(1.0, float(model.get('comparisons_per_score', 1.0)))
+      nbytes = (score_items + 2.0 * selected) * System.TypeSizes[self.vector_dtype]
+      complexity = score_items * max(1.0, float(model.get('sort_log2_experts', 0.0)))
+    elif op == 'permutation':
+      flops = selected * float(model.get('flops_per_assignment', 4.0))
+      nbytes = selected * float(model.get('bytes_per_assignment', 24.0))
+      complexity = selected
+    else:
+      raise ValueError(f'unknown router structural op: {op}')
+    compute = flops / self.get_vector_throughput(max(1.0, flops))
+    memory = nbytes / self.get_mem1_throughput(max(1.0, nbytes))
+    coefficient = float(model.get('complexity_coefficient_s', 0.0))
+    stage_scale = float(model.get(f'{stage}_scale', 1.0))
+    return stage_scale * max(
+      launches * self.vector_launch_s, compute, memory,
+      launches * self.vector_launch_s + coefficient * complexity)
+
   @staticmethod
   def _exact_operator_time(table, dtype, name, shape):
     entry = (table.get(dtype) or {}).get(name)
@@ -272,26 +308,38 @@ class System:
       self.linear_op_times, self.matrix_dtype, name, [m, k, n])
 
   def get_grouped_moe_time(self, name, m, k, n, weight_mult, flop_mult,
-                           bytes_per_element=1):
+                           bytes_per_element=1, stage='fw'):
     entry = (self.grouped_moe_times.get(self.matrix_dtype) or {}).get(name)
     if not isinstance(entry, dict):
       return 0.0
     shape = [int(x) for x in entry.get('shape', [])]
     if len(shape) != 3 or shape[1:] != [int(k), int(n)]:
       return 0.0
-    if float(entry.get('weight_multiplier', -1)) != float(weight_mult):
+    if float(weight_mult) <= 0 or float(flop_mult) <= 0:
       return 0.0
-    if float(entry.get('flop_multiplier', -1)) != float(flop_mult):
-      return 0.0
+    same_multipliers = (
+      float(entry.get('weight_multiplier', weight_mult)) == float(weight_mult)
+      and float(entry.get('flop_multiplier', flop_mult)) == float(flop_mult))
+    # New files may contain independent fw/agrad/wgrad fits.  Old forward-only
+    # files remain valid: their measured rates are applied to the transformed
+    # gradient GEMM shape, never by multiplying forward latency by a constant.
+    stages = entry.get('stages') or {}
+    stage_entry = stages.get(stage)
+    calibrated_stage = isinstance(stage_entry, dict)
+    if calibrated_stage:
+      model_entry = stage_entry
+    else:
+      model_entry = entry
     # Exact anchor remains authoritative. For another seq/M, extrapolate with
     # two physical resources: fixed distinct expert-weight traffic plus
     # M-scaled activation traffic, and M-scaled useful FLOPs. This avoids a
     # separate table entry for every seq_len while retaining shape isolation.
-    anchors = entry.get('anchors') or []
+    anchors = model_entry.get('anchors') or []
     if anchors:
       anchors = sorted(anchors, key=lambda x: int(x['m']))
       nearest = min(anchors, key=lambda x: abs(int(x['m']) - int(m)))
-      if int(nearest['m']) == int(m):
+      if (((stage == 'fw' and same_multipliers) or calibrated_stage)
+          and int(nearest['m']) == int(m)):
         return float(nearest['latency_s'])
       # Interpolate hardware rates in log-M; clamp beyond measured regimes.
       lo = max((x for x in anchors if int(x['m']) <= int(m)),
@@ -309,18 +357,29 @@ class System:
                           + w*math.log(float(hi['effective_bandwidth_Bps'])))
         eff_flops = math.exp((1-w)*math.log(float(lo['effective_flops_per_s']))
                              + w*math.log(float(hi['effective_flops_per_s'])))
-    elif shape[0] == int(m):
-      return float(entry.get('latency_s', 0.0) or 0.0)
+    elif ((stage == 'fw' and same_multipliers) or calibrated_stage) \
+         and shape[0] == int(m):
+      return float(model_entry.get('latency_s', 0.0) or 0.0)
     else:
-      eff_bw = float(entry.get('effective_bandwidth_Bps', 0.0) or 0.0)
-      eff_flops = float(entry.get('effective_flops_per_s', 0.0) or 0.0)
+      eff_bw = float(model_entry.get('effective_bandwidth_Bps', 0.0) or 0.0)
+      eff_flops = float(model_entry.get('effective_flops_per_s', 0.0) or 0.0)
     if eff_bw <= 0 or eff_flops <= 0:
       return 0.0
-    flops = 2.0 * float(m) * float(k) * float(n) * float(flop_mult)
+    # Explicit matrix orientations for the three training stages.
+    if stage == 'fw':
+      work_m, work_k, work_n = float(m), float(k), float(n)
+    elif stage == 'agrad':
+      work_m, work_k, work_n = float(m), float(n), float(k)
+    elif stage == 'wgrad':
+      work_m, work_k, work_n = float(k), float(m), float(n)
+    else:
+      return 0.0
+    flops = 2.0 * work_m * work_k * work_n * float(flop_mult)
     nbytes = (float(m) * float(k) + float(m) * float(n)
               + float(k) * float(n) * float(weight_mult)) \
              * float(bytes_per_element)
-    return max(flops / eff_flops, nbytes / eff_bw)
+    stage_scale = float((entry.get('stage_scales') or {}).get(stage, 1.0))
+    return stage_scale * max(flops / eff_flops, nbytes / eff_bw)
 
   def get_bmm_op_time(self, name, batch, m, n, k):
     return self._exact_operator_time(

@@ -117,7 +117,7 @@ class Network:
 
   kKeys = set(['bandwidth', 'topology', 'efficiency', 'size', 'latency', 'ops',
                'must_be_filled', 'processor_usage'])
-  kOptionalKeys = set(['flow_parameters'])
+  kOptionalKeys = set(['flow_parameters', 'collective_parameters'])
   kFlowGroups = set(['tp', 'cp', 'ep', 'pp', 'dp'])
   kNetOps = set(['p2p', 'reduce_scatter', 'all_gather', 'all_reduce'])
   kCollectives = set(['reduce_scatter', 'all_gather', 'all_reduce'])
@@ -160,6 +160,30 @@ class Network:
         f'flow_parameters.{group}.bandwidth must be positive'
       assert float(params['latency']) >= 0, \
         f'flow_parameters.{group}.latency must be non-negative'
+    # Keep physical-link parameters separate from collective software and
+    # participant-count overhead.  A bandwidth/latency pair measured with
+    # RCCL must not silently become a different "link" when P changes.
+    self._collective_parameters = cfg.get('collective_parameters', {})
+    allowed_collective = {
+      'p2p', 'all_to_all', 'all_reduce', 'all_gather', 'reduce_scatter',
+    }
+    assert set(self._collective_parameters) <= allowed_collective, \
+      ('Invalid collective_parameters operation(s): '
+       f'{set(self._collective_parameters) - allowed_collective}')
+    allowed_fields = {
+      'software_latency', 'step_latency', 'bandwidth_scale', 'algorithm',
+      'bandwidth_scale_curve',
+    }
+    for op, params in self._collective_parameters.items():
+      assert set(params) <= allowed_fields, \
+        f'collective_parameters.{op}: unexpected keys {set(params)-allowed_fields}'
+      assert float(params.get('software_latency', 0.0)) >= 0
+      assert float(params.get('step_latency', 0.0)) >= 0
+      assert float(params.get('bandwidth_scale', 1.0)) > 0
+      curve = params.get('bandwidth_scale_curve') or []
+      assert all(len(point) == 2 and float(point[0]) >= 0
+                 and float(point[1]) > 0 for point in curve), \
+        f'collective_parameters.{op}.bandwidth_scale_curve is invalid'
     self._topology = cfg.get('topology', 'default')  # Default to 'default' if not specified
     self._ops = {}
     for op in cfg['ops']:
@@ -203,6 +227,73 @@ class Network:
     """Flow startup latency in seconds for a parallelism group."""
     params = self._flow_parameters.get(group.lower())
     return float(params['latency']) if params else float(self._latency)
+
+  @staticmethod
+  def _collective_rounds(op, participants, algorithm):
+    """Return algorithmic synchronization rounds, not a fitted bandwidth."""
+    p = max(1, int(participants))
+    if p <= 1:
+      return 0
+    if algorithm == 'tree':
+      import math
+      return int(math.ceil(math.log2(p)))
+    if algorithm == 'pairwise' or op == 'all_to_all':
+      return p - 1
+    if algorithm == 'ring' and op == 'all_reduce':
+      return 2 * (p - 1)
+    return p - 1
+
+  def collective_latency(self, op, participants):
+    """Physical/link + RCCL startup/cardinality latency in seconds."""
+    params = self._collective_parameters.get(op, {})
+    rounds = self._collective_rounds(
+      op, participants, str(params.get('algorithm', 'pairwise')))
+    return (float(self._latency)
+            + float(params.get('software_latency', 0.0))
+            + rounds * float(params.get('step_latency', 0.0)))
+
+  def collective_bandwidth(self, op, payload_bytes=None):
+    params = self._collective_parameters.get(op, {})
+    scale = float(params.get('bandwidth_scale', 1.0))
+    curve = sorted(params.get('bandwidth_scale_curve') or [],
+                   key=lambda point: float(point[0]))
+    if curve and payload_bytes is not None:
+      import math
+      size = max(1.0, float(payload_bytes))
+      lo = max((p for p in curve if float(p[0]) <= size),
+               key=lambda p: float(p[0]), default=curve[0])
+      hi = min((p for p in curve if float(p[0]) >= size),
+               key=lambda p: float(p[0]), default=curve[-1])
+      if float(lo[0]) == float(hi[0]):
+        scale = float(lo[1])
+      else:
+        w = ((math.log(size)-math.log(max(1.0, float(lo[0])))) /
+             (math.log(float(hi[0]))-math.log(max(1.0, float(lo[0])))))
+        scale = math.exp((1-w)*math.log(float(lo[1]))
+                         + w*math.log(float(hi[1])))
+    return self.effective_bandwidth * scale
+
+  def collective_time(self, op, payload_bytes, participants,
+                      remote_fraction=1.0, bottleneck_bytes=None):
+    """Predict a collective without folding P-dependent overhead into BW.
+
+    ``payload_bytes`` is the logical per-rank volume.  For skewed all-to-all,
+    callers should pass the busiest rank/peer volume as ``bottleneck_bytes``.
+    """
+    if int(participants) <= 1 or float(payload_bytes) <= 0:
+      return 0.0
+    params = self._collective_parameters.get(op, {})
+    if bottleneck_bytes is None:
+      wire = float(payload_bytes) * max(0.0, float(remote_fraction))
+      p = int(participants)
+      if op == 'all_reduce':
+        wire *= 2.0 * (p - 1) / p
+      elif op in ('all_gather', 'reduce_scatter'):
+        wire *= (p - 1) / p
+    else:
+      wire = max(0.0, float(bottleneck_bytes))
+    return (self.collective_latency(op, participants)
+            + wire / self.collective_bandwidth(op, wire))
 
   def time(self, op, op_size, comm_size):
     """ Computes the time taken for a network operation.

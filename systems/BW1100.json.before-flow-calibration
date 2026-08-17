@@ -3941,36 +3941,10 @@
   "networks": [
     {
       "bandwidth": 224.0,
-      "efficiency": 0.708911086197806,
+      "efficiency": 0.707656906379306,
       "size": 8,
-      "latency": 0.00012085912562906741,
+      "latency": 9.835987538099288e-05,
       "topology": "Single machine",
-      "collective_parameters": {
-        "p2p": {
-          "software_latency": 0.0,
-          "step_latency": 0.0,
-          "bandwidth_scale": 1.0,
-          "algorithm": "pairwise"
-        },
-        "all_to_all": {
-          "software_latency": 3.25e-05,
-          "step_latency": 0.0,
-          "bandwidth_scale": 1.0,
-          "bandwidth_scale_curve": [
-            [1048576, 1.0],
-            [8388608, 1.0],
-            [16777216, 0.4],
-            [67108864, 0.25]
-          ],
-          "algorithm": "pairwise"
-        },
-        "all_reduce": {
-          "software_latency": 1e-06,
-          "step_latency": 0.0,
-          "bandwidth_scale": 0.715,
-          "algorithm": "ring"
-        }
-      },
       "ops": {
         "p2p": [
           1.0,
@@ -4030,21 +4004,6 @@
   },
   "router_linear_time_scale": 2.504,
   "router_sigmoid_time_scale": 0.522,
-  "router_backward_time_scale": 2.1,
-  "router_parametric_model": {
-    "topk": {
-      "launches": 19.0,
-      "comparisons_per_score": 1.0,
-      "sort_log2_experts": 0.0,
-      "complexity_coefficient_s": 0.0
-    },
-    "permutation": {
-      "launches": 5.1,
-      "flops_per_assignment": 4.0,
-      "bytes_per_assignment": 24.0,
-      "complexity_coefficient_s": 2.77e-07
-    }
-  },
   "bmm_dtype": "bfloat16",
   "bmm_time_scale": {
     "default": 1.0,
@@ -4089,12 +4048,7 @@
             "effective_flops_per_s": 32902953741252.17
           }
         ],
-        "seq_model": "log_rate_interpolation_clamped",
-        "stage_scales": {
-          "fw": 1.0,
-          "agrad": 0.971,
-          "wgrad": 4.78
-        }
+        "seq_model": "log_rate_interpolation_clamped"
       },
       "MlpBlock_MoE_Up": {
         "shape": [
@@ -4130,12 +4084,7 @@
             "effective_flops_per_s": 32824459525111.02
           }
         ],
-        "seq_model": "log_rate_interpolation_clamped",
-        "stage_scales": {
-          "fw": 1.0,
-          "agrad": 0.971,
-          "wgrad": 4.78
-        }
+        "seq_model": "log_rate_interpolation_clamped"
       },
       "MlpBlock_MoE_Down": {
         "shape": [
@@ -4171,12 +4120,7 @@
             "effective_flops_per_s": 34055149939945.355
           }
         ],
-        "seq_model": "log_rate_interpolation_clamped",
-        "stage_scales": {
-          "fw": 1.0,
-          "agrad": 0.971,
-          "wgrad": 4.78
-        }
+        "seq_model": "log_rate_interpolation_clamped"
       }
     }
   },
