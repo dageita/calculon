@@ -1,0 +1,167 @@
+# =============================================================================
+# Dev Dockerfile for the LLM Training Simulator
+#
+# BASED ON calculon/Dockerfile (frontend + nginx + backend + LLMFlowSimulator
+# .so build), extended for a DEVELOPMENT environment:
+#   - single stage (keeps C++ toolchain + LLMFlowSimulator SOURCE so the
+#     .so can be rebuilt during development)
+#   - adds GPU access (nvidia/cuda base) + torch for on-GPU kernel sampling
+#   - installs ALL LLMFlowSimulator code and its dependencies
+#
+# GPU access at runtime:  docker run --gpus all ...
+# (requires NVIDIA Container Toolkit + host driver >= R570 on the host)
+#
+# Build context = repo root (this file lives next to calculon/ and
+# LLMFlowSimulator/).  Build with:  docker build -t llm-sim-dev .
+# =============================================================================
+
+# CUDA devel base: libcudart + nvcc + headers + (at runtime) GPU passthrough.
+# NOTE: torch below uses the cu121 wheel (forward-compatible with the 12.8
+# runtime). Image ships Python 3.10, so torch must be <2.4 (torch>=2.4 needs
+# Python >=3.11). Do NOT switch to a cu128 wheel (none exists for 2.3.x).
+FROM nvidia/cuda:12.8.0-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------------
+# System deps (superset of calculon/Dockerfile's two stages, kept together
+# for a dev image):
+#   - build-essential / g++ / make / cmake : build LLMFlowSimulator (C++17)
+#   - nlohmann-json3-dev                  : <nlohmann/json.hpp> used by simulator.cpp
+#   - nginx                              : serve frontend/dist + reverse-proxy backend
+#   - nodejs 22.x                        : required by Claude Code / Codex CLI
+#                                           (frontend is pre-built on the HOST,
+#                                            so image Node is only for these CLIs)
+#   - python3 + pip + venv               : calculon runtime
+#   - git / curl / vim / ca-certificates : dev ergonomics
+# ---------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        g++ \
+        make \
+        cmake \
+        nlohmann-json3-dev \
+        pkg-config \
+        python3 \
+        python3-pip \
+        python3-venv \
+        nginx \
+        curl \
+        vim \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js 22.x (Claude Code requires >=18, Codex CLI requires >=20).
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# `python` -> `python3` and current pip
+RUN ln -sf /usr/bin/python3 /usr/local/bin/python \
+    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+
+WORKDIR /app
+
+# ---------------------------------------------------------------------------
+# calculon (Python simulator + backend + frontend source)
+# Copied FIRST so that /app/calculon/ exists before the .so is placed into it
+# (matches the ordering in calculon/Dockerfile).
+# ---------------------------------------------------------------------------
+COPY calculon/ /app/calculon/
+
+# ---------------------------------------------------------------------------
+# LLMFlowSimulator: copy ALL source, build the shared library, place it where
+# calculon/calculon/network.py expects it (CDLL("./libpycallclass.so"),
+# resolved against CWD=/app/calculon -> /app/calculon/libpycallclass.so).
+# Source is kept in /app/LLMFlowSimulator for development/rebuilds.
+# ---------------------------------------------------------------------------
+COPY LLMFlowSimulator/ /app/LLMFlowSimulator/
+RUN cd /app/LLMFlowSimulator \
+    && make clean \
+    && make so \
+    && cp libpycallclass.so /app/calculon/libpycallclass.so \
+    && echo "Built libpycallclass.so"
+
+# Python deps for calculon core + backend
+#   numpy / pandas / psutil : core simulator (PyPI)
+#   matplotlib              : plotting scripts and timeline visualization
+#   torch (cu121, py3.10)   : offline_profiler.py samples kernels on the GPU
+#   fastapi/uvicorn/...     : backend REST service (from backend/requirements.txt)
+# Use --extra-index-url (NOT --index-url) so PyPI stays available.
+# Pin direct dependencies to the versions verified in the wxfsim dev image,
+# so rebuilding does not silently pick incompatible future releases.
+RUN python3 -m pip install --no-cache-dir \
+        "numpy==2.2.6" \
+        "pandas==2.3.3" \
+        "psutil==7.2.2" \
+        "matplotlib==3.10.9" \
+        "torch==2.3.1" --extra-index-url https://download.pytorch.org/whl/cu121
+
+RUN cd /app/calculon/backend && python3 -m pip install --no-cache-dir -r requirements.txt
+RUN cd /app/calculon && python3 -m pip install --no-cache-dir -e .
+
+# ---------------------------------------------------------------------------
+# CLI agent tools: Claude Code + Codex CLI
+#   - Claude Code : @anthropic-ai/claude-code (npm)
+#   - Codex CLI   : @openai/codex (npm)
+# Use the npmmirror registry (reachable on internal networks; avoids the
+# public-registry socket timeouts seen during the frontend build).
+# Node 22 (installed above) satisfies both tools' engine requirements.
+# ---------------------------------------------------------------------------
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g @anthropic-ai/claude-code@latest \
+    && npm install -g @openai/codex@latest \
+    && npm config delete registry \
+    && echo "claude: $(claude --version 2>/dev/null || echo unknown)" \
+    && echo "codex:  $(codex --version 2>/dev/null || echo unknown)"
+
+# ---------------------------------------------------------------------------
+# Frontend: use the PRE-BUILT dist (already in the repo, as calculon/Dockerfile
+# does with `COPY frontend/dist`). We deliberately do NOT run `npm install`
+# inside the image — the UMI3/antd-pro dependency tree is heavy and fails in
+# restricted/build-network environments (socket timeouts, dva peer-dep
+# conflicts). To rebuild the UI, run `npm install && npm run build` on the
+# HOST (or inside a running container) and refresh frontend/dist; the Docker
+# build then just copies it.
+# ---------------------------------------------------------------------------
+RUN if [ -d /app/calculon/frontend/dist ] && [ -f /app/calculon/frontend/dist/index.html ]; then \
+        cp -r /app/calculon/frontend/dist /app/dist \
+        && echo "Copied pre-built frontend/dist -> /app/dist"; \
+    else \
+        echo "WARN: frontend/dist not found; creating placeholder so nginx starts." \
+        && mkdir -p /app/dist \
+        && printf '<html><body><h1>calculon frontend not built</h1><p>Run npm install && npm run build in calculon/frontend, then rebuild the image.</p></body></html>' > /app/dist/index.html; \
+    fi
+
+# nginx config (serves /app/dist + proxies backend on :8000)
+COPY calculon/frontend/nginx.conf /etc/nginx/nginx.conf
+COPY calculon/frontend/default.conf /etc/nginx/conf.d/default.conf
+# Remove the package's `include /etc/nginx/sites-enabled/*` (and the stock
+# default site) so no stray `listen` directive (e.g. a leftover 3000) can
+# ever be loaded. Only our default.conf is active.
+RUN sed -i '/sites-enabled/d' /etc/nginx/nginx.conf \
+    && rm -f /etc/nginx/sites-enabled/default
+RUN mkdir -p /var/log/nginx && nginx -t
+
+# Make the .so discoverable regardless of CWD
+ENV LD_LIBRARY_PATH=/app/calculon:${LD_LIBRARY_PATH}
+
+# ---------------------------------------------------------------------------
+# Start script (real file, copied - avoids echo/heredoc escaping issues):
+# launches nginx in the FOREGROUND (so the container stays alive) + the
+# Python backend in the background. Ports are overridable via NGINX_PORT /
+# BACKEND_PORT env vars.
+# ---------------------------------------------------------------------------
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# Expose frontend (nginx) and backend (Python) ports
+EXPOSE 3000 8000
+
+# Build-time sanity: confirm torch imports with the expected CUDA build.
+# (nvidia-smi is only available at runtime via --gpus all; do NOT call it here.)
+RUN python3 -c "import torch; print('torch', torch.__version__, 'cuda', torch.version.cuda)"
+
+WORKDIR /app
+CMD ["/app/start.sh"]
