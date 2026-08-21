@@ -1,0 +1,101 @@
+# =============================================================================
+# LLM Training Simulator development image for Hygon BW1100 / DTK 26.04
+#
+# The base image supplies the tested DTK 26.04, Hygon HIP PyTorch 2.5.1,
+# hipcc, headers, rocBLAS, hipBLASLt, and BW1100 (gfx936) kernel data. Keep
+# all packages preinstalled by the base image; do not replace PyTorch or
+# uninstall vLLM-related components.
+#
+# FP8 calibration must use a native hipBLASLt or HIP implementation. The
+# PyTorch torch._scaled_mm FP8 path is not currently implemented by this DTK
+# wheel, so it must not be used as an FP8 benchmark backend.
+# =============================================================================
+
+FROM harbor.sourcefind.cn:5443/dcu/admin/base/pytorch:2.5.1-ubuntu22.04-dtk26.04-py3.10
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    ROCM_PATH=/opt/dtk \
+    HIP_PATH=/opt/dtk/hip \
+    HYHAL_PATH=/opt/hyhal \
+    AMDGPU_TARGETS=gfx936 \
+    PATH=/opt/dtk/bin:/opt/dtk/dcc/bin:/opt/dtk/hip/bin:/opt/dtk/hip/bin/hipify:/opt/hyhal/bin:${PATH} \
+    LD_LIBRARY_PATH=/app/calculon:/opt/dtk/dcc/gcvm/lib:/opt/dtk/hip/lib:/opt/dtk/lib:/opt/dtk/lib64:/opt/hyhal/lib:/opt/hyhal/lib64 \
+    LIBRARY_PATH=/opt/hyhal/lib:/opt/dtk/lib:/opt/dtk/hip/lib \
+    C_INCLUDE_PATH=/opt/dtk/dcc/gcvm/include:/opt/dtk/include:/opt/hyhal/include \
+    CPLUS_INCLUDE_PATH=/opt/dtk/dcc/gcvm/include:/opt/dtk/include:/opt/hyhal/include
+
+# Build and service dependencies not guaranteed by the PyTorch base image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        g++ \
+        make \
+        cmake \
+        nlohmann-json3-dev \
+        pkg-config \
+        nginx \
+        curl \
+        vim \
+        git \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node.js is used only by the development CLIs; frontend assets are copied
+# pre-built and no frontend npm install occurs during this image build.
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY calculon/ /app/calculon/
+COPY LLMFlowSimulator/ /app/LLMFlowSimulator/
+
+RUN cd /app/LLMFlowSimulator \
+    && make clean \
+    && make so \
+    && cp libpycallclass.so /app/calculon/libpycallclass.so
+
+# Keep the base image's PyTorch and preinstalled Python components intact.
+# It already supplies NumPy, pandas, psutil, matplotlib, FastAPI, Pydantic,
+# and Uvicorn. Only add the two packages absent from the base but required by
+# Calculon's backend. Do not install the pinned backend requirements file: it
+# would downgrade the vendor FastAPI stack and alter its dependency graph.
+RUN python3 -m pip install --no-cache-dir \
+        "openpyxl==3.1.2" \
+        "python-multipart==0.0.6" \
+    && cd /app/calculon \
+    && python3 -m pip install --no-cache-dir -e .
+
+RUN npm config set registry https://registry.npmmirror.com \
+    && npm install -g @anthropic-ai/claude-code@latest @openai/codex@latest \
+    && npm config delete registry
+
+RUN if [ -d /app/calculon/frontend/dist ] && [ -f /app/calculon/frontend/dist/index.html ]; then \
+        cp -r /app/calculon/frontend/dist /app/dist; \
+    else \
+        mkdir -p /app/dist \
+        && printf '<html><body><h1>calculon frontend not built</h1></body></html>' > /app/dist/index.html; \
+    fi
+
+COPY calculon/frontend/nginx.conf /etc/nginx/nginx.conf
+COPY calculon/frontend/default.conf /etc/nginx/conf.d/default.conf
+RUN sed -i '/sites-enabled/d' /etc/nginx/nginx.conf \
+    && rm -f /etc/nginx/sites-enabled/default \
+    && mkdir -p /var/log/nginx \
+    && nginx -t
+
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
+
+# The HYHAL driver userspace comes from the host at runtime, so do not import
+# torch here. Validate every static FP8 calibration prerequisite instead.
+RUN test -x /opt/dtk/bin/hipcc \
+    && test -f /opt/dtk/include/hipblaslt/hipblaslt.h \
+    && test -f /opt/dtk/include/hipblaslt/hipblaslt_float8.h \
+    && test -f /opt/dtk/lib/librocblas.so \
+    && test -f /opt/dtk/lib/libhipblaslt.so \
+    && test -f /opt/dtk/lib/hipblaslt/library_bw/TensileLibrary_gfx936.dat \
+    && test -f /opt/dtk/lib/hipblaslt/library_bw/TensileLibrary_gfx936.co
+
+EXPOSE 3000 8000
+WORKDIR /app
+CMD ["/app/start.sh"]
