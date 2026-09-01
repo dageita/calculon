@@ -1,4 +1,4 @@
-import { FC, useEffect } from 'react';
+import { FC, useEffect, useState } from 'react';
 import { useImmer } from 'use-immer';
 import {
   Select,
@@ -171,24 +171,33 @@ const NUM_PARAMS_LIST = [
 
 export interface IModelSelectionProps {}
 const ModelSelection: FC<IModelSelectionProps> = (props) => {
-  const { setProject, setOtherConfig, curModel, modelMetrics } =
+  const { setProject, curModel, modelMetrics, otherConfig } =
     useModel(ProjectModel);
   const { setChangeLog } = useModel(LogModel);
   const { t } = useTranslation();
 
+  const [selectedModel, setSelectedModel] = useState<any>(curModel);
+
+  useEffect(() => {
+    setSelectedModel(curModel);
+  }, [curModel]);
   const handleItemClick = (key: string, item: any) => {
     setChangeLog('Model', item?.name, curModel?.name);
+    const nextModel = { ...item, ...item?.obj };
+    setSelectedModel(nextModel);
+    // Commit the selected model and dense-model constraints atomically. Two
+    // consecutive store writes could race: the local Parameters panel updated,
+    // while the parent still observed curModel=null and raised a false warning.
     setProject({
-      curModel: {
-        ...item,
-        ...item?.obj,
-      },
+      curModel: nextModel,
+      ...(!nextModel.num_experts ? {
+        otherConfig: {
+          ...otherConfig,
+          expert_par: 1,
+          context_par: 1,
+        },
+      } : {}),
     });
-    // EP has no work to distribute for dense models. Reset any stale MoE
-    // setting so the parallelism product cannot claim inactive GPUs.
-    if (!item?.obj?.num_experts) {
-      setOtherConfig({ expert_par: 1, context_par: 1 });
-    }
   };
 
   const [state, setState] = useImmer({
@@ -255,10 +264,9 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
       MODEL_LIST: newModelList,
       showAddModal: false,
     });
+    setSelectedModel(newItem);
     setProject({
-      curModel: {
-        ...newItem,
-      },
+      curModel: newItem,
     });
     const localItems =
       JSON.parse(localStorage.getItem('local_models') || '[]') || [];
@@ -278,7 +286,7 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
       <div className={styles.section_content}>
         <Select
           options={state.MODEL_LIST}
-          value={curModel?.value}
+          value={selectedModel?.value}
           placeholder={t('Please select')}
           onChange={handleItemClick}
           dropdownRender={(menu) => (
@@ -303,17 +311,17 @@ const ModelSelection: FC<IModelSelectionProps> = (props) => {
         {t('parameters')}
       </p>
       <div>
-        {curModel?.value ? (
+        {selectedModel?.value ? (
           <div className={styles.gpu_params}>
             {PARAMS_LIST.filter(
               (pItem) =>
-                !MOE_KEYS.includes(pItem.key) || curModel[pItem.key] != null,
+                !MOE_KEYS.includes(pItem.key) || selectedModel[pItem.key] != null,
             ).map((pItem, _idx, arr) => (
               <div key={_idx}>
                 <div className={styles.gpu_params_item}>
                   <div className={styles.gpu_params_label}>{pItem.title}</div>
                   <div className={styles.gpu_params_value}>
-                    {curModel[pItem.key]}
+                    {selectedModel[pItem.key]}
                   </div>
                 </div>
                 {_idx < arr.length - 1 && <Divider />}

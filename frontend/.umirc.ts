@@ -14,6 +14,7 @@ export default defineConfig({
   mock:false,
   routes: [
     { path: '/help', component: '@/pages/help/index' },
+    { path: '/superpod', component: '@/pages/index' },
     { path: '/optimal', component: '@/pages/index' },
     { path: '/guide', component: '@/pages/index' },
     { path: '/',  redirect: '/guide'},

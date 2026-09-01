@@ -29,7 +29,9 @@ const Index: FC<IIndexProps> = (props) => {
   React.useEffect(() => {
     let mode = 'guide'; // 默认模式
     
-    if (location.pathname.includes('optimal')) {
+    if (location.pathname.includes('superpod')) {
+      mode = 'superpod';
+    } else if (location.pathname.includes('optimal')) {
       mode = 'optimal';
     } else if (location.pathname.includes('benchmark')) {
       mode = 'benchmark';
@@ -49,6 +51,7 @@ const Index: FC<IIndexProps> = (props) => {
     const modeMap = {
       guide: '/guide',
       optimal: '/optimal',
+      superpod: '/superpod',
       // benchmark: '/benchmark'
     };
     
@@ -76,6 +79,10 @@ const Index: FC<IIndexProps> = (props) => {
     {
       key: 'optimal',
       label: t('optimal mode')
+    },
+    {
+      key: 'superpod',
+      label: t('superpod mode')
     },
     // {
     //   key: 'benchmark',
@@ -116,7 +123,7 @@ const Index: FC<IIndexProps> = (props) => {
           </div>
         </Header>
         <Layout className="llm-inner-layout-wrapper">
-          <Sider  width={curMode === 'guide' || curMode === 'optimal' ? 430 : 400} theme='light'>
+          <Sider  width={['guide', 'optimal', 'superpod'].includes(curMode) ? 430 : 400} theme='light'>
             <PanelLeft key={`left-${location.pathname}`}></PanelLeft>
           </Sider>
           <Content>

@@ -133,7 +133,7 @@ const OptimalPanel = (props) => {
                 />
             </div>
 
-            <p className={styles.section_title}>{t('Max Batch Size')}</p>
+            <p className={styles.section_title}>Global Batch Size (fixed)</p>
             <div className={styles.section_content}>
                 {renderBatchSize()}
             </div>

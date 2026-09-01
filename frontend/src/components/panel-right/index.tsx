@@ -20,6 +20,8 @@ import LogModel from '@/models/logModel';
 import { useTranslation } from 'react-i18next';
 import BaseTL from '../timelines/base-timeline';
 import TLEventChart from '../timelines/timeline-events';
+import CandidateSearchChart from './search-candidates-chart';
+import SuperpodSummary from './superpod-summary';
 
 const COLOR_MAPPING: any = {
   warmup: {
@@ -253,7 +255,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
       </div>
     );
   }
-  if (!result && curMode === 'optimal') {
+  if (!result && ['optimal', 'superpod'].includes(curMode)) {
     return (
       <div className={styles.content}>
         <div className={styles.empty_steps}>
@@ -701,7 +703,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
             </>
           )}
           {/*  Timeline */}
-          {curMode !== 'optimal' && (
+          {!['optimal', 'superpod'].includes(curMode) && (
             <div className={styles.result_group_header}>
               <div className={styles.result_group_title}>
                 Timeline
@@ -756,7 +758,7 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
         </div>
         {/* <BaseTL result={{ ...result, other_config: curMode === 'guide' ? otherConfig : result.other_config }} latest_result={latest_result} curMode={curMode}></BaseTL> */}
 
-        {!state.timelineCollapse && curMode !== 'optimal' && (
+        {!state.timelineCollapse && !['optimal', 'superpod'].includes(curMode) && (
           <TLEventChart result={result.timeline_events || []} />
         )}
 
@@ -818,6 +820,45 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
           </>
         )}
 
+        {result.hardware && (
+          <>
+            <div className={styles.result_group_header}>
+              <div className={styles.result_group_title}>Superpod Hardware Design</div>
+            </div>
+            <div className={styles.result_group_content}>
+              <Descriptions colon={false} className="customize-des"
+                column={{ xxl: 3, xl: 2, lg: 2, md: 2, sm: 2, xs: 1 }}>
+                <Descriptions.Item label="GPU Numbers">
+                  {result.hardware.gpu_numbers ?? result.hardware.selected_gpu_numbers ?? result.optimal_result?.gpu_numbers}
+                </Descriptions.Item>
+                <Descriptions.Item label="Max Scale-up Size">
+                  {result.hardware.scale_up_size}
+                </Descriptions.Item>
+                <Descriptions.Item label="Scale-out Size">
+                  {result.hardware.scale_out_size}
+                </Descriptions.Item>
+                <Descriptions.Item label="Intra-node Bandwidth (GB/s)">
+                  {result.hardware.intra_bandwidth}
+                </Descriptions.Item>
+                <Descriptions.Item label="Inter-node Aggregate Bandwidth (GB/s per Scale-up Pod)">
+                  {result.hardware.inter_pod_bandwidth}
+                </Descriptions.Item>
+                <Descriptions.Item label="Inter-node Bandwidth (GB/s per GPU)">
+                  {result.hardware.inter_bandwidth}
+                </Descriptions.Item>
+                <Descriptions.Item label="Intra-node Latency (s)">
+                  {result.hardware.intra_latency}
+                </Descriptions.Item>
+                <Descriptions.Item label="Inter-node Latency (s)">
+                  {result.hardware.inter_latency}
+                </Descriptions.Item>
+                <Descriptions.Item label="Topology">{result.hardware.network_topology}</Descriptions.Item>
+                <Descriptions.Item label="Placement">{result.placement?.policy}</Descriptions.Item>
+              </Descriptions>
+            </div>
+            <Divider />
+          </>
+        )}
         {result.optimal_result && (
           <>
             <div className={styles.result_group_header}>
@@ -855,6 +896,45 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                   <Descriptions.Item label="Gpu Numbers">
                     {result.optimal_result.gpu_numbers}
                   </Descriptions.Item>
+                  {result.hardware && <>
+                    <Descriptions.Item label="GPU Numbers">
+                      {result.hardware.gpu_numbers ?? result.hardware.selected_gpu_numbers ?? result.optimal_result.gpu_numbers}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Max Scale-up Size">
+                      {result.hardware.scale_up_size}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Scale-out Size">
+                      {result.hardware.scale_out_size}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Intra-node Bandwidth (GB/s)">
+                      {result.hardware.intra_bandwidth}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Inter-node Aggregate Bandwidth (GB/s/pod)">
+                      {result.hardware.inter_pod_bandwidth}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Inter-node Bandwidth (GB/s/GPU)">
+                      {result.hardware.inter_bandwidth}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Intra-node Latency (s)">
+                      {result.hardware.intra_latency}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Inter-node Latency (s)">
+                      {result.hardware.inter_latency}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Network Topology">
+                      {result.hardware.network_topology}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="Placement Policy">
+                      {result.placement?.policy}
+                    </Descriptions.Item>
+                    {Object.entries(result.recommended_hardware?.parallel_dimension_mapping || {}).map(
+                      ([dimension, tier]: any) => (
+                        <Descriptions.Item key={dimension} label={`${dimension} Mapping`}>
+                          {String(tier)}
+                        </Descriptions.Item>
+                      ),
+                    )}
+                  </>}
                   <Descriptions.Item label="Tensor Parallel">
                     {result.optimal_result.tensor_parallel}
                   </Descriptions.Item>
@@ -863,6 +943,12 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                   </Descriptions.Item>
                   <Descriptions.Item label="Data Parallel">
                     {result.optimal_result.data_parallel}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Expert Parallel">
+                    {result.optimal_result.expert_parallel}
+                  </Descriptions.Item>
+                  <Descriptions.Item label="Context Parallel">
+                    {result.optimal_result.context_parallel}
                   </Descriptions.Item>
                   <Descriptions.Item label="Batch Size">
                     {result.optimal_result.batch_size}
@@ -919,6 +1005,18 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
           </>
         )}
 
+        {curMode === 'superpod' && result.search_candidates?.length > 0 && (
+          <>
+            <div className={styles.result_group_header}>
+              <div className={styles.result_group_title}>Search Candidates</div>
+            </div>
+            <div className={styles.result_group_content}>
+              <CandidateSearchChart candidates={result.search_candidates} />
+            </div>
+            <Divider />
+          </>
+        )}
+
         {result.summary && (
           <>
             <div className={styles.result_group_header}>
@@ -945,7 +1043,15 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                 )}
               </div>
             </div>
-            {!state.summaryCollapse && (
+            {!state.summaryCollapse && curMode === 'superpod'
+              && result.summary.design_conclusions && (
+              <div className={styles.result_group_content}>
+                <SuperpodSummary summary={result.summary} />
+              </div>
+            )}
+            {!state.summaryCollapse && !(
+              curMode === 'superpod' && result.summary.design_conclusions
+            ) && (
               <div className={styles.result_group_content}>
                 <Descriptions
                   colon={false}
@@ -967,9 +1073,36 @@ const PanelRight: FC<IPanelRightProps> = (props) => {
                       {result.summary.linear_scaling_throughput.toFixed(2)}
                     </Descriptions.Item>
                   )}
+                  {result.summary.time_to_train_seconds != null && (
+                    <Descriptions.Item label="Time to Train (s)">
+                      {dataParse(result.summary.time_to_train_seconds)}
+                    </Descriptions.Item>
+                  )}
+                  {result.summary.training_samples != null && (
+                    <Descriptions.Item label="Training Samples">
+                      {dataParse(result.summary.training_samples)}
+                    </Descriptions.Item>
+                  )}
                   <Descriptions.Item label="Total Efficiency (≈MFU)">
                     {result.summary.total_efficiency}
                   </Descriptions.Item>
+                  {result.summary.objectives?.length > 0 && (
+                    <Descriptions.Item label="Search Objectives">
+                      {result.summary.objectives.join(', ')}
+                    </Descriptions.Item>
+                  )}
+                  {result.summary.recommended_hardware && (
+                    <Descriptions.Item span={3} label="Recommended Hardware">
+                      {`Selected GPUs ${result.summary.recommended_hardware.selected_gpu_numbers}, Max GPUs ${result.summary.recommended_hardware.max_gpu_numbers}, Scale-up ${result.summary.recommended_hardware.scale_up_size}, Intra BW ${result.summary.recommended_hardware.intra_bandwidth} GB/s, Inter BW ${result.summary.recommended_hardware.inter_pod_bandwidth} GB/s/pod, Intra Latency ${result.summary.recommended_hardware.intra_latency}s, Inter Latency ${result.summary.recommended_hardware.inter_latency}s, Placement ${result.summary.recommended_hardware.placement_policy}`}
+                    </Descriptions.Item>
+                  )}
+                  {Object.entries(result.summary.knees_95_percent || {}).map(
+                    ([key, knee]: any) => (
+                      <Descriptions.Item key={key} label={`${knee.label} 95% Knee`}>
+                        {`${dataParse(knee.value)} ${knee.unit}`}
+                      </Descriptions.Item>
+                    ),
+                  )}
                   {result.summary.compute_efficiency != null && (
                     <Descriptions.Item label="Compute Efficiency">
                       {result.summary.compute_efficiency}

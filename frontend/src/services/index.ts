@@ -90,6 +90,13 @@ export async function optimal(params: any) {
 }
 
 
+export async function hardwareDesignOptimal(params: any) {
+  return request(`${service_base_url}/llm_training_calculator/calculator/hardware-design/optimal`, {
+    data: { ...params },
+    method: 'POST',
+  });
+}
+
 export async function exportResult(params: any) {
   return request(`${service_base_url}/llm_training_calculator/calculator/download`, {
     data: {

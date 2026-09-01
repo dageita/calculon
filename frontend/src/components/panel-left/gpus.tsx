@@ -51,7 +51,7 @@ const EDITABLE_BANDWIDTH_KEYS = new Set(['bus_bandwidth', 'network_bandwidth'])
 
 export interface IGPUSelectionProps { }
 const GpuSelection: FC<IGPUSelectionProps> = (props) => {
-  const { setProject, curGpu, curNetwork,curCouHasChanged } = useModel(ProjectModel);
+  const { setProject, curGpu, curNetwork, curMode, curCouHasChanged } = useModel(ProjectModel);
   const { setChangeLog } = useModel(LogModel);
   const { t } = useTranslation();
 
@@ -285,7 +285,8 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
         </div>
       )}
 
-      <div className={styles.cluster_param_item}>
+      {curMode !== 'superpod' && (
+        <div className={styles.cluster_param_item}>
         <div className={styles.param_item_label}>Gpu Numbers</div>
         <div className={styles.param_item_value}>
           <InputNumber
@@ -300,7 +301,8 @@ const GpuSelection: FC<IGPUSelectionProps> = (props) => {
               });
             }} />
         </div>
-      </div>
+        </div>
+      )}
 
       <div className={styles.cluster_param_item}>
         <div className={styles.param_item_label}>Network Topology</div>

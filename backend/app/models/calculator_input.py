@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -11,7 +11,9 @@ class Gpu(BaseModel):
     memory_bandwidth: Optional[int] = None
     # Bandwidth fields are unidirectional GB/s. Calculon converts with `* 1e9` → Byte/s.
     bus_bandwidth: Optional[float] = None  # intra-node (NVLink / scale-up)
-    network_bandwidth: Optional[float] = None  # inter-node (NIC / scale-out)
+    intra_latency: Optional[float] = None  # seconds, exposed for design-search defaults
+    inter_latency: Optional[float] = None  # seconds, exposed for design-search defaults
+    network_bandwidth: Optional[float] = None  # per-GPU inter-node injection BW
     pcie_bandwidth: Optional[float] = None  # PCIe / mem2 (offload path), not used as NVLink
     support_p2p: Optional[bool] = None
     num_procs: Optional[int] = None  # GPU数量
@@ -22,6 +24,9 @@ class Network(BaseModel):
     # Kept for API compatibility / Single-machine callers that pass 0.
     network_bandwidth: Optional[float] = None
     network_topology: Optional[str] = None  # 网络拓扑类型
+    scale_up_size: Optional[int] = None
+    intra_latency: Optional[float] = None
+    inter_latency: Optional[float] = None
 
 
 class Model(BaseModel):
@@ -76,9 +81,55 @@ class TrainningConfig(BaseModel):
 class OptimalConfig(BaseModel):
     num_procs: Optional[int] = None  # 优化策略
     max_batch_size: Optional[int] = None
+    global_batch_size: Optional[int] = None
     matrix_dtype: Optional[str] = None
     vector_dtype: Optional[str] = None
     datatype: Optional[str] = None  # 兼容旧前端；若提供则作为 matrix_dtype 回退
+    objective: Optional[str] = "throughput"  # legacy single-objective input
+    objectives: Optional[List[str]] = None  # throughput | batch_time | mfu | time_to_train
+    training_samples: Optional[float] = None
+    scale_up_size: Optional[int] = None
+    placement_policies: Optional[List[str]] = None
+    top_n: Optional[int] = 1
+    max_candidates: Optional[int] = 512
+    max_global_batch_size: Optional[int] = None
+    activation_recompute_options: Optional[List[str]] = None
+    optimizer_sharding_options: Optional[List[bool]] = None
+    tensor_par_comm_types: Optional[List[str]] = None
+    tensor_par_overlap_options: Optional[List[str]] = None
+    data_par_overlap_options: Optional[List[bool]] = None
+    weight_offload_options: Optional[List[bool]] = None
+    activations_offload_options: Optional[List[bool]] = None
+    optimizer_offload_options: Optional[List[bool]] = None
+
+
+class HardwareDesignConfig(OptimalConfig):
+    """Hardware/software co-design search space for Superpod Mode.
+
+    Lists are explicit design points. The frontend can construct them from a
+    start/stop/step form without coupling the backend to UI conventions.
+    """
+    gpu_numbers: Optional[List[int]] = None  # legacy: must equal [num_procs]
+    max_num_procs: Optional[int] = None  # deprecated: count is fixed by num_procs
+    scale_up_sizes: Optional[List[int]] = None
+    max_scale_up_size: Optional[int] = None
+    intra_bandwidths: Optional[List[float]] = None
+    inter_pod_bandwidths: Optional[List[float]] = None  # aggregate GB/s per scale-up pod
+    inter_bandwidths: Optional[List[float]] = None  # legacy per-GPU GB/s input
+    intra_latencies: Optional[List[float]] = None
+    inter_latencies: Optional[List[float]] = None
+    network_topologies: Optional[List[str]] = None
+    hardware_sampling: Optional[str] = "cartesian"  # cartesian | one_at_a_time | balanced
+    hardware_top_n: Optional[int] = 10
+    software_top_k: Optional[int] = 4
+    activations_offload_options: Optional[List[bool]] = [False, True]
+    coarse_top_k: Optional[int] = 128
+    adaptive_refinement_points: Optional[int] = 8
+    oom_fallback_candidates: Optional[int] = 256
+    global_hardware_samples: Optional[int] = 12
+    gpu_compute_factors: Optional[List[float]] = None
+    gpu_memory_capacity_factors: Optional[List[float]] = None
+    gpu_memory_bandwidth_factors: Optional[List[float]] = None
 
 
 class OtherConfig(BaseModel):

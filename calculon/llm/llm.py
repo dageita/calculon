@@ -3137,10 +3137,21 @@ class Llm:
     return compute_time / self.get_total_time()
 
   def get_total_efficiency(self):
+    """Return model FLOPs utilization against the simulated step time.
+
+    ``get_total_time`` is the legacy analytical composition. It adds exposed
+    communication and pipeline bubbles to a flow-simulator result that already
+    contains both, so using it here double-counts scheduling stalls and makes
+    the value much smaller than MFU. The UI reports the flow simulator global
+    time as Batch Total Time, so MFU must use the same wall-clock basis.
+    """
     total_flops = self.get_useful_flops()
     perfect_time = self._blocks_per_proc * self.exe._num_microbatches * \
       total_flops / self.sys.matrix.flops(self.exe.matrix_dtype)
-    return perfect_time / self.get_total_time()
+    simulated_step_time = self.get_flow_network_global_time()
+    if simulated_step_time <= 0:
+      return 0.0
+    return min(1.0, max(0.0, perfect_time / simulated_step_time))
 
   def get_weight_space_min(self):
     return self._block_weight_space * 2

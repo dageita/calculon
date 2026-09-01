@@ -4,7 +4,8 @@ import os
 import fastapi
 from app.config import settings
 from app.core.calculate_repository import CalculateRepository, OptimizationStrategyType, NetworkTopologyType
-from app.models.calculator_input import Gpu, Model, Network, TrainningConfig, OptimalConfig
+from app.models.calculator_input import (Gpu, Model, Network, TrainningConfig,
+                                         OptimalConfig, HardwareDesignConfig)
 from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import Parameter, RecommendedConfig, MemoryUsage, \
     Computation, Communication, Timeline, TotalTime
@@ -21,13 +22,18 @@ def gpu_list():
     result = []
     for gpu in settings.GPU_LIST:
         item = gpu.dict() if hasattr(gpu, "dict") else dict(gpu)
-        intra, inter, pcie = CalculateRepository.load_systems_network_bandwidths(item.get("name"))
+        intra, inter, pcie, intra_latency, inter_latency = (
+            CalculateRepository.load_systems_network_bandwidths(item.get("name"), True))
         if intra is not None:
             item["bus_bandwidth"] = intra
         if inter is not None:
             item["network_bandwidth"] = inter
         if pcie is not None:
             item["pcie_bandwidth"] = pcie
+        if intra_latency is not None:
+            item["intra_latency"] = intra_latency
+        if inter_latency is not None:
+            item["inter_latency"] = inter_latency
         result.append(item)
     return result
 
@@ -164,6 +170,15 @@ def create_optimal(gpu: Gpu,
     cr = CalculateRepository()
     res = cr.optimal(gpu, network, model, optimal_config)
     return res
+
+
+@router.post("/hardware-design/optimal")
+def create_hardware_design_optimal(
+        gpu: Gpu, network: Network, model: Model,
+        hardware_design_config: HardwareDesignConfig):
+    cr = CalculateRepository()
+    return cr.hardware_design_optimal(
+        gpu, network, model, hardware_design_config)
 
 
 @router.post("/download")

@@ -8,6 +8,7 @@ import GpuSelection from './gpus';
 import ModelSelection from './models';
 import OtherSetting from './others';
 import Optimal from './optimal';
+import Superpod from './superpod';
 import GlobalSetting from './globals';
 import FileSaver from 'file-saver';
 import CustomSteps from './../custom-steps';
@@ -15,6 +16,7 @@ import BenchmarkSteps from './../benchmark-steps';
 import {
   calculate,
   optimal,
+  hardwareDesignOptimal,
   getRecommendedTenser,
   getRecommendedPipeline,
   getRecommendedMicrobatch,
@@ -92,6 +94,28 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
   };
 
   // && otherConfig.per_host_network_bandwidth
+  const isValidRange = (prefix: string) => {
+    const start = Number(otherConfig[`${prefix}_start`]);
+    const stop = Number(otherConfig[`${prefix}_stop`]);
+    const step = Number(otherConfig[`${prefix}_step`]);
+    return Number.isFinite(start) && Number.isFinite(stop) &&
+      Number.isFinite(step) && stop >= start && step > 0;
+  };
+
+  const buildRange = (prefix: string) => {
+    const start = Number(otherConfig[`${prefix}_start`]);
+    const stop = Number(otherConfig[`${prefix}_stop`]);
+    const step = Number(otherConfig[`${prefix}_step`]);
+    const count = Math.min(1000, Math.floor((stop - start) / step + 1e-9) + 1);
+    const values = Array.from({ length: count }, (_, index) =>
+      Number((start + index * step).toPrecision(12)));
+    const tolerance = Math.max(1, Math.abs(stop)) * 1e-9;
+    if (!values.length || Math.abs(values[values.length - 1] - stop) > tolerance) {
+      values.push(stop);
+    }
+    return Array.from(new Set(values));
+  };
+
   const validateInput = () => {
     if (state.active == 'gpu') {
       return curGpu && curNetwork && curGpu?.num_procs ? true : false;
@@ -118,6 +142,21 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         otherConfig.max_batch_size &&
         otherConfig.matrix_dtype &&
         otherConfig.vector_dtype
+      ) {
+        return true;
+      } else if (
+        curMode === 'superpod' &&
+        otherConfig &&
+        otherConfig.max_global_batch_size &&
+        otherConfig.max_scale_up_size &&
+        otherConfig.max_scale_up_size <= curGpu.num_procs &&
+        isValidRange('intra_bandwidth') &&
+        isValidRange('inter_bandwidth') &&
+        isValidRange('intra_latency') &&
+        isValidRange('inter_latency') &&
+        otherConfig.matrix_dtype &&
+        otherConfig.vector_dtype &&
+        (!otherConfig.objectives?.includes('time_to_train') || otherConfig.training_samples)
       ) {
         return true;
       }
@@ -207,14 +246,36 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
         vector_dtype: otherConfig['vector_dtype'],
       };
       calcRes = await calculate(params);
-    } else {
+    } else if (curMode === 'optimal') {
       params['optimal_config'] = {
         num_procs: curGpu['num_procs'],
         max_batch_size: otherConfig['max_batch_size'],
+        global_batch_size: otherConfig['max_batch_size'],
         matrix_dtype: otherConfig['matrix_dtype'],
         vector_dtype: otherConfig['vector_dtype'],
       };
       calcRes = await optimal(params);
+    } else if (curMode === 'superpod') {
+      params['hardware_design_config'] = {
+        num_procs: curGpu['num_procs'],
+        max_global_batch_size: otherConfig['max_global_batch_size'],
+        objective: otherConfig['objectives']?.[0] || 'throughput',
+        objectives: otherConfig['objectives']?.length ? otherConfig['objectives'] : ['throughput'],
+        training_samples: otherConfig['training_samples'],
+        matrix_dtype: otherConfig['matrix_dtype'],
+        vector_dtype: otherConfig['vector_dtype'],
+        max_scale_up_size: otherConfig['max_scale_up_size'],
+        intra_bandwidths: buildRange('intra_bandwidth'),
+        inter_pod_bandwidths: buildRange('inter_bandwidth'),
+        intra_latencies: buildRange('intra_latency'),
+        inter_latencies: buildRange('inter_latency'),
+        hardware_sampling: 'balanced',
+        network_topologies: [curNetwork['network_topology']],
+        placement_policies: otherConfig['placement_policies'],
+        max_candidates: otherConfig['max_candidates'],
+        hardware_top_n: otherConfig['hardware_top_n'],
+      };
+      calcRes = await hardwareDesignOptimal(params);
     }
 
     setProject({
@@ -222,7 +283,7 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
       result: calcRes,
     });
     pushHistory(
-      'guide',
+      curMode,
       { ...calcRes, other_config: otherConfig },
       genHistoryTitle(),
       {
@@ -507,6 +568,7 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
           {state.active === 'model' && <ModelSelection />}
           {state.active === 'others' && curMode === 'guide' && <OtherSetting />}
           {state.active === 'others' && curMode === 'optimal' && <Optimal />}
+          {state.active === 'others' && curMode === 'superpod' && <Superpod />}
           {/* {state.active === 'global' && <GlobalSetting />} */}
         </div>
         <div className={styles.area_btn}>

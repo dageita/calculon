@@ -6,7 +6,8 @@ from tempfile import NamedTemporaryFile
 import openpyxl
 from app.config import settings
 from app.logging_config import native_output_guard
-from app.models.calculator_input import Gpu, Model, Network, TrainningConfig, OptimalConfig
+from app.models.calculator_input import (Gpu, Model, Network, TrainningConfig,
+                                         OptimalConfig, HardwareDesignConfig)
 from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import MemoryUsage, Computation, Communication, Timeline, TotalTime, CalculatorResult, \
     Parameter, RecommendedConfig
@@ -17,7 +18,8 @@ import os
 
 from calculon.llm.runner import Runner
 from calculon.llm.llm import Llm
-from calculon.llm.optimal_execution import OptimalExecution
+from calculon.llm.design_search import (ConstrainedSearch,
+                                        build_candidate_system, run_hardware_design)
 from calculon import System
 
 # Offline / hybrid profiler path temporarily disabled — timing uses systems/
@@ -54,17 +56,19 @@ class CalculateRepository:
         return next((p for p in candidates if p and os.path.exists(p)), None)
 
     @classmethod
-    def load_systems_network_bandwidths(cls, gpu_name: str):
-        """Read intra/inter/PCIe bandwidth (GB/s) from systems JSON.
+    def load_systems_network_bandwidths(cls, gpu_name: str, include_latencies=False):
+        """Read network defaults from systems JSON.
 
-        Returns (intra, inter, pcie) where:
+        Returns (intra, inter, pcie), or additionally intra/inter latency when
+        ``include_latencies`` is true, where:
           intra = networks[0].bandwidth (NVLink / scale-up)
-          inter = networks[1].bandwidth (NIC / scale-out)
+          inter = networks[1].bandwidth (per-GPU NIC / scale-out injection BW)
           pcie  = mem2.GBps (PCIe / host offload path)
         """
         path = cls.systems_json_path(gpu_name)
         if not path:
-            return None, None, None
+            empty = (None, None, None, None, None)
+            return empty if include_latencies else empty[:3]
         with open(path, "r") as f:
             sys_json = json.load(f)
         nets = sys_json.get("networks") or []
@@ -72,7 +76,10 @@ class CalculateRepository:
         inter = nets[1].get("bandwidth") if len(nets) > 1 else None
         mem2 = sys_json.get("mem2") or {}
         pcie = mem2.get("GBps")
-        return intra, inter, pcie
+        intra_latency = nets[0].get("latency") if len(nets) > 0 else None
+        inter_latency = nets[1].get("latency") if len(nets) > 1 else intra_latency
+        values = (intra, inter, pcie, intra_latency, inter_latency)
+        return values if include_latencies else values[:3]
 
     def parameter_metrics(self, model: Model):
         params = Parameter()
@@ -201,12 +208,20 @@ class CalculateRepository:
             "hidden": model_dict.get("hidden"),
             "feedforward": model_dict.get("feedforward"),
             "attn_heads": model_dict.get("attn_heads"),
+            "kv_heads": model_dict.get("kv_heads"),
             "attn_size": model_dict.get("attn_size"),
+            "rope_theta": model_dict.get("rope_theta"),
+            "rms_norm": model_dict.get("rms_norm"),
+            "qk_norm": model_dict.get("qk_norm"),
+            "ffn_type": model_dict.get("ffn_type"),
+            "untied_embeddings": model_dict.get("untied_embeddings"),
             "num_blocks": model_dict.get("num_blocks"),
             "vocab_size": model_dict.get("vocab_size"),
             # MoE 字段（None 时由 Application 回落为 dense 默认值）
             "num_experts": model_dict.get("num_experts"),
             "moe_topk": model_dict.get("moe_topk"),
+            "norm_topk_prob": model_dict.get("norm_topk_prob"),
+            "router_aux_loss_coef": model_dict.get("router_aux_loss_coef"),
             "num_shared_experts": model_dict.get("num_shared_experts"),
             "moe_feedforward": model_dict.get("moe_feedforward"),
             "first_k_dense": model_dict.get("first_k_dense"),
@@ -465,33 +480,108 @@ class CalculateRepository:
         #     self.logger.exception("Error in hybrid profiler: %s", e)
         #     return Runner.isinstance_run_command(self.logger, app, exe, syst)
 
-    def optimal(self, gpu: Gpu, network: Network, model: Model, optimal_config: OptimalConfig):
-        self.logger.info("Starting optimal...")
+    def _search_system(self, gpu_dict, network_dict, config):
+        """Load an immutable system template and derive fixed-hardware defaults."""
+        path = self.systems_json_path(gpu_dict.get("name"))
+        if not path:
+            raise Llm.Error(
+                f"System config file not found for GPU '{gpu_dict.get('name')}'.")
+        with open(path, "r") as handle:
+            base_json = json.load(handle)
+        networks = base_json.get("networks") or []
+        if not networks:
+            raise Llm.Error("system networks configuration is empty")
+        intra = gpu_dict.get("bus_bandwidth")
+        if intra is None:
+            intra = networks[0]["bandwidth"]
+        inter = gpu_dict.get("network_bandwidth")
+        if inter is None:
+            inter = network_dict.get("network_bandwidth")
+        if inter is None:
+            inter = networks[1]["bandwidth"] if len(networks) > 1 else intra
+        topology = (network_dict.get("network_topology")
+                    or networks[min(1, len(networks) - 1)].get("topology")
+                    or "One big switch")
+        explicit_scale_up = (getattr(config, "scale_up_size", None)
+                             or network_dict.get("scale_up_size"))
+        if explicit_scale_up:
+            scale_up_size = int(explicit_scale_up)
+        elif "single machine" in topology.lower():
+            scale_up_size = int(config.num_procs)
+        else:
+            scale_up_size = int(networks[0].get("size") or 1)
+        defaults = {
+            "num_procs": int(config.num_procs),
+            "scale_up_size": scale_up_size,
+            "intra_bandwidth": float(intra),
+            "inter_bandwidth": float(inter),
+            "intra_efficiency": float(networks[0].get("efficiency") or 1.0),
+            "inter_efficiency": float((networks[1] if len(networks) > 1 else networks[0]).get("efficiency") or 1.0),
+            "intra_latency": float(
+                network_dict.get("intra_latency")
+                if network_dict.get("intra_latency") is not None
+                else networks[0].get("latency") or 0.0),
+            "inter_latency": float(
+                network_dict.get("inter_latency")
+                if network_dict.get("inter_latency") is not None
+                else (networks[1].get("latency") if len(networks) > 1
+                      else networks[0].get("latency") or 0.0)),
+            "network_topology": topology,
+        }
+        return base_json, defaults
 
+    def optimal(self, gpu: Gpu, network: Network, model: Model,
+                optimal_config: OptimalConfig):
+        """Find the best legal 5D strategy on one fixed hardware design."""
+        self.logger.info("Starting constrained 5D optimal search...")
         gpu_dict = gpu.dict()
         network_dict = network.dict()
-        model_dict = model.dict()
-        optimal_config_dict = optimal_config.dict()
         try:
-            app = self.build_app(model_dict)
-            syst = self.build_syst(gpu_dict, network_dict)
-            if isinstance(syst, dict) and syst.get("status") == "error":
-                return syst
+            if optimal_config.num_procs is None:
+                optimal_config = optimal_config.model_copy(
+                    update={"num_procs": gpu_dict.get("num_procs")})
+            app = self.build_app(model.dict())
+            base_json, hardware = self._search_system(
+                gpu_dict, network_dict, optimal_config)
+
+            def factory(placement):
+                return build_candidate_system(
+                    base_json, hardware, placement, self.logger)
+
             with native_output_guard():
-                result = OptimalExecution.isinstance_run_command(self.logger, app, syst, optimal_config)
-            if isinstance(result, dict) and result.get("status") == "error":
-                self.logger.error("Optimal rejected: %s", result.get("error"))
-                return {
-                    "status": "error",
-                    "error": result.get("error") or "Unknown optimal error",
-                }
-        except Llm.Error as e:
-            self.logger.error("Optimal rejected: %s", e)
-            return {"status": "error", "error": str(e)}
-        except Exception as e:
-            self.logger.exception("Optimal internal error: %s", e)
-            return {"status": "error", "error": f"Internal error: {str(e)}"}
-        return result
+                return ConstrainedSearch.run(
+                    self.logger, app, optimal_config, hardware, factory)
+        except Llm.Error as exc:
+            self.logger.error("Optimal rejected: %s", exc)
+            return {"status": "error", "error": str(exc)}
+        except Exception as exc:
+            self.logger.exception("Optimal internal error: %s", exc)
+            return {"status": "error", "error": f"Internal error: {str(exc)}"}
+
+    def hardware_design_optimal(self, gpu: Gpu, network: Network, model: Model,
+                                config: HardwareDesignConfig):
+        """Jointly search superpod hardware points and legal software strategies."""
+        self.logger.info("Starting superpod hardware/software co-design search...")
+        gpu_dict = gpu.dict()
+        network_dict = network.dict()
+        try:
+            if config.num_procs is None:
+                config = config.model_copy(
+                    update={"num_procs": gpu_dict.get("num_procs")})
+            app = self.build_app(model.dict())
+            base_json, defaults = self._search_system(
+                gpu_dict, network_dict, config)
+            with native_output_guard():
+                return run_hardware_design(
+                    self.logger, app, base_json, config, defaults,
+                    gpu_name=gpu_dict.get("name"))
+        except Llm.Error as exc:
+            self.logger.error("Hardware design rejected: %s", exc)
+            return {"status": "error", "error": str(exc)}
+        except Exception as exc:
+            self.logger.exception("Hardware design internal error: %s", exc)
+            return {"status": "error", "error": f"Internal error: {str(exc)}"}
+
 
     def read_file_to_timeline(self, content):
         # 打开Excel文件
