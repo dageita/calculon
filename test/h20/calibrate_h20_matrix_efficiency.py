@@ -171,10 +171,16 @@ def _estimate_bytes(m: int, n: int, k: int, dtype: str) -> int:
     return m * k * bpe + n * k * bpe + m * n * out_bpe
 
 
-def _gemm_fp8(a, b_nk, scale_a, scale_b, out_pair=None):
+def _gemm_fp8(a, b_nk, scale_a, scale_b, out=None):
+    """Run FP8 GEMM across PyTorch scaled_mm API generations.
+
+    PyTorch 2.7/cu128 returns one Tensor and its out variant accepts one Tensor;
+    older builds returned (output, amax).  Passing an output tuple to 2.7 raises
+    TypeError, so only retain tuple handling for the return value.
+    """
     kwargs = dict(scale_a=scale_a, scale_b=scale_b, out_dtype=torch.bfloat16)
-    if out_pair is not None:
-        kwargs['out'] = out_pair
+    if out is not None:
+        kwargs['out'] = out
     result = torch._scaled_mm(a, b_nk.t(), **kwargs)
     return result[0] if isinstance(result, tuple) else result
 
@@ -193,13 +199,11 @@ def _setup_gemm(m: int, n: int, k: int, dtype: str, device: torch.device):
         scale_a = torch.tensor(1.0, device=device, dtype=torch.float32)
         scale_b = torch.tensor(1.0, device=device, dtype=torch.float32)
         out_c = torch.empty(m, n, device=device, dtype=compute)
-        out_aux = torch.empty((), device=device, dtype=torch.float32)
-        out_pair = (out_c, out_aux)
 
         def run():
-            return _gemm_fp8(a, b, scale_a, scale_b, out_pair=out_pair)
+            return _gemm_fp8(a, b, scale_a, scale_b, out=out_c)
 
-        return run, [a, b, scale_a, scale_b, out_c, out_aux]
+        return run, [a, b, scale_a, scale_b, out_c]
 
     # H20 / cuBLAS: native bfloat16 GEMM hits SIGFPE on some shapes
     # (repro: m=768,n=512,k=7168). FP16 Tensor Core has the same nominal peak
@@ -360,11 +364,14 @@ def update_json(
         'gflops_efficiency': curve,
     }
     if launch_s is not None and launch_s > 0:
+        # Preserve one launch floor per matrix dtype.  matrix_launch_s remains
+        # a backwards-compatible fallback for older system consumers.
+        cfg.setdefault('matrix_launch_s_by_dtype', {})[dtype] = launch_s
         cfg['matrix_launch_s'] = launch_s
     write_system_json(path, cfg)
     msg = f'\nUpdated matrix.{dtype} in {path}'
     if launch_s is not None and launch_s > 0:
-        msg += f'  (matrix_launch_s={launch_s*1e6:.2f} us)'
+        msg += f'  (matrix_launch_s_by_dtype.{dtype}={launch_s*1e6:.2f} us)'
     print(msg)
 
 

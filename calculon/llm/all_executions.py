@@ -67,13 +67,19 @@ class AllExecutions(calculon.CommandLine):
   def execution_fields():
     return (
       'num_procs', 'tensor_par', 'pipeline_par', 'data_par', 'tensor_par_net',
-      'pipeline_par_net', 'data_par_net', 'expert_par', 'context_par',
+      'pipeline_par_net', 'data_par_net', 'expert_par', 'expert_tensor_par',
+      'expert_data_par', 'context_par',
       'expert_par_net', 'context_par_net', 'batch_size', 'microbatch_size',
       'datatype', 'matrix_dtype', 'vector_dtype', 'fused_activation',
       'attention_type', 'activation_recompute',
       'pipeline_interleaving', 'optimizer_sharding', 'tensor_par_comm_type',
       'tensor_par_overlap', 'seq_par_ag_redo', 'data_par_overlap',
-      'weight_offload', 'activations_offload', 'optimizer_offload', 'training')
+      'weight_offload', 'activations_offload', 'optimizer_offload', 'training',
+      'use_precision_aware_optimizer', 'main_grads_dtype',
+      'main_params_dtype', 'exp_avg_dtype', 'exp_avg_sq_dtype',
+      'grad_reduce_in_bf16', 'optimizer_offload_fraction',
+      'use_torch_optimizer_for_cpu_offload',
+      'overlap_cpu_optimizer_d2h_h2d', 'pin_cpu_grads', 'pin_cpu_params')
 
   @staticmethod
   def get_batch_size(data_par, max_batch_size):
@@ -123,15 +129,20 @@ class AllExecutions(calculon.CommandLine):
                                   for pn in pick(pp>1, range(num_nets), [0]):
                                     for dn in pick(dp>1, range(num_nets), [0]):
                                       yield (num_procs, tp, pp, dp, tn, pn, dn,
-                                             1, 1, 0, 0,
+                                             1, tp, dp, 1, 0, 0,
                                              batch_size, microbatch_size, datatype,
                                              datatype, datatype,
                                              fused_act, 'multihead', activation_recompute,
-                                             ppint, optimizer_sharding, tensor_par_comm_type,
+                                             ppint,
+                                             optimizer_sharding or optimizer_offload,
+                                             tensor_par_comm_type,
                                              tensor_par_overlap, seq_par_ag_redo,
                                              data_par_overlap, weight_offload,
                                              activations_offload, optimizer_offload,
-                                             True)
+                                             True,
+                                             optimizer_offload,
+                                             'fp32', 'fp32', 'fp32', 'fp32',
+                                             False, 1.0, False, False, True, True)
                                       count += 1
 
   @staticmethod

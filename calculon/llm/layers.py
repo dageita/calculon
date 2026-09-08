@@ -46,6 +46,12 @@ class Layer:
     self.weight_grads = weight_grads
     self.optim_space = optim_space
     self.optim_sharding_num_proc = 1
+    # Megatron optimizer buffer dtypes. Defaults reproduce the classic
+    # mixed-precision Adam layout; Execution overrides these uniformly.
+    self.optimizer_grad_bytes = 4
+    self.optimizer_main_param_bytes = 4
+    self.optimizer_exp_avg_bytes = 4
+    self.optimizer_exp_avg_sq_bytes = 4
 
     # Add optimizations and parallelization split
     self.needs_recompute = needs_recompute
@@ -149,9 +155,22 @@ class Layer:
   def set_bytes_per_element(self, bytes_per_element):
     self.bytes_per_element = bytes_per_element
 
-  # Shard (distribute) optimizer and weight grads between data parallel nodes
+  # Shard (distribute) optimizer and weight grads between data parallel nodes.
+  # A fractional effective factor is valid for a layer combining shared and
+  # routed-expert weights that use different Megatron DP groups.
   def shard_optimizer(self, num_procs):
+    if num_procs <= 0:
+      raise ValueError('optimizer sharding factor must be positive')
     self.optim_sharding_num_proc = num_procs
+
+  def configure_optimizer(self, main_grads_dtype='fp32',
+                          main_params_dtype='fp32',
+                          exp_avg_dtype='fp32', exp_avg_sq_dtype='fp32'):
+    sizes = {'fp8': 1, 'fp16': 2, 'bf16': 2, 'fp32': 4}
+    self.optimizer_grad_bytes = sizes[main_grads_dtype]
+    self.optimizer_main_param_bytes = sizes[main_params_dtype]
+    self.optimizer_exp_avg_bytes = sizes[exp_avg_dtype]
+    self.optimizer_exp_avg_sq_bytes = sizes[exp_avg_sq_dtype]
 
   # getters that will be called from Llm model class, can be rewritten
   def get_fw_flops(self):
@@ -236,7 +255,20 @@ class Layer:
     return optim_flops
 
   def get_optim_step_mem_accessed(self):
-    return self.get_optimizer()
+    """Memory traffic for one Adam update using configured state dtypes."""
+    params = self.weight_grads / self.optim_sharding_num_proc
+    if params <= 0:
+      return 0
+    gradient_read = self.optimizer_grad_bytes * params
+    main_param_read_write = 2 * self.optimizer_main_param_bytes * params
+    moments_read_write = 2 * (
+      self.optimizer_exp_avg_bytes + self.optimizer_exp_avg_sq_bytes) * params
+    # Megatron writes the model-precision copy after updating separate main
+    # parameters. When both views have the same representation no copy is needed.
+    model_copy_write = (
+      self.bytes_per_element * params if self.bytes_per_element < 4 else 0)
+    return (gradient_read + main_param_read_write +
+            moments_read_write + model_copy_write)
 
   def get_optim_step_arithmetic_intensity(self):
     if self.get_optim_step_flops() == 0:
@@ -255,28 +287,25 @@ class Layer:
     return self.output_size * self.bytes_per_element
 
   def get_weight_grad(self, sharded=True):
-    # Keep lower precision copy of grads for mem and net transfers
     grads = self.weight_grads
     if sharded:
-      # We keep grads in lower precision for communication
-      grads *= self.bytes_per_element
+      grads *= self.optimizer_grad_bytes
       grads /= self.optim_sharding_num_proc
     else:
-      # otherwise keep grads in 32 bit for accumulation
-      grads *= 4
+      # Before reduce-scatter, Megatron retains one unsharded gradient buffer.
+      grads *= self.optimizer_grad_bytes
     return grads
 
   def get_activation_grad(self):
     return self.activation_grads * self.bytes_per_element
 
   def get_optimizer(self):
-    # Keep 32-bits master copy of weights, plus both moments (m,v)
-    # master copy for grads is accounted for in get_weight_grad()
-    moments_size = self.optim_space * 4
-    if self.bytes_per_element < 4:
-      master_copy_size = self.weight_space * 4
-    else:
-      master_copy_size = 0
+    # Gradient residency is accounted for in get_weight_grad().
+    moments_size = self.weight_space * (
+      self.optimizer_exp_avg_bytes + self.optimizer_exp_avg_sq_bytes)
+    master_copy_size = (
+      self.weight_space * self.optimizer_main_param_bytes
+      if self.bytes_per_element < 4 else 0)
     return (master_copy_size + moments_size) / self.optim_sharding_num_proc
 
   def set_processing_time(self, processing_time):
@@ -315,7 +344,13 @@ class Layer:
       launch = getattr(self.sys, 'matrix_launch_s', 0.0) or 0.0
       return max(t, launch)
     else:
-      throughput = self.sys.get_vector_throughput(flops)
+      # Adam is an FP32 vector update in Megatron, independent of the model
+      # forward/backward precision.  Other vector operations retain the active
+      # vector dtype.
+      if stage == 'optim':
+        throughput = self.sys.get_optimizer_throughput(flops)
+      else:
+        throughput = self.sys.get_vector_throughput(flops)
       t = flops / throughput if throughput > 0 else 0
       launch = getattr(self.sys, 'vector_launch_s', 0.0) or 0.0
       return max(t, launch)
@@ -345,6 +380,28 @@ class Layer:
 
   def get_required_bandwidth(self, stage, baseblock=True):
     return 0
+
+  def get_framework_events(self, stage):
+    """Logical runtime events emitted by this operation in one execution stage.
+
+    Subclasses override this only when one logical operation intentionally emits
+    multiple CUDA kernels (for example unfused vocabulary cross entropy).
+    """
+    if stage == 'optim':
+      return {'kernels': 0, 'autograd_nodes': 0}
+    if stage not in ('fw', 'agrad', 'wgrad'):
+      return {'kernels': 0, 'autograd_nodes': 0}
+    has_device_work = ((self.get_fw_flops() if stage == 'fw' else
+                        self.get_agrad_flops() if stage == 'agrad' else
+                        self.get_wgrad_flops()) > 0 or
+                       (self.get_fw_mem_accessed() if stage == 'fw' else
+                        self.get_agrad_mem_accessed() if stage == 'agrad' else
+                        self.get_wgrad_mem_accessed()) > 0)
+    has_collective = self.get_comm_bytes(stage) > 0
+    events = int(has_device_work) + int(has_collective)
+    return self.sys.get_framework_operator_events(
+      ('GroupedMoELinear' if self.__class__.__name__ == 'Linear' and getattr(self, 'weight_multiplier', 1.0) != 1.0 else self.__class__.__name__), stage,
+      {'kernels': events, 'autograd_nodes': int(has_device_work)})
 
   def compute_processing_time(self, stage):
     self.processing_time =  self.sys.get_processing_time(
@@ -901,6 +958,18 @@ class SiLU(GeLU):
 
 
 # https://automata88.medium.com/how-to-implement-the-softmax-derivative-independently-from-any-loss-function-ae6d44363a9d
+class ReLU(GeLU):
+  """Unfused ReLU for Gopher/Chinchilla-style FFNs."""
+  FW_FLOPS_PER_ACT = 1
+  AGRAD_FLOPS_PER_ACT = 1
+
+
+class RouterSqrtSoftplus(GeLU):
+  """DeepSeek-V4 router score transform: sqrt(softplus(x))."""
+  FW_FLOPS_PER_ACT = 6
+  AGRAD_FLOPS_PER_ACT = 9
+
+
 class SoftMax(Layer):
   def __init__(self, name, sys, act_size,
                needs_recompute=False, activation_reused=False,

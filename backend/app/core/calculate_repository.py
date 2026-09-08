@@ -48,7 +48,10 @@ class CalculateRepository:
         """Resolve systems/<gpu>.json under the Calculon project root."""
         repo_file = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.abspath(os.path.join(repo_file, "../../.."))
+        configured_systems_dir = os.environ.get("CALCULON_SYSTEMS_DIR")
         candidates = [
+            (os.path.join(configured_systems_dir, f"{gpu_name}.json")
+             if configured_systems_dir else None),
             os.path.join(project_root, "systems", f"{gpu_name}.json"),
             os.path.join(project_root, "systems", f"{(gpu_name or '').lower()}.json"),
             os.path.join(project_root, "calculon", "systems", f"{gpu_name}.json"),
@@ -82,34 +85,64 @@ class CalculateRepository:
         return values if include_latencies else values[:3]
 
     def parameter_metrics(self, model: Model):
+        """Return an architecture-aware parameter breakdown.
+
+        The previous implementation used removed frontend field names and the
+        GPT-only ``4*h*h``/``8*h*h`` approximation.  Delegate the total to the
+        same ``Llm.Application`` used by simulation so GQA/MLA, gated FFNs,
+        MoE/shared experts, tied embeddings and position encodings cannot drift.
+        """
+        model_dict = self.model_to_dict(model)
+        app = self.build_app(model_dict)
         params = Parameter()
-        params.word_embedding = model.hidden_layer_size * model.vocab_size
-        params.self_attention = 4 * model.hidden_layer_size * model.hidden_layer_size
-        params.feed_forward = 8 * model.hidden_layer_size * model.hidden_layer_size + 5 * model.hidden_layer_size
-        params.position_embedding = model.hidden_layer_size * model.token_length
-        params.total_parameters = params.word_embedding + params.position_embedding + (
-                params.self_attention + params.feed_forward) * model.num_layers
+
+        embedding_copies = 2 if app.untied_embeddings else 1
+        params.word_embedding = app.vocab_size * app.hidden * embedding_copies
+        params.position_embedding = (
+            app.max_position_embeddings * app.hidden
+            if app.position_embedding_type == "learned_absolute" else 0)
+
+        attention_per_block = app._attn_weight_params()
+        if app.attention_bias:
+            attention_per_block += (
+                (app.attn_heads + 2 * app.kv_heads) * app.attn_size + app.hidden)
+        norm_per_block = ((1 if app.parallel_block else 2) *
+                          (app.hidden if app.rms_norm else 2 * app.hidden))
+        final_norm = app.hidden if app.rms_norm else 2 * app.hidden
+        params.self_attention = (
+            app.num_blocks * (attention_per_block + norm_per_block) + final_norm)
+
+        params.total_parameters = int(app.num_parameters())
+        params.feed_forward = int(
+            params.total_parameters - params.word_embedding -
+            params.position_embedding - params.self_attention)
         return params
 
     def recommended_tensor(self, cluster: Gpu, model: Model):
-        return min(8, max(1, math.floor(
-            3 * model.hidden_layer_size / cluster.fp32_processing_power * cluster.bus_bandwidth / 2 / 1000)))
+        compute = (cluster.sparse_tensor_fp32_processing_power or
+                   cluster.sparse_tensor_fp16_processing_power or 1.0)
+        bandwidth = cluster.bus_bandwidth or 1.0
+        candidate = min(8, max(1, math.floor(
+            3 * model.hidden / compute * bandwidth / 2 / 1000)))
+        # Return a degree that divides both Q heads and hidden width.
+        while candidate > 1 and (
+                model.hidden % candidate or model.attn_heads % candidate):
+            candidate -= 1
+        return candidate
 
-    def recommended_pipeline(self, cluster: Gpu, model: Model, optimization_strategy, tensor_parallel_degree):
+    def recommended_pipeline(self, cluster: Gpu, model: Model,
+                             optimization_strategy, tensor_parallel_degree):
         params = self.parameter_metrics(model)
-        if optimization_strategy == OptimizationStrategyType.FULL_RECOMPUTATION.value:
-            return math.ceil((16 * params.total_parameters / tensor_parallel_degree) / (
-                    cluster.memory * 1e9 - model.num_layers * model.token_length * model.minibatch_size * model.hidden_layer_size * 2 / tensor_parallel_degree))
-        elif optimization_strategy == OptimizationStrategyType.NO_RECOMPUTATION.value:
-            return math.ceil((16 * params.total_parameters / tensor_parallel_degree) / (
-                    cluster.memory * 1e9 - model.num_layers * model.token_length * model.minibatch_size * model.hidden_layer_size * (
-                    10 + 24 / tensor_parallel_degree + 5 * model.num_attention_heads * model.token_length / model.hidden_layer_size) / tensor_parallel_degree))
-        elif optimization_strategy == OptimizationStrategyType.SELECTIVE_RECOMPUTATION.value:
-            return math.ceil((16 * params.total_parameters / tensor_parallel_degree) / (
-                    cluster.memory * 1e9 - model.num_layers * model.token_length * model.minibatch_size * model.hidden_layer_size * 34 / tensor_parallel_degree))
+        # Training-state estimate: weights, grads, master weights and Adam state.
+        state_bytes = 16 * params.total_parameters / tensor_parallel_degree
+        capacity = max(1.0, (cluster.memory or 1) * 1e9)
+        stages = max(1, math.ceil(state_bytes / capacity))
+        return min(model.num_blocks, stages)
 
     def recommended_microbatch(self, model: Model, pipeline_parallel_degree):
-        return max(1, math.floor(model.minibatch_size / 4 / pipeline_parallel_degree))
+        # The endpoint has no global-batch or memory input; one is the only safe
+        # architecture-independent recommendation. Search/calculate APIs refine it.
+        return 1
 
     '''
     def calculate(self, cluster: Gpu, model: Model, other_config: OtherConfig, input_config: InputConfig):
@@ -201,39 +234,15 @@ class CalculateRepository:
 
         return calculator_result
         '''
+    @staticmethod
+    def model_to_dict(model: Model):
+        return (model.model_dump(exclude_none=True)
+                if hasattr(model, "model_dump")
+                else model.dict(exclude_none=True))
+
     def build_app(self, model_dict):
-        app_json = {
-            "name": model_dict.get("name"),
-            "seq_size": model_dict.get("seq_size"),
-            "hidden": model_dict.get("hidden"),
-            "feedforward": model_dict.get("feedforward"),
-            "attn_heads": model_dict.get("attn_heads"),
-            "kv_heads": model_dict.get("kv_heads"),
-            "attn_size": model_dict.get("attn_size"),
-            "rope_theta": model_dict.get("rope_theta"),
-            "rms_norm": model_dict.get("rms_norm"),
-            "qk_norm": model_dict.get("qk_norm"),
-            "ffn_type": model_dict.get("ffn_type"),
-            "untied_embeddings": model_dict.get("untied_embeddings"),
-            "num_blocks": model_dict.get("num_blocks"),
-            "vocab_size": model_dict.get("vocab_size"),
-            # MoE 字段（None 时由 Application 回落为 dense 默认值）
-            "num_experts": model_dict.get("num_experts"),
-            "moe_topk": model_dict.get("moe_topk"),
-            "norm_topk_prob": model_dict.get("norm_topk_prob"),
-            "router_aux_loss_coef": model_dict.get("router_aux_loss_coef"),
-            "num_shared_experts": model_dict.get("num_shared_experts"),
-            "moe_feedforward": model_dict.get("moe_feedforward"),
-            "first_k_dense": model_dict.get("first_k_dense"),
-            "moe_layer_freq": model_dict.get("moe_layer_freq"),
-            "kv_size": model_dict.get("kv_size"),
-            "q_lora_rank": model_dict.get("q_lora_rank"),
-            "kv_lora_rank": model_dict.get("kv_lora_rank"),
-            "qk_nope_head_dim": model_dict.get("qk_nope_head_dim"),
-            "qk_rope_head_dim": model_dict.get("qk_rope_head_dim"),
-            "v_head_dim": model_dict.get("v_head_dim"),
-        }
-        return Llm.Application(app_json)
+        # Preserve every architecture field; Llm.Application owns validation/defaults.
+        return Llm.Application(dict(model_dict))
 
     def build_exe(self, gpu_dict, trainning_config_dict, model_dict=None, network_dict=None):
         strategy_map = {
@@ -256,19 +265,33 @@ class CalculateRepository:
 
         data_par = trainning_config_dict.get("data_par") or 1
         expert_par = trainning_config_dict.get("expert_par") or 1
+        expert_tensor_par = (trainning_config_dict.get("expert_tensor_par") or
+                             trainning_config_dict.get("tensor_par") or 1)
+        expert_data_par = trainning_config_dict.get("expert_data_par") or 0
         # EP is a MoE-only dimension. Do not silently drop it in the flow
         # simulator, which would make Summary report more GPUs than timeline.
-        if expert_par > 1 and not (model_dict or {}).get("num_experts"):
-            raise Llm.Error(
-                "expert_par must be 1 for a dense model; use data_par to scale "
-                "across replicas (and make global batch size divisible by data_par)")
-        # Optimizer sharding (ZeRO-1) only when DP > 1.
-        optimizer_sharding = bool(trainning_config_dict.get("optimizer_sharding"))
-        if data_par <= 1:
-            optimizer_sharding = False
+        if not (model_dict or {}).get("num_experts"):
+            if expert_par > 1:
+                raise Llm.Error(
+                    "EP must be 1 for a dense model; use data_par to scale "
+                    "across replicas")
+            # Expert coordinates are internal/inert for dense models, but the
+            # dual generator still has to cover the same physical ranks.
+            expert_tensor_par = trainning_config_dict.get("tensor_par") or 1
+            expert_data_par = 0
+        # Megatron permits distributed optimizer at DP=1. Although it gives no
+        # memory reduction, it is the required execution path for the
+        # precision-aware optimizer and optimizer CPU offload.
+        optimizer_sharding = bool(
+            trainning_config_dict.get("optimizer_sharding", False)
+        )
 
-        # Auto-select MLA when model carries LoRA ranks (DeepSeek-V3 etc.).
-        attention_type = "mla" if model_dict and model_dict.get("q_lora_rank") else "multihead"
+        # KV-LoRA defines MLA. DeepSeek-V2-Lite has a direct Q projection
+        # (q_lora_rank=0) and must still use the MLA operator graph.
+        attention_type = (
+            "mla" if model_dict and model_dict.get("kv_lora_rank")
+            else "multihead"
+        )
 
         # Tier assignment: 0 = intra (NVLink), 1 = inter (NIC).
         # Single Machine → all collectives on tier 0. Inter BW comes from
@@ -304,6 +327,8 @@ class CalculateRepository:
             "pipeline_par": trainning_config_dict.get("pipeline_par"),
             "data_par": data_par,
             "expert_par": expert_par,
+            "expert_tensor_par": expert_tensor_par,
+            "expert_data_par": expert_data_par,
             "context_par": trainning_config_dict.get("context_par") or 1,
             "tensor_par_net": 0,
             "pipeline_par_net": inter_tier,
@@ -328,6 +353,7 @@ class CalculateRepository:
                 or trainning_config_dict.get("datatype")
             ),
             "fused_activation": True,
+            "attention_kernel": trainning_config_dict.get("attention_kernel", "flash"),
             "attention_type": attention_type,
             "activation_recompute": activation_recompute,
             "pipeline_interleaving": 1,
@@ -338,8 +364,49 @@ class CalculateRepository:
             "data_par_overlap": False,
             "weight_offload": False,
             "activations_offload": False,
-            "optimizer_offload": False,
-            "training": True
+            "optimizer_offload": bool(
+                trainning_config_dict.get("optimizer_offload", False)
+            ),
+            "training": True,
+            "use_precision_aware_optimizer": bool(
+                trainning_config_dict.get(
+                    "use_precision_aware_optimizer", False
+                )
+            ),
+            "main_grads_dtype": trainning_config_dict.get(
+                "main_grads_dtype", "fp32"
+            ),
+            "main_params_dtype": trainning_config_dict.get(
+                "main_params_dtype", "fp32"
+            ),
+            "exp_avg_dtype": trainning_config_dict.get(
+                "exp_avg_dtype", "fp32"
+            ),
+            "exp_avg_sq_dtype": trainning_config_dict.get(
+                "exp_avg_sq_dtype", "fp32"
+            ),
+            "grad_reduce_in_bf16": bool(
+                trainning_config_dict.get("grad_reduce_in_bf16", False)
+            ),
+            "optimizer_offload_fraction": float(
+                trainning_config_dict.get("optimizer_offload_fraction", 1.0)
+            ),
+            "use_torch_optimizer_for_cpu_offload": bool(
+                trainning_config_dict.get(
+                    "use_torch_optimizer_for_cpu_offload", False
+                )
+            ),
+            "overlap_cpu_optimizer_d2h_h2d": bool(
+                trainning_config_dict.get(
+                    "overlap_cpu_optimizer_d2h_h2d", False
+                )
+            ),
+            "pin_cpu_grads": bool(
+                trainning_config_dict.get("pin_cpu_grads", True)
+            ),
+            "pin_cpu_params": bool(
+                trainning_config_dict.get("pin_cpu_params", True)
+            ),
         }
         self.logger.debug("exe_json: %s", exe_json)
         return Llm.Execution.from_json(exe_json)
@@ -423,7 +490,7 @@ class CalculateRepository:
 
         gpu_dict = gpu.dict()
         network_dict = network.dict()
-        model_dict = model.dict()
+        model_dict = self.model_to_dict(model)
         trainning_config_dict = trainning_config.dict()
         try:
             app = self.build_app(model_dict)
@@ -540,7 +607,7 @@ class CalculateRepository:
             if optimal_config.num_procs is None:
                 optimal_config = optimal_config.model_copy(
                     update={"num_procs": gpu_dict.get("num_procs")})
-            app = self.build_app(model.dict())
+            app = self.build_app(self.model_to_dict(model))
             base_json, hardware = self._search_system(
                 gpu_dict, network_dict, optimal_config)
 
@@ -568,7 +635,7 @@ class CalculateRepository:
             if config.num_procs is None:
                 config = config.model_copy(
                     update={"num_procs": gpu_dict.get("num_procs")})
-            app = self.build_app(model.dict())
+            app = self.build_app(self.model_to_dict(model))
             base_json, defaults = self._search_system(
                 gpu_dict, network_dict, config)
             with native_output_guard():

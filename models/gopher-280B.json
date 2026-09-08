@@ -4,5 +4,19 @@
   "seq_size": 2048,
   "attn_heads": 128,
   "attn_size": 128,
-  "num_blocks": 80
+  "num_blocks": 80,
+  "model_family": "decoder",
+  "config_source": "https://arxiv.org/abs/2112.11446",
+  "max_position_embeddings": 2048,
+  "kv_heads": 128,
+  "vocab_size": 32000,
+  "position_embedding_type": "relative",
+  "rms_norm": true,
+  "ffn_type": "relu",
+  "untied_embeddings": false,
+  "attention_bias": false,
+  "mlp_bias": false,
+  "parallel_block": false,
+  "architecture_approximation": true,
+  "architecture_notes": "Paper architecture preset; relative-position implementation is modeled as a score-bias event."
 }

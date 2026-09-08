@@ -1,7 +1,7 @@
 {
   "hidden": 5120,
   "feedforward": 25600,
-  "seq_size": 40960,
+  "seq_size": 4096,
   "attn_heads": 64,
   "kv_heads": 8,
   "attn_size": 128,
@@ -11,5 +11,11 @@
   "ffn_type": "swiglu",
   "untied_embeddings": true,
   "num_blocks": 64,
-  "vocab_size": 151936
+  "vocab_size": 151936,
+  "model_family": "decoder",
+  "hf_model_id": "Qwen/Qwen3-32B",
+  "max_position_embeddings": 40960,
+  "position_embedding_type": "rope",
+  "attention_bias": false,
+  "mlp_bias": false
 }

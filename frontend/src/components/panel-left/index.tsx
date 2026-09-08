@@ -232,13 +232,32 @@ const PanelLeft: FC<IPanelLeftProps> = (props) => {
       params['trainning_config'] = {
         optimization_strategy: otherConfig['optimization_strategy'],
         activation_recompute: otherConfig['activation_recompute'],
-        optimizer_sharding:
-          Boolean(otherConfig['optimizer_sharding']) &&
-          (otherConfig['data_par'] || 0) > 1,
+        optimizer_sharding: Boolean(otherConfig['optimizer_sharding']),
+        use_precision_aware_optimizer: Boolean(
+          otherConfig['use_precision_aware_optimizer'],
+        ),
+        main_grads_dtype: otherConfig['main_grads_dtype'] || 'fp32',
+        main_params_dtype: otherConfig['main_params_dtype'] || 'fp32',
+        exp_avg_dtype: otherConfig['exp_avg_dtype'] || 'fp32',
+        exp_avg_sq_dtype: otherConfig['exp_avg_sq_dtype'] || 'fp32',
+        grad_reduce_in_bf16: Boolean(otherConfig['grad_reduce_in_bf16']),
+        optimizer_offload: Boolean(otherConfig['optimizer_offload']),
+        optimizer_offload_fraction:
+          otherConfig['optimizer_offload_fraction'] ?? 1.0,
+        use_torch_optimizer_for_cpu_offload: Boolean(
+          otherConfig['use_torch_optimizer_for_cpu_offload'],
+        ),
+        overlap_cpu_optimizer_d2h_h2d: Boolean(
+          otherConfig['overlap_cpu_optimizer_d2h_h2d'],
+        ),
+        pin_cpu_grads: otherConfig['pin_cpu_grads'] !== false,
+        pin_cpu_params: otherConfig['pin_cpu_params'] !== false,
         tensor_par: otherConfig['tensor_par'],
         pipeline_par: otherConfig['pipeline_par'],
         data_par: otherConfig['data_par'],
         expert_par: otherConfig['expert_par'] || 1,
+        expert_tensor_par: otherConfig['expert_tensor_par'] || 1,
+        expert_data_par: otherConfig['expert_data_par'] || 1,
         context_par: otherConfig['context_par'] || 1,
         batch_size: otherConfig['batch_size'],
         microbatch_size: otherConfig['microbatch_size'],

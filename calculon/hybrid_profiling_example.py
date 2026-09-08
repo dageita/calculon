@@ -146,6 +146,8 @@ def create_sample_model():
         pipeline_par_net=0,
         data_par_net=0,
         expert_par=1,
+        expert_tensor_par=1,
+        expert_data_par=1,
         context_par=1,
         expert_par_net=0,
         context_par_net=0,

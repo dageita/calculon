@@ -18,24 +18,8 @@ router = fastapi.APIRouter()
 
 @router.get("/gpu")
 def gpu_list():
-    """GPU catalog with intra/inter BW (GB/s) from systems/<name>.json when present."""
-    result = []
-    for gpu in settings.GPU_LIST:
-        item = gpu.dict() if hasattr(gpu, "dict") else dict(gpu)
-        intra, inter, pcie, intra_latency, inter_latency = (
-            CalculateRepository.load_systems_network_bandwidths(item.get("name"), True))
-        if intra is not None:
-            item["bus_bandwidth"] = intra
-        if inter is not None:
-            item["network_bandwidth"] = inter
-        if pcie is not None:
-            item["pcie_bandwidth"] = pcie
-        if intra_latency is not None:
-            item["intra_latency"] = intra_latency
-        if inter_latency is not None:
-            item["inter_latency"] = inter_latency
-        result.append(item)
-    return result
+    """GPU catalog parsed from calculon/systems/*.json at application startup."""
+    return settings.GPU_LIST
 
 @router.get("/network")
 def get_network():

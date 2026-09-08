@@ -49,3 +49,5 @@ nosetests.xml
 # Local test / calibration artifacts (entire directory)
 test/**/*.log
 test/*.log
+calibration/*/results/
+

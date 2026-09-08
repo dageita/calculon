@@ -17,6 +17,7 @@
 
 from calculon import *
 from .layers import *
+from .framework_scheduler import RuntimeEventDAG
 
 
 class Llm:
@@ -35,6 +36,10 @@ class Llm:
       self.hidden = cfg['hidden']
       self.feedforward = cfg['feedforward']
       self.seq_size = cfg['seq_size']
+      self.max_position_embeddings = cfg.get('max_position_embeddings') or self.seq_size
+      assert self.seq_size <= self.max_position_embeddings, (
+        f"seq_size={self.seq_size} exceeds max_position_embeddings="
+        f"{self.max_position_embeddings}")
       self.attn_heads = cfg['attn_heads']
       self.attn_size = cfg['attn_size']
       # GQA: defaults preserve existing MHA behavior.
@@ -44,6 +49,10 @@ class Llm:
       self.rope_theta = cfg.get('rope_theta')
       if self.rope_theta is not None:
         assert self.rope_theta > 0
+      self.position_embedding_type = cfg.get('position_embedding_type') or (
+        'rope' if self.rope_theta is not None else 'learned_absolute')
+      assert self.position_embedding_type in (
+        'learned_absolute', 'rope', 'relative', 'alibi', 'compressed', 'none')
       self.norm_topk_prob = bool(cfg.get('norm_topk_prob', False))
       self.router_aux_loss_coef = float(cfg.get('router_aux_loss_coef') or 0.0)
       assert self.router_aux_loss_coef >= 0.0
@@ -56,18 +65,32 @@ class Llm:
       self.moe_feedforward = cfg.get('moe_feedforward') or 0
       self.first_k_dense = cfg.get('first_k_dense') or 0
       self.moe_layer_freq = cfg.get('moe_layer_freq') or 1
+      self.moe_layer_offset = int(cfg.get('moe_layer_offset') or 0)
+      self.mlp_only_layers = frozenset(cfg.get('mlp_only_layers') or [])
+      self.router_score_func = cfg.get('router_score_func') or 'softmax'
+      self.router_topk_method = cfg.get('router_topk_method') or 'greedy'
+      self.router_n_groups = int(cfg.get('router_n_groups') or 1)
+      self.router_topk_groups = int(cfg.get('router_topk_groups') or self.router_n_groups)
+      self.routed_scaling_factor = float(cfg.get('routed_scaling_factor') or 1.0)
+      self.router_has_bias = bool(cfg.get('router_has_bias', False))
+      assert self.router_score_func in ('softmax', 'sigmoid', 'sqrtsoftplus')
+      assert self.router_topk_method in ('greedy', 'grouped', 'noaux_tc')
       # MLA fields (absent/zero => standard MHA/MQA).
       self.q_lora_rank = cfg.get('q_lora_rank') or 0
       self.kv_lora_rank = cfg.get('kv_lora_rank') or 0
       self.qk_nope_head_dim = cfg.get('qk_nope_head_dim') or self.attn_size
       self.qk_rope_head_dim = cfg.get('qk_rope_head_dim') or 0
       self.v_head_dim = cfg.get('v_head_dim') or self.attn_size
-      # Architecture switches for modern dense decoders such as Qwen3.
+      # Dense and MoE decoder architecture switches.
       self.ffn_type = cfg.get('ffn_type') or ('swiglu' if self.num_experts else 'gelu')
-      assert self.ffn_type in ('gelu', 'swiglu')
+      assert self.ffn_type in ('gelu', 'relu', 'swiglu', 'geglu')
       self.rms_norm = bool(cfg.get('rms_norm', self.num_experts > 0 or (self.q_lora_rank and self.kv_lora_rank)))
       self.qk_norm = bool(cfg.get('qk_norm', False))
       self.untied_embeddings = bool(cfg.get('untied_embeddings', self.num_experts > 0))
+      self.attention_bias = bool(cfg.get('attention_bias', self.ffn_type in ('gelu', 'relu')))
+      self.mlp_bias = bool(cfg.get('mlp_bias', self.ffn_type in ('gelu', 'relu')))
+      self.parallel_block = bool(cfg.get('parallel_block', False))
+      self.architecture_approximation = bool(cfg.get('architecture_approximation', False))
       # MLA attention impl: 'absorb' matches DeepSeek-V3/inference/model.py default;
       # 'naive' keeps decompressed K/V path.
       self.mla_attn_impl = cfg.get('mla_attn_impl') or 'absorb'
@@ -88,13 +111,15 @@ class Llm:
         assert self.moe_feedforward > 0, 'MoE model requires moe_feedforward > 0'
         assert self.num_blocks > self.first_k_dense, \
           'num_blocks must exceed first_k_dense for MoE models'
-        # DeepSeek-V3/inference/model.py uses n_dense_layers only (freq≡1).
-        assert self.moe_layer_freq == 1, (
-          f'moe_layer_freq={self.moe_layer_freq} is not supported by '
-          f'DeepSeek-V3/inference/model.py (n_dense_layers only)')
-      if self.q_lora_rank or self.kv_lora_rank:
-        assert self.q_lora_rank > 0 and self.kv_lora_rank > 0, \
-          'MLA requires both q_lora_rank and kv_lora_rank'
+        assert self.moe_layer_freq > 0
+        assert 0 <= self.moe_layer_offset < self.moe_layer_freq
+        assert 1 <= self.router_topk_groups <= self.router_n_groups
+        assert self.routed_scaling_factor > 0
+        assert all(0 <= i < self.num_blocks for i in self.mlp_only_layers)
+      if self.q_lora_rank:
+        assert self.kv_lora_rank > 0, "Q LoRA requires KV LoRA"
+      if self.kv_lora_rank:
+        assert self.q_lora_rank >= 0, "q_lora_rank must be non-negative"
 
     @property
     def is_moe(self):
@@ -102,17 +127,27 @@ class Llm:
 
     @property
     def is_mla(self):
-      return self.q_lora_rank > 0 and self.kv_lora_rank > 0
+      return self.kv_lora_rank > 0
 
     @property
     def is_gqa(self):
       return not self.is_mla and self.kv_heads < self.attn_heads
 
     @property
-    def num_moe_blocks(self):
+    def moe_block_indices(self):
       if not self.is_moe:
-        return 0
-      return (self.num_blocks - self.first_k_dense) // self.moe_layer_freq
+        return ()
+      return tuple(i for i in range(self.first_k_dense, self.num_blocks)
+                   if (i + 1) % self.moe_layer_freq == self.moe_layer_offset
+                   and i not in self.mlp_only_layers)
+
+    @property
+    def num_moe_blocks(self):
+      return len(self.moe_block_indices)
+
+    @property
+    def num_dense_blocks(self):
+      return self.num_blocks - self.num_moe_blocks
 
     def _attn_weight_params(self):
       """Projection weights per attention block (no biases).
@@ -123,19 +158,17 @@ class Llm:
       if self.is_mla:
         h, n_h = self.hidden, self.attn_heads
         qk = self.qk_nope_head_dim + self.qk_rope_head_dim
-        return (
-          h * self.q_lora_rank +                                    # wq_a
-          self.q_lora_rank * (n_h * qk) +                           # wq_b
-          h * (self.kv_lora_rank + self.qk_rope_head_dim) +         # wkv_a
-          self.kv_lora_rank * (n_h * (self.qk_nope_head_dim +
-                                      self.v_head_dim)) +           # wkv_b
-          h * (n_h * self.v_head_dim) +                             # wo
-          self.q_lora_rank + self.kv_lora_rank                      # q/kv RMSNorm
-        )
-      # Wq/Wo use all query heads; Wk/Wv use only KV heads for GQA.
+        q_weights = (h * self.q_lora_rank + self.q_lora_rank * (n_h * qk)
+                     if self.q_lora_rank else h * n_h * qk)
+        return (q_weights +
+                h * (self.kv_lora_rank + self.qk_rope_head_dim) +
+                self.kv_lora_rank * (n_h * (self.qk_nope_head_dim +
+                                             self.v_head_dim)) +
+                h * (n_h * self.v_head_dim) +
+                self.q_lora_rank + self.kv_lora_rank)
       params = 2 * self.hidden * (self.attn_heads + self.kv_heads) * self.attn_size
       if self.qk_norm:
-        params += (self.attn_heads + self.kv_heads) * self.attn_size
+        params += 2 * self.attn_size
       return params
 
     def mtp_params(self):
@@ -148,7 +181,7 @@ class Llm:
         shared_w = 3 * self.hidden * self.num_shared_experts * self.moe_feedforward
         ffn = (self.num_experts * expert_ffn + shared_w +
                self.hidden * self.num_experts)
-        if self.hidden == 7168:
+        if self.router_has_bias:
           ffn += self.num_experts  # gate bias
       else:
         ffn = 3 * self.hidden * self.feedforward
@@ -157,7 +190,7 @@ class Llm:
     def num_parameters(self):
       attn = self._attn_weight_params()
       # 2 RMSNorm scales (pre-attn, pre-mlp); DeepSeek is bias-free.
-      attn += 2 * self.hidden
+      attn += (1 if self.parallel_block else 2) * (self.hidden if self.rms_norm else 2 * self.hidden)
       if self.is_moe:
         # Dense prefix + MoE body both use SwiGLU (3-matrix).
         # Shared experts: one MLP(inter=S*moe_f) ≡ S * expert_w.
@@ -166,17 +199,18 @@ class Llm:
         shared_w = 3 * self.hidden * self.num_shared_experts * self.moe_feedforward
         moe_ffn = self.num_experts * expert_ffn + shared_w
         moe_ffn += self.hidden * self.num_experts                # router
-        if self.hidden == 7168:
+        if self.router_has_bias:
           moe_ffn += self.num_experts                            # gate bias
-        p = self.first_k_dense * (attn + dense_ffn)
+        p = self.num_dense_blocks * (attn + dense_ffn)
         p += self.num_moe_blocks * (attn + moe_ffn)
         # RoPE: no learned position embedding; untied LM head (model.py).
         p += self.vocab_size * self.hidden                       # embed
-        p += self.vocab_size * self.hidden                       # LM head
-        p += self.hidden                                         # final norm
+        if self.untied_embeddings:
+          p += self.vocab_size * self.hidden                     # LM head
+        p += self.hidden if self.rms_norm else 2 * self.hidden   # final norm
         if self.include_mtp:
           p += self.mtp_params()
-      elif self.ffn_type == 'swiglu':
+      elif self.ffn_type in ('swiglu', 'geglu'):
         # Bias-free modern dense decoder (e.g. Qwen3), with optional GQA/QK-Norm.
         dense_ffn = 3 * self.hidden * self.feedforward
         p = self.num_blocks * (attn + dense_ffn)
@@ -185,14 +219,21 @@ class Llm:
           p += self.vocab_size * self.hidden
         p += self.hidden if self.rms_norm else 2 * self.hidden
       else:
-        # Legacy dense: 2-matrix GeLU FFN + Megatron-style biases/LN/pos-emb.
+        # Non-gated dense FFN (GeLU/ReLU), with explicit bias/position choices.
         dense_ffn = 2 * self.hidden * self.feedforward
-        dense_ffn += self.hidden + self.feedforward
-        attn_legacy = 4 * self.hidden * self.attn_heads * self.attn_size
-        attn_legacy += 3 * self.attn_heads * self.attn_size + self.hidden
-        attn_legacy += 2 * 2 * self.hidden
-        p = self.num_blocks * (attn_legacy + dense_ffn)
-        p += (self.vocab_size + self.seq_size) * self.hidden
+        if self.mlp_bias:
+          dense_ffn += self.feedforward + self.hidden
+        attn_dense = attn
+        if self.attention_bias:
+          attn_dense += ((self.attn_heads + 2 * self.kv_heads) *
+                         self.attn_size + self.hidden)
+        p = self.num_blocks * (attn_dense + dense_ffn)
+        p += self.vocab_size * self.hidden
+        if self.untied_embeddings:
+          p += self.vocab_size * self.hidden
+        if self.position_embedding_type == 'learned_absolute':
+          p += self.max_position_embeddings * self.hidden
+        p += self.hidden if self.rms_norm else 2 * self.hidden
       return p
 
     def num_activated_parameters(self):
@@ -204,14 +245,15 @@ class Llm:
       expert_ffn = 3 * self.hidden * self.moe_feedforward
       shared_w = 3 * self.hidden * self.num_shared_experts * self.moe_feedforward
       router = self.hidden * self.num_experts
-      if self.hidden == 7168:
+      if self.router_has_bias:
         router += self.num_experts
-      p = self.first_k_dense * (attn + dense_ffn)
+      p = self.num_dense_blocks * (attn + dense_ffn)
       p += self.num_moe_blocks * (
         attn + self.moe_topk * expert_ffn + shared_w + router)
       p += self.vocab_size * self.hidden                         # embed
-      p += self.vocab_size * self.hidden                         # LM head
-      p += self.hidden                                           # final norm
+      if self.untied_embeddings:
+        p += self.vocab_size * self.hidden                       # LM head
+      p += self.hidden if self.rms_norm else 2 * self.hidden     # final norm
       if self.include_mtp:
         p += self.mtp_params()
       return p
@@ -223,13 +265,18 @@ class Llm:
     def fields():
       return (
         'num_procs', 'tensor_par', 'pipeline_par', 'data_par', 'tensor_par_net',
-        'pipeline_par_net', 'data_par_net', 'expert_par', 'context_par',
-        'expert_par_net', 'context_par_net', 'batch_size', 'microbatch_size',
+        'pipeline_par_net', 'data_par_net', 'expert_par', 'expert_tensor_par',
+        'expert_data_par', 'context_par', 'expert_par_net', 'context_par_net', 'batch_size', 'microbatch_size',
         'datatype', 'matrix_dtype', 'vector_dtype', 'fused_activation',
         'attention_type', 'activation_recompute',
         'pipeline_interleaving', 'optimizer_sharding', 'tensor_par_comm_type',
         'tensor_par_overlap', 'seq_par_ag_redo', 'data_par_overlap',
-        'weight_offload', 'activations_offload', 'optimizer_offload', 'training')
+        'weight_offload', 'activations_offload', 'optimizer_offload', 'training',
+        'use_precision_aware_optimizer', 'main_grads_dtype',
+        'main_params_dtype', 'exp_avg_dtype', 'exp_avg_sq_dtype',
+        'grad_reduce_in_bf16', 'optimizer_offload_fraction',
+        'use_torch_optimizer_for_cpu_offload',
+        'overlap_cpu_optimizer_d2h_h2d', 'pin_cpu_grads', 'pin_cpu_params')
 
     @staticmethod
     def from_json(cfg):
@@ -239,7 +286,13 @@ class Llm:
       #   DP/PP/EP → typically inter-node (data_par_net)
       # Dual dtype defaults both engines to `datatype`.
       cfg = dict(cfg)
+      attention_kernel = cfg.pop('attention_kernel', 'unfused')
+      if attention_kernel not in ('unfused', 'flash'):
+        raise ValueError('attention_kernel must be unfused or flash')
       cfg.setdefault('expert_par', 1)
+      cfg.setdefault('expert_tensor_par', cfg.get('tensor_par', 1))
+      # Zero means derive Megatron EDP from the expert rank generator.
+      cfg.setdefault('expert_data_par', 0)
       cfg.setdefault('context_par', 1)
       # Prefer aligning EP with DP (cross-node A2A); CP with TP (NVLink).
       cfg.setdefault('expert_par_net', cfg.get('data_par_net', 0))
@@ -248,19 +301,40 @@ class Llm:
         cfg['datatype'] = cfg.get('matrix_dtype') or cfg.get('vector_dtype')
       cfg.setdefault('matrix_dtype', cfg['datatype'])
       cfg.setdefault('vector_dtype', cfg['datatype'])
+      cfg.setdefault('use_precision_aware_optimizer', False)
+      cfg.setdefault('main_grads_dtype', 'fp32')
+      cfg.setdefault('main_params_dtype', 'fp32')
+      cfg.setdefault('exp_avg_dtype', 'fp32')
+      cfg.setdefault('exp_avg_sq_dtype', 'fp32')
+      cfg.setdefault('grad_reduce_in_bf16', False)
+      cfg.setdefault('optimizer_offload_fraction', 1.0)
+      cfg.setdefault('use_torch_optimizer_for_cpu_offload', False)
+      cfg.setdefault('overlap_cpu_optimizer_d2h_h2d', False)
+      cfg.setdefault('pin_cpu_grads', True)
+      cfg.setdefault('pin_cpu_params', True)
       assert set(cfg.keys()) == set(Llm.Execution.fields())
       values = [cfg[field] for field in Llm.Execution.fields()]
-      return Llm.Execution(*values)
+      execution = Llm.Execution(*values)
+      execution.attention_kernel = attention_kernel
+      return execution
 
     def __init__(self, num_procs, tensor_par, pipeline_par, data_par,
                  tensor_par_net, pipeline_par_net, data_par_net,
-                 expert_par, context_par, expert_par_net, context_par_net,
+                 expert_par, expert_tensor_par, expert_data_par, context_par,
+                 expert_par_net, context_par_net,
                  batch_size, microbatch_size, datatype, matrix_dtype,
                  vector_dtype, fused_activation, attention_type,
                  activation_recompute, pipeline_interleaving, optimizer_sharding,
                  tensor_par_comm_type, tensor_par_overlap,
                  seq_par_ag_redo, data_par_overlap, weight_offload,
-                 activations_offload, optimizer_offload, training):
+                 activations_offload, optimizer_offload, training,
+                 use_precision_aware_optimizer=False, main_grads_dtype='fp32',
+                 main_params_dtype='fp32', exp_avg_dtype='fp32',
+                 exp_avg_sq_dtype='fp32', grad_reduce_in_bf16=False,
+                 optimizer_offload_fraction=1.0,
+                 use_torch_optimizer_for_cpu_offload=False,
+                 overlap_cpu_optimizer_d2h_h2d=False,
+                 pin_cpu_grads=True, pin_cpu_params=True):
       self.training = training
       self.num_procs = num_procs
       assert self.num_procs > 0
@@ -270,21 +344,32 @@ class Llm:
       assert self.pipeline_par > 0
       self.data_par = data_par
       assert self.data_par > 0
-      # EP/CP are modeled as first-class orthogonal dimensions, matching the
-      # 5D rank grid (tp, cp, ep, dp, pp) of the LLMFlowSimulator C++ engine:
-      #   num_procs == TP * PP * DP * EP * CP
+      # Megatron maintains two rank generators over the same physical ranks:
+      # dense:  TP * CP * DP * PP, expert: ETP * EP * EDP * PP (CP=1).
       self.expert_par = expert_par
-      assert self.expert_par > 0
+      self.expert_tensor_par = expert_tensor_par
       self.context_par = context_par
-      assert self.context_par > 0
-      total_par = self.tensor_par * self.pipeline_par * self.data_par * \
-        self.expert_par * self.context_par
-      if self.num_procs != total_par:
+      if min(self.expert_par, self.expert_tensor_par, self.context_par) <= 0:
+        raise Llm.Error('EP, ETP and CP must be positive')
+      dense_world = (self.tensor_par * self.context_par * self.data_par *
+                     self.pipeline_par)
+      if self.num_procs != dense_world:
         raise Llm.Error(
-          f'tensor*pipeline*data*expert*context parallelism '
-          f'({self.tensor_par}*{self.pipeline_par}*{self.data_par}*'
-          f'{self.expert_par}*{self.context_par}={total_par}) '
+          f'dense rank generator TP*CP*DP*PP={dense_world} '
           f'!= num_procs({self.num_procs})')
+      expert_model_pipeline = (self.expert_tensor_par * self.expert_par *
+                               self.pipeline_par)
+      if self.num_procs % expert_model_pipeline:
+        raise Llm.Error(
+          'expert rank generator requires ETP*EP*PP to divide world size: '
+          f'{self.expert_tensor_par}*{self.expert_par}*{self.pipeline_par} '
+          f'does not divide {self.num_procs}')
+      derived_edp = self.num_procs // expert_model_pipeline
+      if expert_data_par not in (0, None, derived_edp):
+        raise Llm.Error(
+          f'expert_data_par={expert_data_par}, but Megatron derives '
+          f'EDP={derived_edp} from world/(ETP*EP*PP)')
+      self.expert_data_par = derived_edp
       self.tensor_par_net = tensor_par_net
       self.pipeline_par_net = pipeline_par_net
       self.data_par_net = data_par_net
@@ -328,8 +413,6 @@ class Llm:
         assert self.pipeline_interleaving == 1, \
         f'Bad pipeline interleaving of {self.pipeline_interleaving} with PP=1'
       self.optimizer_sharding = optimizer_sharding
-      if self.optimizer_sharding:
-        assert self.data_par > 1, "We perform optimizer sharding with DP > 1"
       self.tensor_par_comm_type = tensor_par_comm_type
       self.in_network_reduction = False
       assert self.tensor_par_comm_type in ['ar', 'p2p_rs_ag', 'rs_ag']
@@ -353,24 +436,71 @@ class Llm:
       self.weight_offload = weight_offload
       self.activations_offload = activations_offload
       self.optimizer_offload = optimizer_offload
+      self.use_precision_aware_optimizer = use_precision_aware_optimizer
+      self.main_grads_dtype = main_grads_dtype
+      self.main_params_dtype = main_params_dtype
+      self.exp_avg_dtype = exp_avg_dtype
+      self.exp_avg_sq_dtype = exp_avg_sq_dtype
+      self.grad_reduce_in_bf16 = grad_reduce_in_bf16
+      self.optimizer_offload_fraction = optimizer_offload_fraction
+      self.use_torch_optimizer_for_cpu_offload = \
+        use_torch_optimizer_for_cpu_offload
+      self.overlap_cpu_optimizer_d2h_h2d = overlap_cpu_optimizer_d2h_h2d
+      self.pin_cpu_grads = pin_cpu_grads
+      self.pin_cpu_params = pin_cpu_params
+      if self.main_grads_dtype not in ('fp32', 'bf16'):
+        raise Llm.Error('main_grads_dtype must be fp32 or bf16')
+      if self.main_params_dtype not in ('fp32', 'fp16'):
+        raise Llm.Error('main_params_dtype must be fp32 or fp16')
+      if self.exp_avg_dtype not in ('fp32', 'fp16', 'fp8'):
+        raise Llm.Error('exp_avg_dtype must be fp32, fp16, or fp8')
+      if self.exp_avg_sq_dtype not in ('fp32', 'fp16', 'fp8'):
+        raise Llm.Error('exp_avg_sq_dtype must be fp32, fp16, or fp8')
+      if not 0 <= self.optimizer_offload_fraction <= 1:
+        raise Llm.Error('optimizer_offload_fraction must be in [0, 1]')
+      non_default_state_dtype = any((
+        self.main_grads_dtype != 'fp32',
+        self.main_params_dtype != 'fp32',
+        self.exp_avg_dtype != 'fp32',
+        self.exp_avg_sq_dtype != 'fp32'))
+      if self.use_precision_aware_optimizer and not self.optimizer_sharding:
+        raise Llm.Error(
+          'precision-aware optimizer requires distributed optimizer')
+      if non_default_state_dtype and not self.use_precision_aware_optimizer:
+        raise Llm.Error(
+          'low-precision optimizer states require precision-aware optimizer')
       if self.optimizer_offload:
-        assert self.training, \
-          "We only perform optimizer offloading during training"
+        if not self.training:
+          raise Llm.Error('optimizer offload is only valid during training')
+        if not self.use_precision_aware_optimizer:
+          raise Llm.Error(
+            'optimizer offload requires precision-aware optimizer')
+      if self.grad_reduce_in_bf16 and self.vector_dtype != 'bfloat16':
+        raise Llm.Error('BF16 gradient reduction requires BF16 training')
 
     def get_json(self):
       keys = Llm.Execution.fields()
       values = [
         self.num_procs, self.tensor_par, self.pipeline_par, self.data_par, self.tensor_par_net,
-        self.pipeline_par_net, self.data_par_net, self.expert_par, self.context_par,
+        self.pipeline_par_net, self.data_par_net, self.expert_par,
+        self.expert_tensor_par, self.expert_data_par, self.context_par,
         self.expert_par_net, self.context_par_net, self.global_batch_size, self.microbatch_size,
         self.datatype, self.matrix_dtype, self.vector_dtype, self.fused_activation,
         self.attention_type, self.activation_recompute,
         self.pipeline_interleaving, self.optimizer_sharding, self.tensor_par_comm_type,
         self.tensor_par_overlap, self.seq_par_ag_redo, self.data_par_overlap,
-        self.weight_offload, self.activations_offload, self.optimizer_offload, self.training
+        self.weight_offload, self.activations_offload, self.optimizer_offload, self.training,
+        self.use_precision_aware_optimizer, self.main_grads_dtype,
+        self.main_params_dtype, self.exp_avg_dtype, self.exp_avg_sq_dtype,
+        self.grad_reduce_in_bf16, self.optimizer_offload_fraction,
+        self.use_torch_optimizer_for_cpu_offload,
+        self.overlap_cpu_optimizer_d2h_h2d, self.pin_cpu_grads,
+        self.pin_cpu_params
       ]
       assert len(keys) == len(values)
-      return dict(zip(keys, values))
+      result = dict(zip(keys, values))
+      result['attention_kernel'] = getattr(self, 'attention_kernel', 'unfused')
+      return result
 
     def get_peers_json(self):
       peers = {}
@@ -550,6 +680,8 @@ class Llm:
     self._block_fw_pp_size = None
     self._block_bw_pp_size = None
     self._block_dp_size = None
+    self._block_dense_dp_size = None
+    self._block_expert_dp_size = None
     self._baseblock_fw_time_no_offload = None
     self._edgeblock_fw_time_no_offload = None
     self._baseblock_bw_time_no_offload = None
@@ -568,6 +700,7 @@ class Llm:
     self._dp_bw_overlap_req_tail = None
 
     self._block_weight_space = None
+    self._block_expert_weight_space = None
     self._block_act_working_space = None
     self._block_act_storage_space = None
     self._block_act_checkpoint_size = None
@@ -927,31 +1060,36 @@ class Llm:
       conjugate=False, in_network_reduction=self.exe.in_network_reduction,
       needs_recomm=recompute_ag_flag))
 
-    # Q path: wq_a → q_norm (scale) → wq_b (split nope/rope)
-    self._llm_block.append(Linear(
-      "AttnBlock_MLA_WDQ", self.sys, self._batch_seq,
-      app.hidden, app.q_lora_rank,
-      needs_recompute=recompute_flag,
-      activation_stored=(not recompute_ag_flag)))
-    self._llm_block.append(Norm(
-      "AttnBlock_MLA_QNorm", self.sys,
-      self._batch_seq * app.q_lora_rank, app.q_lora_rank,
-      needs_recompute=recompute_flag,
-      activation_stored=False, activation_reused=True))
-    self._llm_block.append(Fork(
-      "AttnBlock_MLA_Q_Fork", self.sys,
-      self._batch_seq * app.q_lora_rank, 2,
-      needs_recompute=recompute_ag_flag, activation_stored=True))
-    self._llm_block.append(Linear(
-      "AttnBlock_MLA_WUQ", self.sys, self._batch_seq,
-      app.q_lora_rank, heads_tp * app.qk_nope_head_dim,
-      needs_recompute=recompute_flag,
-      activation_stored=False, activation_reused=True))
-    self._llm_block.append(Linear(
-      "AttnBlock_MLA_WQR", self.sys, self._batch_seq,
-      app.q_lora_rank, heads_tp * app.qk_rope_head_dim,
-      needs_recompute=recompute_flag,
-      activation_stored=False, activation_reused=True))
+    # Q path: optional low-rank projection, or direct Q for DeepSeek-V2-Lite.
+    if app.q_lora_rank:
+      self._llm_block.append(Linear(
+        "AttnBlock_MLA_WDQ", self.sys, self._batch_seq,
+        app.hidden, app.q_lora_rank, needs_recompute=recompute_flag,
+        activation_stored=(not recompute_ag_flag)))
+      self._llm_block.append(Norm(
+        "AttnBlock_MLA_QNorm", self.sys,
+        self._batch_seq * app.q_lora_rank, app.q_lora_rank,
+        needs_recompute=recompute_flag, activation_stored=False,
+        activation_reused=True))
+      self._llm_block.append(Fork(
+        "AttnBlock_MLA_Q_Fork", self.sys,
+        self._batch_seq * app.q_lora_rank, 2,
+        needs_recompute=recompute_ag_flag, activation_stored=True))
+      self._llm_block.append(Linear(
+        "AttnBlock_MLA_WUQ", self.sys, self._batch_seq,
+        app.q_lora_rank, heads_tp * app.qk_nope_head_dim,
+        needs_recompute=recompute_flag, activation_stored=False,
+        activation_reused=True))
+      self._llm_block.append(Linear(
+        "AttnBlock_MLA_WQR", self.sys, self._batch_seq,
+        app.q_lora_rank, heads_tp * app.qk_rope_head_dim,
+        needs_recompute=recompute_flag, activation_stored=False,
+        activation_reused=True))
+    else:
+      self._llm_block.append(Linear(
+        "AttnBlock_MLA_WQ", self.sys, self._batch_seq, app.hidden,
+        heads_tp * qk_dim, needs_recompute=recompute_flag,
+        activation_stored=(not recompute_ag_flag)))
 
     # KV path: wkv_a (split latent/rope) + wkv_b (WUK/WUV)
     self._llm_block.append(Linear(
@@ -1084,6 +1222,13 @@ class Llm:
     recompute_ag_flag = recompute_attn_flag or self.exe.seq_par_ag_redo
     tp = self.exe.tensor_par
     Norm = self._norm_cls()
+    # Megatron permits GQA/MQA query groups to be either partitioned across TP
+    # ranks or replicated when there are fewer query groups than TP ranks.
+    # In the latter case its fused QKV projection is followed by a last-dim
+    # all-gather and each rank retains one complete KV group.
+    replicated_kv_groups = self.app.kv_heads < tp
+    kv_heads_tp = (1 if replicated_kv_groups
+                   else self.app.kv_heads // tp)
 
     assert self.app.hidden % self.exe.tensor_par == 0, (
       f"We should split hidden={self.app.hidden} between"
@@ -1094,9 +1239,10 @@ class Llm:
     assert self.app.attn_heads % self.exe.tensor_par == 0, (
       f"We should split {self.app.attn_heads} attn_heads between"
       f" {self.exe.tensor_par} TP partitions evenly")
-    assert self.app.kv_heads % self.exe.tensor_par == 0, (
-      f"We should split {self.app.kv_heads} K/V heads between"
-      f" {self.exe.tensor_par} TP partitions evenly")
+    assert (self.app.kv_heads % tp == 0 or
+            tp % self.app.kv_heads == 0), (
+      f"K/V heads={self.app.kv_heads} must be a multiple or divisor of"
+      f" tensor parallelism={tp}, matching Megatron query-group placement")
 
     self._llm_block.append(Fork(
       "AttnBlock_Fork",
@@ -1117,7 +1263,7 @@ class Llm:
       # Activation is stored in Fork instead
       activation_stored=False,
       activation_reused=True))
-    if self.exe.tensor_par_overlap == 'none':
+    if self.exe.tensor_par_overlap == 'none' or replicated_kv_groups:
       self._llm_block.append(TPComm(
         "AttnBlock_F",
         self.sys,
@@ -1140,17 +1286,45 @@ class Llm:
         # With seq_par, we use activations from Comm layers to reflect that
         # they're split, otherwise we keep full size activations
         activation_stored=(not recompute_ag_flag)))
-      self._llm_block.append(Linear(
-        "AttnBlock_Query",
-        self.sys,
-        self._batch_seq,
-        self.app.hidden,
-        self.app.attn_heads * self.app.attn_size // self.exe.tensor_par,
-        needs_recompute=recompute_flag,
-        # Activation is stored in Fork instead,
-        activation_stored=False,
-        activation_reused=True))
-      if self.exe.attention_type == 'multihead' or self.app.is_gqa:
+      if replicated_kv_groups:
+        # Megatron keeps the fused projection evenly TP-sharded, then gathers
+        # the interleaved QKV result so every replica gets a complete KV group.
+        qkv_size = ((self.app.attn_heads + 2 * self.app.kv_heads) *
+                    self.app.attn_size)
+        self._llm_block.append(Linear(
+          "AttnBlock_QKV_GroupReplica",
+          self.sys,
+          self._batch_seq,
+          self.app.hidden,
+          qkv_size // tp,
+          needs_recompute=recompute_flag,
+          activation_stored=False,
+          activation_reused=True))
+        self._llm_block.append(TPComm(
+          "AttnBlock_QKV_GroupAllGather",
+          self.sys,
+          self._batch_seq * qkv_size,
+          self.exe.tensor_par_net,
+          tp,
+          tensor_par_comm_type='rs_ag',
+          conjugate=False,
+          in_network_reduction=self.exe.in_network_reduction,
+          needs_recomm=recompute_flag,
+          activation_stored=False,
+          output_stored=False))
+      else:
+        self._llm_block.append(Linear(
+          "AttnBlock_Query",
+          self.sys,
+          self._batch_seq,
+          self.app.hidden,
+          self.app.attn_heads * self.app.attn_size // tp,
+          needs_recompute=recompute_flag,
+          # Activation is stored in Fork instead,
+          activation_stored=False,
+          activation_reused=True))
+      if (not replicated_kv_groups and
+          (self.exe.attention_type == 'multihead' or self.app.is_gqa)):
         self._llm_block.append(Linear(
           "AttnBlock_Key",
           self.sys,
@@ -1171,7 +1345,7 @@ class Llm:
           # Activation is stored in Fork instead,
           activation_stored=False,
           activation_reused=True))
-      elif self.exe.attention_type == 'multiquery':
+      elif not replicated_kv_groups and self.exe.attention_type == 'multiquery':
         # Multiqueri attention uses the same K, V for all "heads" resulting in
         # smaller Wk and Wv, less matmul, faster inference
         self._llm_block.append(Linear(
@@ -1194,7 +1368,7 @@ class Llm:
           # Activation is stored in Fork instead,
           activation_stored=False,
           activation_reused=True))
-      else:
+      elif not replicated_kv_groups:
         raise self.Error('Wrong attention type', self.exe.attention_type)
     else:
       if self.exe.attention_type == 'multihead':
@@ -1263,12 +1437,12 @@ class Llm:
       self._llm_block.append(RMSNorm(
         "AttnBlock_QKNorm_Q", self.sys,
         self._batch_seq * self.app.attn_heads * self.app.attn_size // tp,
-        self.app.attn_heads * self.app.attn_size // tp,
+        self.app.attn_size,
         needs_recompute=recompute_flag, activation_stored=False, activation_reused=True))
       self._llm_block.append(RMSNorm(
         "AttnBlock_QKNorm_K", self.sys,
-        self._batch_seq * self.app.kv_heads * self.app.attn_size // tp,
-        self.app.kv_heads * self.app.attn_size // tp,
+        self._batch_seq * kv_heads_tp * self.app.attn_size,
+        self.app.attn_size,
         needs_recompute=recompute_flag, activation_stored=False, activation_reused=True))
     if self.app.rope_theta is not None:
       # RoPE changes Q/K values but not shapes; model its vector rotations.
@@ -1280,8 +1454,8 @@ class Llm:
         activation_stored=False, activation_reused=True))
       self._llm_block.append(RotaryEmbedding(
         "AttnBlock_RoPE_K", self.sys,
-        self._batch_seq * self.app.kv_heads * self.app.attn_size //
-        self.exe.tensor_par, self.app.rope_theta,
+        self._batch_seq * kv_heads_tp * self.app.attn_size,
+        self.app.rope_theta,
         needs_recompute=recompute_flag,
         activation_stored=False, activation_reused=True))
     self._append_bmm(
@@ -1292,6 +1466,13 @@ class Llm:
       self.app.seq_size,
       needs_recompute=recompute_attn_flag,
       output_stored=(not recompute_attn_flag))
+    if self.app.position_embedding_type in ('relative', 'alibi'):
+      score_elems = (self.app.attn_heads // self.exe.tensor_par *
+                     self.app.seq_size**2 * self.exe.microbatch_size)
+      self._llm_block.append(ElementWise(
+        "AttnBlock_PositionBias", self.sys, score_elems, score_elems,
+        needs_recompute=recompute_attn_flag,
+        activation_stored=False, activation_reused=True))
     self._append_attn_softmax(
       "AttnBlock_Multihead_SoftMax",
       self.app.attn_heads // self.exe.tensor_par * \
@@ -1389,20 +1570,21 @@ class Llm:
       2,
       needs_recompute=recompute_flag,
       activation_stored=True))
-    Norm = self._norm_cls()
-    self._llm_block.append(Norm(
-      "MlpBlock_LayerNorm",
-      self.sys,
-      pick(self.exe._sequence_par, self._seq_par_activation_size,
-           self._activation_size),
-      app.hidden,
-      needs_recompute=recompute_flag,
-      activation_stored=False,
-      activation_reused=True))
+    if not app.parallel_block:
+      Norm = self._norm_cls()
+      self._llm_block.append(Norm(
+        "MlpBlock_LayerNorm",
+        self.sys,
+        pick(self.exe._sequence_par, self._seq_par_activation_size,
+             self._activation_size),
+        app.hidden,
+        needs_recompute=recompute_flag,
+        activation_stored=False,
+        activation_reused=True))
 
     if ffn_mode == 'moe':
       self._build_moe_swiglu_ffn(recompute_flag, recompute_ag_flag)
-    elif ffn_mode == 'swiglu':
+    elif ffn_mode in ('swiglu', 'geglu'):
       self._build_swiglu_ffn(
         app.feedforward, recompute_flag, recompute_ag_flag,
         weight_multiplier=1.0, flop_multiplier=1.0, name_prefix='MlpBlock')
@@ -1428,8 +1610,9 @@ class Llm:
           self.exe.tensor_par_net, tp,
           conjugate=False, tp_overlap=self.exe.tensor_par_overlap,
           needs_recompute=recompute_flag, needs_recomm=recompute_ag_flag))
-      self._llm_block.append(GeLU(
-        "MlpBlock_GeLU", self.sys,
+      Activation = ReLU if ffn_mode == 'relu' else GeLU
+      self._llm_block.append(Activation(
+        f"MlpBlock_{ffn_mode.upper()}", self.sys,
         app.feedforward * self._batch_seq // tp,
         needs_recompute=recompute_flag, fused=self.exe.fused_activation))
       if self.exe.tensor_par_overlap == 'none':
@@ -1468,9 +1651,9 @@ class Llm:
 
   def _build_swiglu_ffn(self, ffn_width, recompute_flag, recompute_ag_flag,
                         weight_multiplier=1.0, flop_multiplier=1.0,
-                        name_prefix='MlpBlock'):
+                        name_prefix='MlpBlock', tensor_parallel=None):
     """3-matrix SwiGLU FFN: gate/up/down with SiLU(gate)*up."""
-    tp = self.exe.tensor_par
+    tp = tensor_parallel or self.exe.tensor_par
     app = self.app
     assert ffn_width % tp == 0, (
       f"FFN width {ffn_width} must divide by TP={tp}")
@@ -1485,6 +1668,44 @@ class Llm:
       tensor_par_comm_type=self.exe.tensor_par_comm_type,
       conjugate=False, in_network_reduction=self.exe.in_network_reduction,
       needs_recomm=recompute_ag_flag))
+    # TEGroupedMLP fuses SwiGLU's gate and up projections into a single
+    # FC1 grouped GEMM (output width 2*ffn), followed by grouped FC2.
+    # This path is selected structurally for MoE's expert-weighted FFN;
+    # dense SwiGLU retains its two independent projections.
+    if wm != 1.0:
+      self._llm_block.append(Linear(
+        f"{name_prefix}_GroupedFC1", self.sys, self._batch_seq,
+        app.hidden, 2*f_tp,
+        needs_recompute=recompute_flag,
+        activation_stored=False, activation_reused=True,
+        weight_multiplier=wm, flop_multiplier=fm))
+      if self.exe.fused_activation:
+        from .gated_activation import GatedActivation
+        self._llm_block.append(GatedActivation(
+          f"{name_prefix}_{app.ffn_type}", self.sys,
+          f_tp * self._batch_seq * fm, app.ffn_type,
+          needs_recompute=recompute_flag))
+      else:
+        Activation = GeLU if app.ffn_type == 'geglu' else SiLU
+        self._llm_block.append(Activation(
+          f"{name_prefix}_{app.ffn_type}", self.sys,
+          f_tp * self._batch_seq * fm, needs_recompute=recompute_flag))
+        self._llm_block.append(ElementWise(
+          f"{name_prefix}_GateUp", self.sys,
+          f_tp * self._batch_seq * fm, f_tp * self._batch_seq * fm,
+          needs_recompute=recompute_flag))
+      self._llm_block.append(Linear(
+        f"{name_prefix}_Down", self.sys, self._batch_seq,
+        f_tp, app.hidden, needs_recompute=recompute_flag,
+        weight_multiplier=wm, flop_multiplier=fm))
+      self._llm_block.append(TPComm(
+        f"{name_prefix}_G", self.sys, self._activation_size,
+        self.exe.tensor_par_net, tp,
+        tensor_par_comm_type=self.exe.tensor_par_comm_type,
+        conjugate=True, in_network_reduction=self.exe.in_network_reduction,
+        needs_recomm=recompute_flag, activation_stored=False))
+      return
+
     self._llm_block.append(Fork(
       f"{name_prefix}_SwiGLU_Fork", self.sys, self._activation_size, 2,
       needs_recompute=recompute_ag_flag,
@@ -1501,16 +1722,22 @@ class Llm:
       needs_recompute=recompute_flag,
       activation_stored=False, activation_reused=True,
       weight_multiplier=wm, flop_multiplier=fm))
-    # With fused_activation, SiLU(gate)*up is an epilogue on Gate/Up GEMMs —
-    # do not charge standalone vector time (Phase2 H2: unfused SiLU over-pred).
-    fused_act = self.exe.fused_activation
-    self._llm_block.append(SiLU(
-      f"{name_prefix}_SiLU", self.sys, f_tp * self._batch_seq,
-      needs_recompute=recompute_flag, fused=fused_act))
-    self._llm_block.append(ElementWise(
-      f"{name_prefix}_GateUp", self.sys,
-      f_tp * self._batch_seq, f_tp * self._batch_seq,
-      needs_recompute=recompute_flag, fused=fused_act))
+    # Megatron fuses activation and gate multiplication, not the GEMM.
+    if self.exe.fused_activation:
+      from .gated_activation import GatedActivation
+      self._llm_block.append(GatedActivation(
+        f"{name_prefix}_{app.ffn_type}", self.sys,
+        f_tp * self._batch_seq * fm, app.ffn_type,
+        needs_recompute=recompute_flag))
+    else:
+      Activation = GeLU if app.ffn_type == 'geglu' else SiLU
+      self._llm_block.append(Activation(
+        f"{name_prefix}_{app.ffn_type}", self.sys,
+        f_tp * self._batch_seq * fm, needs_recompute=recompute_flag))
+      self._llm_block.append(ElementWise(
+        f"{name_prefix}_GateUp", self.sys,
+        f_tp * self._batch_seq * fm, f_tp * self._batch_seq * fm,
+        needs_recompute=recompute_flag))
     self._llm_block.append(Linear(
       f"{name_prefix}_Down", self.sys, self._batch_seq,
       f_tp, app.hidden,
@@ -1530,8 +1757,11 @@ class Llm:
     assert app.num_experts % ep == 0, (
       f"num_experts={app.num_experts} must divide by EP={ep}")
     experts_stored = app.num_experts // ep + app.num_shared_experts
-    # Per-rank useful compute: routed work split by EP, shared replicated.
-    active_equiv = app.moe_topk / ep + app.num_shared_experts
+    # All-to-all balances aggregate source tokens over EP destinations.
+    # Each destination processes local_tokens * topk; dividing by EP again
+    # undercounts both ordinary EP and folded ETP/EDP rank layouts. Shared
+    # experts remain local, one pass per shared expert.
+    active_equiv = app.moe_topk + app.num_shared_experts
 
     # Router is typically replicated on each EP rank (gate then dispatch).
     self._llm_block.append(Linear(
@@ -1540,20 +1770,33 @@ class Llm:
       needs_recompute=recompute_flag,
       activation_stored=(not recompute_ag_flag)))
 
-    # Qwen3 router uses sigmoid scores, optional top-k probability
-    # renormalization, and (during training) an auxiliary balancing loss.
+    # Router score functions differ by model family: Qwen3 uses softmax,
+    # DeepSeek-V3 uses sigmoid, and the V4 approximation uses sqrt-softplus.
     router_scores = self._batch_seq * app.num_experts
-    self._llm_block.append(RouterSigmoid(
-      "MlpBlock_RouterSigmoid", self.sys, router_scores,
-      needs_recompute=recompute_flag,
-      activation_stored=(not recompute_ag_flag)))
-    # Expert selection is mandatory even when selected probabilities are not
-    # renormalized.  Previously it was charged only when norm_topk_prob=True,
-    # which made DeepSeek-style routing systematically too cheap.
+    score_kwargs = dict(needs_recompute=recompute_flag,
+                        activation_stored=(not recompute_ag_flag))
+    if app.router_score_func == 'softmax':
+      self._llm_block.append(SoftMax(
+        'MlpBlock_RouterSoftmax', self.sys, router_scores, **score_kwargs))
+    elif app.router_score_func == 'sigmoid':
+      self._llm_block.append(RouterSigmoid(
+        'MlpBlock_RouterSigmoid', self.sys, router_scores, **score_kwargs))
+    else:
+      self._llm_block.append(RouterSqrtSoftplus(
+        'MlpBlock_RouterSqrtSoftplus', self.sys, router_scores, **score_kwargs))
+    if app.router_has_bias:
+      self._llm_block.append(ElementWise(
+        'MlpBlock_RouterCorrectionBias', self.sys, router_scores, router_scores,
+        needs_recompute=recompute_flag, activation_stored=False,
+        activation_reused=True))
+    if app.router_n_groups > 1:
+      self._llm_block.append(RouterTopK(
+        'MlpBlock_RouterGroupTopK', self.sys, self._batch_seq,
+        app.router_topk_groups, app.router_n_groups, needs_recompute=False,
+        activation_stored=True, activation_reused=True))
     self._llm_block.append(RouterTopK(
-      "MlpBlock_RouterTopK", self.sys,
-      self._batch_seq, app.moe_topk, app.num_experts,
-      needs_recompute=False,
+      'MlpBlock_RouterTopK', self.sys, self._batch_seq,
+      app.moe_topk, app.num_experts, needs_recompute=False,
       activation_stored=True, activation_reused=True))
     if app.norm_topk_prob:
       self._llm_block.append(RouterTopKNormalize(
@@ -1561,6 +1804,12 @@ class Llm:
         self._batch_seq, app.moe_topk, app.num_experts,
         needs_recompute=recompute_flag,
         activation_stored=False, activation_reused=True))
+    if app.routed_scaling_factor != 1.0:
+      selected_scores = self._batch_seq * app.moe_topk
+      self._llm_block.append(ElementWise(
+        'MlpBlock_RouterScale', self.sys, selected_scores, selected_scores,
+        needs_recompute=recompute_flag, activation_stored=False,
+        activation_reused=True))
     if app.router_aux_loss_coef > 0:
       self._llm_block.append(RouterAuxiliaryLoss(
         "MlpBlock_RouterAuxLoss", self.sys, router_scores,
@@ -1574,7 +1823,8 @@ class Llm:
     self._build_swiglu_ffn(
       app.moe_feedforward, recompute_flag, recompute_ag_flag,
       weight_multiplier=experts_stored, flop_multiplier=active_equiv,
-      name_prefix='MlpBlock_MoE')
+      name_prefix='MlpBlock_MoE',
+      tensor_parallel=self.exe.expert_tensor_par)
 
   def compile(self, sys, exe):
     assert not self._compiled
@@ -1656,18 +1906,60 @@ class Llm:
     else:
       self._build_attn_block()
       self._build_mlp_block(ffn_mode=self.app.ffn_type)
+    if (getattr(self.exe, 'attention_kernel', 'unfused') == 'flash'
+        and not self.app.is_mla):
+      from .flash_attention import FlashAttention
+      def fuse_attention(layers):
+        names = ('AttnBlock_Multihead_Key_Query', 'AttnBlock_Multihead_SoftMax',
+                 'AttnBlock_Multihead_DropOut', 'AttnBlock_Multihead_Attn')
+        result = []
+        for layer in layers:
+          if layer.name == names[0]:
+            result.append(FlashAttention(
+              'AttnBlock_FlashAttention', self.sys, self.exe.microbatch_size,
+              self.app.seq_size, self.app.attn_heads // self.exe.tensor_par,
+              (1 if self.app.kv_heads < self.exe.tensor_par else
+               self.app.kv_heads // self.exe.tensor_par), self.app.attn_size,
+              needs_recompute=self.exe.activation_recompute in ('full', 'attn_only'),
+              context_partitions=self.exe.context_par))
+          elif layer.name not in names:
+            result.append(layer)
+        return result
+      self._llm_block = fuse_attention(self._llm_block)
+      if self._dense_layers is not None:
+        self._dense_layers = fuse_attention(self._dense_layers)
+        self._moe_layers = self._llm_block
     def _assign_layer_bpe(layer):
       # Linear GEMM → matrix_dtype (FP8); BatchMatMul → bmm_dtype (BF16);
       # vector ops → vector_dtype.
-      if isinstance(layer, BatchMatMul):
+      if isinstance(layer, BatchMatMul) or layer.name == "AttnBlock_FlashAttention":
         bpe = System.TypeSizes[self.sys.get_bmm_dtype()]
       elif layer.use_matrix_engine():
         bpe = self._matrix_bytes_per_element
       else:
         bpe = self._vector_bytes_per_element
       layer.set_bytes_per_element(bpe)
+      grad_dtype = (
+        'bf16' if self.exe.grad_reduce_in_bf16
+        else self.exe.main_grads_dtype)
+      layer.configure_optimizer(
+        grad_dtype, self.exe.main_params_dtype,
+        self.exe.exp_avg_dtype, self.exe.exp_avg_sq_dtype)
       if self.exe.optimizer_sharding:
-        layer.shard_optimizer(self.exe.data_par)
+        shard = self.exe.data_par
+        # Routed expert states are sharded over expert-DP, while shared expert
+        # states in the same fused FFN remain sharded over model-DP.
+        if (self.app.is_moe and layer.name.startswith('MlpBlock_MoE') and
+            hasattr(layer, 'weight_multiplier')):
+          routed = self.app.num_experts / self.exe.expert_par
+          shared = self.app.num_shared_experts
+          total = routed + shared
+          if total:
+            reciprocal = (
+              routed / total / self.exe.expert_data_par +
+              shared / total / self.exe.data_par)
+            shard = 1 / reciprocal
+        layer.shard_optimizer(shard)
 
     for layer in self._llm_block:
       _assign_layer_bpe(layer)
@@ -1679,8 +1971,9 @@ class Llm:
   def _check_network_assignments(self):
     """Bind each parallelism dimension to a Network tier and init flow BW.
 
-    Capacity model (Megatron-style product on each tier):
-      tier_size *= degree for each of TP/PP/DP/EP/CP with degree>1 on that tier.
+    Capacity model follows Megatron's rank decomposition. EP is nested inside
+    model-DP, so EP does not multiply tier occupancy again when DP and EP share
+    a tier. If EP uses another tier, that tier is checked against EP alone.
 
     Flow simulator (``.so``) only exposes two bandwidth knobs:
       inter — cross-host link capacity (B/s)
@@ -1718,7 +2011,8 @@ class Llm:
     _mark(self.exe.data_par, self.exe.data_par_net)
     self._dp_net = self.sys.get_network(self.exe.data_par_net)
 
-    _mark(self.exe.expert_par, self.exe.expert_par_net)
+    if self.exe.expert_par_net != self.exe.data_par_net:
+      _mark(self.exe.expert_par, self.exe.expert_par_net)
     self._ep_net = self.sys.get_network(self.exe.expert_par_net)
 
     _mark(self.exe.context_par, self.exe.context_par_net)
@@ -1756,7 +2050,8 @@ class Llm:
     _mark(self.exe.tensor_par, self.exe.tensor_par_net)
     _mark(self.exe.pipeline_par, self.exe.pipeline_par_net)
     _mark(self.exe.data_par, self.exe.data_par_net)
-    _mark(self.exe.expert_par, self.exe.expert_par_net)
+    if self.exe.expert_par_net != self.exe.data_par_net:
+      _mark(self.exe.expert_par, self.exe.expert_par_net)
     _mark(self.exe.context_par, self.exe.context_par_net)
 
     # Each parallelism now retains the BW and latency of its assigned tier.
@@ -1826,6 +2121,10 @@ class Llm:
     '_block_wgrad_mem_time', '_block_wgrad_time',
     '_block_optim_flops', '_block_optim_flops_time', '_block_optim_mem_accessed',
     '_block_optim_mem_time', '_block_optim_time',
+    '_block_framework_fw_kernels', '_block_framework_fw_nodes',
+    '_block_framework_bw_kernels', '_block_framework_bw_nodes',
+    '_block_framework_re_kernels', '_block_framework_re_nodes',
+    '_block_framework_checkpoint_nodes',
     '_block_weight_grad_space', '_block_weight_grad_space_no_sharding',
     '_block_act_grad_space', '_block_optimizer_space',
     '_tp_bw_overlap_req', '_block_act_checkpoint_size',
@@ -1835,7 +2134,7 @@ class Llm:
     return {k: getattr(self, k) for k in self._BLOCK_STAT_ATTRS}
 
   def _blend_block_stats(self, dense, moe):
-    nd = self.app.first_k_dense
+    nd = self.app.num_dense_blocks
     nm = self.app.num_moe_blocks
     n = self.app.num_blocks
     for k in self._BLOCK_STAT_ATTRS:
@@ -1885,11 +2184,16 @@ class Llm:
     self._block_ffn_bwd_time = 0
     self._baseblock_fw_tp_size = 0
     self._edgeblock_fw_tp_size = 0
+    self._baseblock_fw_etp_size = 0
+    self._edgeblock_fw_etp_size = 0
     self._baseblock_fw_tp_time = 0
     self._edgeblock_fw_tp_time = 0
     self._baseblock_fw_tp_time_exposed = 0
     self._edgeblock_fw_tp_time_exposed = 0
     self._block_weight_space = 0
+    # EP-sharded routed-expert parameters synchronize over EDP; attention,
+    # router and shared-expert parameters synchronize over model-DP.
+    self._block_expert_weight_space = 0
     self._block_act_working_space = 0
     self._block_act_storage_space = 0
     # We use this block for self.exe.training, but initialize anyway
@@ -1911,6 +2215,8 @@ class Llm:
     self._block_agrad_time = 0
     self._baseblock_agrad_tp_size = 0
     self._edgeblock_agrad_tp_size = 0
+    self._baseblock_agrad_etp_size = 0
+    self._edgeblock_agrad_etp_size = 0
     self._baseblock_agrad_tp_time = 0
     self._edgeblock_agrad_tp_time = 0
     self._baseblock_agrad_tp_time_exposed = 0
@@ -1925,6 +2231,15 @@ class Llm:
     self._block_optim_mem_accessed = 0
     self._block_optim_mem_time = 0
     self._block_optim_time = 0
+    # Runtime events are graph counts, not measured duration.  System supplies
+    # the independently calibrated host-side cost for each event class.
+    self._block_framework_fw_kernels = 0
+    self._block_framework_fw_nodes = 0
+    self._block_framework_bw_kernels = 0
+    self._block_framework_bw_nodes = 0
+    self._block_framework_re_kernels = 0
+    self._block_framework_re_nodes = 0
+    self._block_framework_checkpoint_nodes = 0
     self._block_weight_grad_space = 0
     self._block_weight_grad_space_no_sharding = 0
     self._block_act_grad_space = 0
@@ -1943,15 +2258,20 @@ class Llm:
       self._block_fw_mem_time += layer.compute_mem_time("fw")
       fw_t = layer.compute_processing_time("fw")
       self._block_fw_time += fw_t
+      fw_events = layer.get_framework_events('fw')
+      self._block_framework_fw_kernels += fw_events['kernels']
+      self._block_framework_fw_nodes += fw_events['autograd_nodes']
       lname = getattr(layer, 'name', '') or ''
       if lname.startswith('AttnBlock'):
         self._block_attn_fw_time += fw_t
       elif lname.startswith('MlpBlock'):
         self._block_ffn_fw_time += fw_t
-      self._baseblock_fw_tp_size += layer.get_comm_bytes("fw",
-        baseblock=True)
-      self._edgeblock_fw_tp_size += layer.get_comm_bytes("fw",
-        baseblock=False)
+      if lname.startswith('MlpBlock_MoE'):
+        self._baseblock_fw_etp_size += layer.get_comm_bytes("fw", baseblock=True)
+        self._edgeblock_fw_etp_size += layer.get_comm_bytes("fw", baseblock=False)
+      else:
+        self._baseblock_fw_tp_size += layer.get_comm_bytes("fw", baseblock=True)
+        self._edgeblock_fw_tp_size += layer.get_comm_bytes("fw", baseblock=False)
       self._baseblock_fw_tp_time += layer.compute_net_time("fw",
         baseblock=True)
       self._edgeblock_fw_tp_time += layer.compute_net_time("fw",
@@ -1965,12 +2285,16 @@ class Llm:
       self._tp_bw_overlap_req = max(self._tp_bw_overlap_req,
         layer.get_required_bandwidth("fw", baseblock=False))
       if self.exe.training:
-        if layer.get_recompute_flag():
-          self._block_re_flops += self._block_fw_flops
-          self._block_re_flops_time += self._block_fw_flops_time
-          self._block_re_mem_accessed += self._block_fw_mem_accessed
-          self._block_re_mem_time += self._block_fw_mem_time
+        if layer.get_recompute_flag() and layer.get_framework_events('fw')['kernels']:
+          self._block_re_flops += layer.get_fw_flops()
+          self._block_re_flops_time += layer.compute_flops_time("fw")
+          self._block_re_mem_accessed += layer.get_fw_mem_accessed()
+          self._block_re_mem_time += layer.compute_mem_time("fw")
           self._block_re_time += layer.compute_processing_time("fw")
+          re_events = layer.get_framework_events('fw')
+          self._block_framework_re_kernels += re_events['kernels']
+          self._block_framework_re_nodes += re_events['autograd_nodes']
+          self._block_framework_checkpoint_nodes = 1
         if layer.get_recomm_flag():
           self._baseblock_recomm_size += layer.get_comm_bytes("wgrad",
             baseblock=True)
@@ -1990,14 +2314,19 @@ class Llm:
         self._block_agrad_mem_time += layer.compute_mem_time("agrad")
         agrad_t = layer.compute_processing_time("agrad")
         self._block_agrad_time += agrad_t
+        agrad_events = layer.get_framework_events('agrad')
+        self._block_framework_bw_kernels += agrad_events['kernels']
+        self._block_framework_bw_nodes += agrad_events['autograd_nodes']
         if lname.startswith('AttnBlock'):
           self._block_attn_bwd_time += agrad_t
         elif lname.startswith('MlpBlock'):
           self._block_ffn_bwd_time += agrad_t
-        self._baseblock_agrad_tp_size += layer.get_comm_bytes("agrad",
-          baseblock=True)
-        self._edgeblock_agrad_tp_size += layer.get_comm_bytes("agrad",
-          baseblock=False)
+        if lname.startswith('MlpBlock_MoE'):
+          self._baseblock_agrad_etp_size += layer.get_comm_bytes("agrad", baseblock=True)
+          self._edgeblock_agrad_etp_size += layer.get_comm_bytes("agrad", baseblock=False)
+        else:
+          self._baseblock_agrad_tp_size += layer.get_comm_bytes("agrad", baseblock=True)
+          self._edgeblock_agrad_tp_size += layer.get_comm_bytes("agrad", baseblock=False)
         self._baseblock_agrad_tp_time += layer.compute_net_time("agrad",
           baseblock=True)
         self._edgeblock_agrad_tp_time += layer.compute_net_time("agrad",
@@ -2016,6 +2345,9 @@ class Llm:
         self._block_wgrad_mem_time += layer.compute_mem_time("wgrad")
         wgrad_t = layer.compute_processing_time("wgrad")
         self._block_wgrad_time += wgrad_t
+        wgrad_events = layer.get_framework_events('wgrad')
+        self._block_framework_bw_kernels += wgrad_events['kernels']
+        self._block_framework_bw_nodes += wgrad_events['autograd_nodes']
         if lname.startswith('AttnBlock'):
           self._block_attn_bwd_time += wgrad_t
         elif lname.startswith('MlpBlock'):
@@ -2028,6 +2360,13 @@ class Llm:
 
       # Accumulate space requirements per block
       self._block_weight_space += layer.get_weight()
+      if (self.app.is_moe and lname.startswith('MlpBlock_MoE') and
+          hasattr(layer, 'weight_multiplier')):
+        local_routed = self.app.num_experts / self.exe.expert_par
+        local_total = local_routed + self.app.num_shared_experts
+        if local_total > 0:
+          self._block_expert_weight_space += (
+            layer.get_weight() * local_routed / local_total)
       if not layer.reuses_activation():
         self._block_act_working_space += layer.get_activation()
       self._block_act_storage_space += layer.get_activation()
@@ -2243,6 +2582,11 @@ class Llm:
                     self._edgeblocks_per_chunk * self._edgeblock_fw_tp_size
     self._tp_bw_comm_size = self._baseblocks_per_chunk * self._baseblock_agrad_tp_size + \
                       self._edgeblocks_per_chunk * self._edgeblock_agrad_tp_size 
+    self._etp_fw_comm_size = self._baseblocks_per_chunk * self._baseblock_fw_etp_size + \
+                       self._edgeblocks_per_chunk * self._edgeblock_fw_etp_size
+    self._etp_bw_comm_size = self._baseblocks_per_chunk * self._baseblock_agrad_etp_size + \
+                       self._edgeblocks_per_chunk * self._edgeblock_agrad_etp_size
+
     self._pp_fw_comm_size = self._blocks_per_proc * self._block_fw_pp_size
     self._pp_bw_comm_size = self._blocks_per_proc * self._block_bw_pp_size
 
@@ -2501,28 +2845,45 @@ class Llm:
     # Determines how long it takes to perform the DP per block
     # This assumes no DP communication overlap (will be adjusted later).
     if self.exe.data_par > 1 and self.exe.training:
-      self._block_dp_size = self._block_weight_space
-      if self.exe.optimizer_sharding:
+      self._block_dense_dp_size = (
+        self._block_weight_space - self._block_expert_weight_space)
+      self._block_expert_dp_size = self._block_expert_weight_space
+      # The C++ DP dimension is EDP when EP>1. Keep routed expert gradients in
+      # that graph; dense/shared gradients are emitted as model-DP tail events.
+      self._block_dp_size = (self._block_expert_dp_size
+                             if self.exe.expert_par > 1
+                             else self._block_weight_space)
+      dp_participants = (self.exe.expert_data_par
+                         if self.exe.expert_par > 1 else self.exe.data_par)
+      if dp_participants <= 1:
+        self._block_dp_time = 0
+      elif self.exe.optimizer_sharding:
         # When performing optimizer sharding, the communication time is a
         # reduce-scatter plus an all-gather.
         self._block_dp_time = (
           self._dp_net.time(
-            'reduce_scatter', self._block_dp_size, self.exe.data_par) +
+            'reduce_scatter', self._block_dp_size, dp_participants) +
           self._dp_net.time(
-            'all_gather', self._block_dp_size, self.exe.data_par))
+            'all_gather', self._block_dp_size, dp_participants))
       else:
         # When not performing optimizer sharding, the communication time is a
         # single all-reduce.
         self._block_dp_time = self._dp_net.time(
-          'all_reduce', self._block_dp_size, self.exe.data_par)
+          'all_reduce', self._block_dp_size, dp_participants)
     else:
       self._block_dp_size = 0
+      self._block_dense_dp_size = 0
+      self._block_expert_dp_size = 0
       self._block_dp_time = 0
     self.log.debug('DP block comm size: %s',
                    human_format(self._block_dp_size, 'bytes'))
     self.log.debug('DP block comm time (no overlap): %.3e',
                    self._block_dp_time)
     self._dp_comm_size = self._blocks_per_proc * self._block_dp_size
+    self._dense_dp_comm_size = (
+      self._blocks_per_proc * self._block_dense_dp_size)
+    self._expert_dp_comm_size = (
+      self._blocks_per_proc * self._block_expert_dp_size)
 
     self.log.debug("%s %s", 'DP comm size:', self._dp_comm_size)
     self.log.debug("%s %s", 'TP comm FW size:', self._tp_fw_comm_size)
@@ -2743,19 +3104,23 @@ class Llm:
       self._optimizer_space = \
         self._block_optimizer_space * self._blocks_per_proc
 
-      self._extra_embedding_space = \
-        (24*self.app.hidden*self.app.hidden*self.app.num_blocks + 72*self.app.hidden*self.app.num_blocks + 36*self.app.hidden)/(self.exe.tensor_par*self.exe.pipeline_par) +\
-        (18*51200*self.app.hidden)/self.exe.tensor_par - \
-        (64*self.app.hidden*self.app.num_blocks)/self.exe.pipeline_par - \
-        (24*self.app.hidden*self.app.hidden)/self.exe.tensor_par - \
-        8*self.app.hidden
-
-      extra_embed_layer = Layer(
-        "Extra_Embedding",
-        self.sys,
-        inputs_size=self._extra_embedding_space)
-
-      self._extra_and_embedding_time = extra_embed_layer.compute_processing_time("extra")
+      from .decoder_output import decoder_output_stats
+      self._decoder_output = decoder_output_stats(self)
+      output = self._decoder_output
+      # Boundary work is charged once per microbatch, independent of depth.
+      # Decoder output uses the same precision-aware optimizer layout as
+      # transformer blocks. Its detailed byte counts already include sharding.
+      self._extra_embedding_space = (
+        output['weight_bytes'] + output['resident_gradient_bytes'] +
+        output['optimizer_bytes'] + output['activation_bytes'])
+      self._extra_and_embedding_time = self.exe._num_microbatches * (
+        output['forward'] + output['backward'])
+      self._optim_time += output['optimizer']
+      self._optim_flops += output['optimizer_flops']
+      self._optim_mem_accessed += output['optimizer_mem_accessed']
+      self._output_dp_time = self._dp_net.collective_time(
+        'reduce_scatter' if self.exe.optimizer_sharding else 'all_reduce',
+        output['gradient_bytes'], self.exe.data_par)
 
     else:
       self._weight_grad_space = 0
@@ -2896,8 +3261,12 @@ class Llm:
           bw_offload_size += self._block_act_storage_space
         else:
           bw_offload_size += self._block_act_checkpoint_size
-      if self.exe.optimizer_offload:
-        bw_offload_size += self._block_optimizer_space
+      if (self.exe.optimizer_offload and
+          self.exe.overlap_cpu_optimizer_d2h_h2d):
+        # Stream block gradients and updated parameters while backward runs.
+        fraction = self.exe.optimizer_offload_fraction
+        bw_offload_size += fraction * (
+          self._block_weight_grad_space + self._block_weight_space)
     return bw_offload_size
 
   def get_fw_time(self):
@@ -2915,8 +3284,50 @@ class Llm:
   def get_bw_time(self):
     return self._agrad_time + self._wgrad_time
 
+  def get_optimizer_gpu_time(self):
+    # Megatron's fused Adam update has very low arithmetic intensity and is
+    # bandwidth-bound. Scalar operation counts must not use the generic vector
+    # curve: those operations are fused into each memory pass. Aggregate all
+    # parameter traffic and charge the device-memory resource once.
+    resident = (1.0 if not self.exe.optimizer_offload else
+                1.0 - self.exe.optimizer_offload_fraction)
+    traffic = self._optim_mem_accessed * resident
+    if traffic <= 0:
+      return 0.0
+    return traffic / self.sys.get_mem1_throughput(traffic)
+
+  def get_optimizer_cpu_time(self):
+    if not self.exe.optimizer_offload:
+      return 0
+    traffic = self._optim_mem_accessed * self.exe.optimizer_offload_fraction
+    return self.sys.compute_optimizer_cpu_time(
+      traffic, self.exe.use_torch_optimizer_for_cpu_offload)
+
+  def _get_optimizer_transfer_sizes(self, include_blocks):
+    if not self.exe.optimizer_offload:
+      return 0, 0
+    fraction = self.exe.optimizer_offload_fraction
+    out = getattr(self, '_decoder_output', {})
+    gradient = out.get('resident_gradient_bytes', 0)
+    parameters = out.get('weight_bytes', 0)
+    if include_blocks:
+      gradient += self._block_weight_grad_space * self._blocks_per_proc
+      parameters += self._block_weight_space * self._blocks_per_proc
+    return fraction * gradient, fraction * parameters
+
+  def get_optimizer_transfer_time(self, include_blocks=True):
+    d2h, h2d = self._get_optimizer_transfer_sizes(include_blocks)
+    return (
+      self.sys.compute_offload_time(d2h, self.exe.pin_cpu_grads) +
+      self.sys.compute_offload_time(h2d, self.exe.pin_cpu_params)
+      if d2h or h2d else 0)
+
   def get_optim_step_time(self):
-    return self._optim_time
+    time = self.get_optimizer_gpu_time() + self.get_optimizer_cpu_time()
+    if (self.exe.optimizer_offload and
+        not self.exe.overlap_cpu_optimizer_d2h_h2d):
+      time += self.get_optimizer_transfer_time(include_blocks=True)
+    return time
 
   def get_extra_and_embedding_time(self):
     return self._extra_and_embedding_time
@@ -2966,8 +3377,195 @@ class Llm:
     else:
       return 0
   
+  def _schedule_framework_stage(self, layers, stage, recompute_layers=None,
+                                  repeats=1):
+    """Build a continuous host/GPU schedule for one pipeline-stage phase.
+
+    TP/CP collectives are emitted separately by the flow simulator, so device
+    durations here contain operator compute/memory only. Repeating blocks in one
+    DAG preserves host submission pipelining across layer boundaries.
+    """
+    dag = RuntimeEventDAG(self.sys)
+    repeats = max(1, int(repeats))
+    for block_index in range(repeats):
+      if stage == "fw":
+        for layer in layers:
+          label = getattr(layer, "name", layer.__class__.__name__)
+          events = layer.get_framework_events("fw")
+          dag.enqueue(f"{label}:fw:{block_index}",
+                      Layer.compute_processing_time(layer, "fw"),
+                      events["kernels"], events["autograd_nodes"],
+                      events.get("host_s"))
+        continue
+
+      source = layers if recompute_layers is None else recompute_layers
+      recomputed = [layer for layer in source
+                    if layer.get_recompute_flag() and
+                    layer.get_framework_events("fw")["kernels"]]
+      for layer in recomputed:
+        label = getattr(layer, "name", layer.__class__.__name__)
+        events = layer.get_framework_events("fw")
+        dag.enqueue(f"{label}:recompute:{block_index}",
+                    Layer.compute_processing_time(layer, "fw"),
+                    events["kernels"], events["autograd_nodes"],
+                    events.get("host_s"))
+      if recomputed:
+        dag.synchronize(f"block:checkpoint:{block_index}",
+                        self.sys.framework_checkpoint_node_s)
+
+      for layer in reversed(layers):
+        label = getattr(layer, "name", layer.__class__.__name__)
+        for backward_stage in ("agrad", "wgrad"):
+          events = layer.get_framework_events(backward_stage)
+          dag.enqueue(f"{label}:{backward_stage}:{block_index}",
+                      Layer.compute_processing_time(layer, backward_stage),
+                      events["kernels"], events["autograd_nodes"],
+                      events.get("host_s"))
+    return dag
+
+  def get_framework_runtime_dag(self):
+    """Return per-block dual-resource schedules derived from Layer events."""
+    cached = getattr(self, '_framework_runtime_dag_cache', None)
+    if cached is not None:
+      return cached
+    attn = [x for x in self._llm_block
+            if (getattr(x, 'name', '') or '').startswith('AttnBlock')]
+    ffn = [x for x in self._llm_block
+           if (getattr(x, 'name', '') or '').startswith('MlpBlock')]
+    full_recompute = self.exe.activation_recompute == "full"
+    schedules = {
+      "forward": self._schedule_framework_stage(self._llm_block, "fw"),
+      "backward": self._schedule_framework_stage(self._llm_block, "bw"),
+      "attention_forward": self._schedule_framework_stage(attn, "fw"),
+      "attention_backward": self._schedule_framework_stage(
+        attn, "bw", [] if full_recompute else None),
+      "ffn_forward": self._schedule_framework_stage(ffn, "fw"),
+      "ffn_backward": self._schedule_framework_stage(
+        ffn, "bw", self._llm_block if full_recompute else None),
+    }
+    cached = {name: dag.summary() for name, dag in schedules.items()}
+    for total_name, first_name, second_name in (
+        ("forward", "attention_forward", "ffn_forward"),
+        ("backward", "ffn_backward", "attention_backward")):
+      total = cached[total_name]["elapsed"]
+      split = cached[first_name]["elapsed"] + cached[second_name]["elapsed"]
+      scale = total / split if split else 0.0
+      cached[first_name]["flow_elapsed"] = cached[first_name]["elapsed"] * scale
+      cached[second_name]["flow_elapsed"] = cached[second_name]["elapsed"] * scale
+    self._framework_runtime_dag_cache = cached
+    return cached
+
+  def get_framework_boundary_dag(self):
+    """Schedule decoder endpoint and optimizer on host/GPU resources."""
+    cached = getattr(self, '_framework_boundary_dag_cache', None)
+    if cached is not None:
+      return cached
+    mb = max(1, self.exe._num_microbatches)
+    out = getattr(self, '_decoder_output', {})
+    events = out.get('framework', {})
+    endpoint = RuntimeEventDAG(self.sys)
+    for _ in range(mb):
+      endpoint.enqueue('decoder-output:fw', out.get('forward', 0.0),
+                       events.get('forward_kernels', 0),
+                       events.get('forward_autograd_nodes', 0))
+      endpoint.enqueue('decoder-output:bw', out.get('backward', 0.0),
+                       events.get('backward_kernels', 0),
+                       events.get('backward_autograd_nodes', 0))
+    optimizer = RuntimeEventDAG(self.sys)
+    if self.exe.training:
+      optimizer_bytes = (self._weight_grad_space +
+                         out.get("gradient_bytes", 0))
+      bucket = max(1, self.sys.framework_optimizer_bucket_bytes)
+      buckets = max(1, (int(optimizer_bytes) + bucket - 1) // bucket)
+      submit = buckets * self.sys.framework_optimizer_bucket_dispatch_s
+      unscale_bytes = 2 * optimizer_bytes
+      unscale_time = (unscale_bytes /
+                      self.sys.get_mem1_throughput(unscale_bytes))
+      optimizer.enqueue("unscale-found-inf", unscale_time, buckets, 0, submit)
+      optimizer.synchronize("found-inf", self.sys.framework_scalar_sync_s)
+      grad_norm_time = (optimizer_bytes /
+                        self.sys.get_mem1_throughput(optimizer_bytes))
+      optimizer.enqueue("grad-norm", grad_norm_time, buckets, 0, submit)
+      optimizer.synchronize("grad-norm", self.sys.framework_scalar_sync_s)
+      if not self.exe.optimizer_offload:
+        optimizer.enqueue(
+          "optimizer", self.get_optimizer_gpu_time(), buckets, 0, submit)
+      else:
+        optimizer.enqueue(
+          "optimizer-gpu", self.get_optimizer_gpu_time(), buckets, 0, submit)
+        # Block transfers are already represented in the backward flow only
+        # when overlap is enabled. Decoder-output buffers remain boundary work.
+        include_blocks = not self.exe.overlap_cpu_optimizer_d2h_h2d
+        d2h, h2d = self._get_optimizer_transfer_sizes(include_blocks)
+        if d2h:
+          optimizer.enqueue(
+            "optimizer-d2h",
+            self.sys.compute_offload_time(d2h, self.exe.pin_cpu_grads),
+            1, 0)
+        optimizer.host_compute(
+          "optimizer-cpu", self.get_optimizer_cpu_time(), wait_for_gpu=True)
+        if h2d:
+          optimizer.enqueue(
+            "optimizer-h2d",
+            self.sys.compute_offload_time(h2d, self.exe.pin_cpu_params),
+            1, 0, 0)
+    cached = {'endpoint': endpoint.summary(),
+              'optimizer': optimizer.summary()}
+    self._framework_boundary_dag_cache = cached
+    return cached
+
+  def get_framework_runtime_breakdown(self):
+    """Host critical-path work inferred from graph events, once per iteration."""
+    mb = max(1, self.exe._num_microbatches)
+    bpp = self._blocks_per_proc
+    out = getattr(self, '_decoder_output', {}).get('framework', {})
+    fw_kernels = mb * (bpp * self._block_framework_fw_kernels +
+                       out.get('forward_kernels', 0))
+    fw_nodes = mb * (bpp * self._block_framework_fw_nodes +
+                     out.get('forward_autograd_nodes', 0))
+    bw_kernels = mb * (bpp * self._block_framework_bw_kernels +
+                       out.get('backward_kernels', 0))
+    bw_nodes = mb * (bpp * self._block_framework_bw_nodes +
+                     out.get('backward_autograd_nodes', 0))
+    re_kernels = mb * bpp * self._block_framework_re_kernels
+    re_nodes = mb * bpp * self._block_framework_re_nodes
+    checkpoints = mb * bpp * self._block_framework_checkpoint_nodes
+    extra = self.sys.get_framework_runtime_time(
+      kernels=mb * (out.get('forward_kernels', 0) +
+                    out.get('backward_kernels', 0)),
+      autograd_nodes=mb * (out.get('forward_autograd_nodes', 0) +
+                           out.get('backward_autograd_nodes', 0)))
+    optimizer_bytes = (self._weight_grad_space +
+                       getattr(self, '_decoder_output', {}).get(
+                         'gradient_bytes', 0))
+    optimizer = self.sys.get_framework_runtime_time(
+      scalar_syncs=(2 if self.exe.training else 0),
+      optimizer_bytes=optimizer_bytes)
+    return {
+      'scheduler': 'dual_resource_event_dag',
+      'dag': {
+        'block': self.get_framework_runtime_dag(),
+        'iteration_boundary': self.get_framework_boundary_dag(),
+      },
+      'flow_forward': self.sys.get_framework_runtime_time(
+        kernels=fw_kernels, autograd_nodes=fw_nodes),
+      'flow_backward': self.sys.get_framework_runtime_time(
+        kernels=bw_kernels, autograd_nodes=bw_nodes),
+      'recompute': self.sys.get_framework_runtime_time(
+        kernels=re_kernels, autograd_nodes=re_nodes,
+        checkpoint_nodes=checkpoints),
+      'extra_and_embedding': extra,
+      'optimizer': optimizer,
+      'events': {
+        'forward_kernels': fw_kernels, 'forward_autograd_nodes': fw_nodes,
+        'backward_kernels': bw_kernels, 'backward_autograd_nodes': bw_nodes,
+        'recompute_kernels': re_kernels, 'recompute_autograd_nodes': re_nodes,
+        'checkpoint_nodes': checkpoints, 'optimizer_bytes': optimizer_bytes,
+      },
+    }
+
   def _flow_network_kwargs(self, enable_timeline):
-    """Build kwargs for flow simulator: layered MLA/FFN + EP two-phase sizes."""
+    """Build flow kwargs using Megatron model-DP/EP/expert-DP semantics."""
     bpp = self._blocks_per_proc
     attn_fw = getattr(self, '_block_attn_fw_time', 0.0) or 0.0
     ffn_fw = getattr(self, '_block_ffn_fw_time', 0.0) or 0.0
@@ -2988,18 +3586,44 @@ class Llm:
         "expert_par=%d but EP dispatch size is 0; ignoring EP in flow simulator",
         ep)
       ep = 1
+    model_dp = self.exe.data_par
+    expert_dp = self.exe.expert_data_par
+    expert_tp = self.exe.expert_tensor_par
+    dense_world = (self.exe.pipeline_par * model_dp * self.exe.context_par *
+                   self.exe.tensor_par)
+    expert_world = self.exe.pipeline_par * expert_dp * ep * expert_tp
+    if dense_world != self.exe.num_procs or expert_world != self.exe.num_procs:
+      raise self.Error(
+        f'dual rank generators disagree: dense={dense_world}, '
+        f'expert={expert_world}, world={self.exe.num_procs}')
+    mb = max(1, self.exe._num_microbatches)
+    dag = self.get_framework_runtime_dag()
+    fw_gap = self.get_fw_offload_overhead() / mb
+    bw_gap = self.get_bw_offload_overhead() / mb
+    # One continuous DAG per pipeline stage: resetting host/GPU tails at every
+    # transformer block incorrectly charges the submission startup gap bpp times.
+    stage_fw = self._schedule_framework_stage(
+      self._llm_block, "fw", repeats=bpp).summary()
+    stage_bw = self._schedule_framework_stage(
+      self._llm_block, "bw", repeats=bpp).summary()
+    fwd_time = stage_fw["elapsed"] + fw_gap
+    bwd_time = stage_bw["elapsed"] + bw_gap
+    block_fw = dag["forward"]["elapsed"]
+    block_bw = dag["backward"]["elapsed"]
+    fw_scale = stage_fw["elapsed"] / block_fw if block_fw else 0.0
+    bw_scale = stage_bw["elapsed"] / block_bw if block_bw else 0.0
     return dict(
-      pp=self.exe.pipeline_par, dp=self.exe.data_par, tp=self.exe.tensor_par,
-      ep=ep, cp=self.exe.context_par,
-      fwdCompTime=self._block_fw_time * bpp,
-      bwdCompTime=(self._block_agrad_time + self._block_wgrad_time) * bpp,
-      fwd_mla_time=(attn_fw * bpp) if use_layered else 0.0,
-      fwd_ffn_time=(ffn_fw * bpp) if use_layered else 0.0,
-      bwd_mla_time=(attn_bwd * bpp) if use_layered else 0.0,
-      bwd_ffn_time=(ffn_bwd * bpp) if use_layered else 0.0,
+      pp=self.exe.pipeline_par, dp=model_dp, tp=self.exe.tensor_par,
+      ep=ep, cp=self.exe.context_par, etp=expert_tp, edp=expert_dp,
+      fwdCompTime=fwd_time, bwdCompTime=bwd_time,
+      fwd_mla_time=(dag["attention_forward"]["flow_elapsed"] * fw_scale + fw_gap) if use_layered else 0.0,
+      fwd_ffn_time=(dag["ffn_forward"]["flow_elapsed"] * fw_scale) if use_layered else 0.0,
+      bwd_mla_time=(dag["attention_backward"]["flow_elapsed"] * bw_scale + bw_gap) if use_layered else 0.0,
+      bwd_ffn_time=(dag["ffn_backward"]["flow_elapsed"] * bw_scale) if use_layered else 0.0,
       microbatches=self.exe._num_microbatches,
       fwdTPSize=self._tp_fw_comm_size,
       bwdTPSize=self._tp_bw_comm_size,
+      fwdETPSize=self._etp_fw_comm_size, bwdETPSize=self._etp_bw_comm_size,
       fwdPPSize=self._pp_fw_comm_size,
       bwdPPSize=self._pp_bw_comm_size,
       dpSize=self._dp_comm_size,
@@ -3071,6 +3695,75 @@ class Llm:
     
     # 从返回的元组中提取globalTime（第1个元素，索引0）
     return network_result[0]
+
+  def get_iteration_boundary_events(self, flow_global_time):
+    """Represent Megatron optimizer and parameter gather in the event graph."""
+    cursor = float(flow_global_time)
+    events = []
+    framework = self.get_framework_runtime_breakdown()
+    # This work is outside the repeated transformer-block flow graph, but is
+    boundary_dag = self.get_framework_boundary_dag()
+    # within Megatron's iteration boundary (embedding/output-head work).
+    extra_and_embedding_time = boundary_dag["endpoint"]["elapsed"] if self.exe.training else 0.0
+    if extra_and_embedding_time > 0:
+      end = cursor + extra_and_embedding_time
+      events.extend({'rank': rank, 'event_type': 'EXTRA_AND_EMBEDDING',
+                     'microbatch': 0, 'start_time': cursor, 'end_time': end}
+                    for rank in range(self.exe.num_procs))
+      cursor = end
+    dense_dp_time = getattr(self, '_output_dp_time', 0.0)
+    if dense_dp_time:
+      end = cursor + dense_dp_time
+      events.extend({'rank': rank, 'event_type': 'OUTPUT_DP_SYNC',
+                     'microbatch': 0, 'start_time': cursor, 'end_time': end}
+                    for rank in range(self.exe.num_procs))
+      cursor = end
+    # For MoE, the C++ DP group is EDP. Dense/router/shared-expert gradients
+    # instead span model-DP, so make that otherwise-hidden group explicit.
+    if (self.exe.training and self.exe.expert_par > 1 and
+        self.exe.data_par > 1 and self._dense_dp_comm_size > 0):
+      dp_op = 'reduce_scatter' if self.exe.optimizer_sharding else 'all_reduce'
+      block_dense_dp_time = self._dp_net.collective_time(
+        dp_op, self._dense_dp_comm_size, self.exe.data_par)
+      dense_dp_time += block_dense_dp_time
+      end = cursor + block_dense_dp_time
+      events.extend({'rank': rank, 'event_type': 'DENSE_DP_SYNC',
+                     'microbatch': 0, 'start_time': cursor, 'end_time': end}
+                    for rank in range(self.exe.num_procs))
+      cursor = end
+    optimizer_time = boundary_dag["optimizer"]["elapsed"] if self.exe.training else 0.0
+    if optimizer_time > 0:
+      end = cursor + optimizer_time
+      events.extend({'rank': rank, 'event_type': 'OPTIMIZER_STEP',
+                     'microbatch': 0, 'start_time': cursor, 'end_time': end}
+                    for rank in range(self.exe.num_procs))
+      cursor = end
+    param_gather_time = 0.0
+    if self.exe.training and self.exe.optimizer_sharding:
+      dense_gather = self._dp_net.collective_time(
+          'all_gather', getattr(self, '_dense_dp_comm_size', 0) +
+          getattr(self, '_decoder_output', {}).get('gradient_bytes', 0),
+          self.exe.data_par)
+      expert_gather = self._dp_net.collective_time(
+          'all_gather', getattr(self, '_expert_dp_comm_size', 0),
+          self.exe.expert_data_par)
+      param_gather_time = dense_gather + expert_gather
+      end = cursor + param_gather_time
+      events.extend({'rank': rank, 'event_type': 'PARAM_GATHER',
+                     'microbatch': 0, 'start_time': cursor, 'end_time': end}
+                    for rank in range(self.exe.num_procs))
+      cursor = end
+    return {'flow_global_time': float(flow_global_time),
+            'extra_and_embedding_time': extra_and_embedding_time,
+            'dense_dp_time': dense_dp_time,
+            'optimizer_time': optimizer_time,
+            'param_gather_time': param_gather_time,
+            'framework_runtime': framework,
+            'iteration_time': cursor, 'events': events}
+
+  def get_megatron_iteration_time(self):
+    return self.get_iteration_boundary_events(
+      self.get_flow_network_global_time())['iteration_time']
 
   def get_tp_comm_link_time(self):
     return self._tp_comm_time_link
@@ -3148,7 +3841,7 @@ class Llm:
     total_flops = self.get_useful_flops()
     perfect_time = self._blocks_per_proc * self.exe._num_microbatches * \
       total_flops / self.sys.matrix.flops(self.exe.matrix_dtype)
-    simulated_step_time = self.get_flow_network_global_time()
+    simulated_step_time = self.get_megatron_iteration_time()
     if simulated_step_time <= 0:
       return 0.0
     return min(1.0, max(0.0, perfect_time / simulated_step_time))
@@ -3248,16 +3941,34 @@ class Llm:
       tier1 += self.get_act_space()
       tier1 += self.get_act_checkpoint_size()
     if self.exe.optimizer_offload:
-      # We keep one set of non-sharded weight grads after compute before
-      # reduction, and one sharded set for offloading
-      tier1 += self.get_weight_grad_space_min()
-      tier1 += self.get_optimizer_space_min()
-      tier2 += self._block_weight_grad_space * self._blocks_per_proc
-      tier2 += self.get_optimizer_space()
+      fraction = self.exe.optimizer_offload_fraction
+      # A fraction of states and reduced gradients is persistently placed on
+      # CPU. GPU keeps the remainder plus the transient block buffers needed by
+      # the asynchronous copy/update pipeline.
+      gpu_grads = self.get_weight_grad_space() * (1 - fraction)
+      gpu_optim = self.get_optimizer_space() * (1 - fraction)
+      tier1 += max(gpu_grads, self.get_weight_grad_space_min() * fraction)
+      tier1 += max(gpu_optim, self.get_optimizer_space_min() * fraction)
+      tier2 += fraction * (
+        self._block_weight_grad_space * self._blocks_per_proc +
+        self.get_optimizer_space())
     else:
       tier1 += self.get_weight_grad_space() + \
         self.get_optimizer_space()
     tier1 += self.get_act_grad_space()
+    if self.exe.training:
+      output = getattr(self, '_decoder_output', {})
+      fixed_output = (
+        output.get('weight_bytes', 0) + output.get('activation_bytes', 0))
+      output_training = (
+        output.get('resident_gradient_bytes', 0) +
+        output.get('optimizer_bytes', 0))
+      if self.exe.optimizer_offload:
+        fraction = self.exe.optimizer_offload_fraction
+        tier1 += fixed_output + output_training * (1 - fraction)
+        tier2 += output_training * fraction
+      else:
+        tier1 += fixed_output + output_training
     return tier1, tier2
 
   def get_mem_tier1_cap_req(self):
@@ -3298,8 +4009,9 @@ class Llm:
           self._block_wgrad_mem_time),
         self._edgeblock_bw_time_no_offload - (self._block_agrad_mem_time +
           self._block_wgrad_mem_time))
-      return (self._block_weight_grad_space + self._block_optimizer_space) / \
-        offload_time
+      fraction = self.exe.optimizer_offload_fraction
+      return fraction * (
+        self._block_weight_grad_space + self._block_weight_space) / offload_time
     else:
       return 0
 

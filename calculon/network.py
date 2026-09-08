@@ -49,6 +49,8 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         c_int,   # tp
         c_int,   # ep
         c_int,   # cp
+        c_int,   # etp
+        c_int,   # edp
         c_double, # tpBw
         c_double, # cpBw
         c_double, # epBw
@@ -69,6 +71,8 @@ def create_dynamic_pycall_main(max_events, enable_timeline=True):
         c_char_p, # topology_type
         c_uint64,   # fwdTPSize
         c_uint64,   # bwdTPSize
+        c_uint64,   # fwdETPSize
+        c_uint64,   # bwdETPSize
         c_uint64,   # fwdPPSize
         c_uint64,   # bwdPPSize
         c_uint64,   # dpSize
@@ -362,7 +366,14 @@ class Network:
     self.log.info('flow network init: bw(tp/cp/ep/pp/dp)=%s latency=%s topo=%s',
                   self._flow_bw, self._flow_latency, self._topology)
 
-  def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline, ep=1, fwd_ep_size=0, bwd_ep_size=0, cp=1, fwd_cp_size=0, bwd_cp_size=0, fwd_mla_time=0.0, fwd_ffn_time=0.0, bwd_mla_time=0.0, bwd_ffn_time=0.0, fwd_ep_dispatch_size=0, fwd_ep_combine_size=0, bwd_ep_dispatch_size=0, bwd_ep_combine_size=0):
+  def total_flow_network_time(self, pp, dp, tp, fwdCompTime, bwdCompTime, microbatches, fwdTPSize, bwdTPSize, fwdPPSize, bwdPPSize, dpSize, enable_timeline, ep=1, fwd_ep_size=0, bwd_ep_size=0, cp=1, fwd_cp_size=0, bwd_cp_size=0, fwd_mla_time=0.0, fwd_ffn_time=0.0, bwd_mla_time=0.0, bwd_ffn_time=0.0, fwd_ep_dispatch_size=0, fwd_ep_combine_size=0, bwd_ep_dispatch_size=0, bwd_ep_combine_size=0, etp=None, edp=None,
+                              fwdETPSize=0, bwdETPSize=0):
+    etp = tp if etp is None else etp
+    edp = (pp * dp * tp * cp) // (pp * ep * etp) if edp is None else edp
+    dense_world = pp * dp * tp * cp
+    expert_world = pp * edp * ep * etp
+    if dense_world != expert_world:
+      raise ValueError(f"dual rank generators disagree: dense={dense_world}, expert={expert_world}")
     topology_bytes = self._topology.encode("utf-8") if isinstance(self._topology, str) else self._topology
     self.log.info("wxftest total flow network time: pp=%d, dp=%d, tp=%d, fwdCompTime=%f, bwdCompTime=%f, mla/ffn=%f/%f, microbatches=%d, enable_timeline=%s", pp, dp, tp, fwdCompTime, bwdCompTime, fwd_mla_time, fwd_ffn_time, microbatches, enable_timeline)
     
@@ -376,7 +387,7 @@ class Network:
     # aggregate statistics.  Timeline cardinality scales with ranks ×
     # microbatches; use a workload-derived bound when it is requested.
     initial_max_events = (max(1024, min(200000,
-                                pp * dp * tp * ep * cp * microbatches * 16))
+                                dense_world * microbatches * 16))
                           if enable_timeline else 1)
     timelineRanks = (c_int * initial_max_events)()
     timelineMicrobatches = (c_int * initial_max_events)()
@@ -419,13 +430,14 @@ class Network:
         # 始终使用相同的调用方式，传递所有参数
         # C++端会根据enableTimeline参数决定是否使用timeline相关参数
         pycall_main(
-            pp, dp, tp, ep, cp,
+            pp, dp, tp, ep, cp, etp, edp,
             *self._flow_bw, *self._flow_latency,
             fwdCompTime, bwdCompTime,
             fwd_mla_time, fwd_ffn_time, bwd_mla_time, bwd_ffn_time,
             microbatches,
             topology_bytes,
             self.cast_uint64(fwdTPSize), self.cast_uint64(bwdTPSize),
+            self.cast_uint64(fwdETPSize), self.cast_uint64(bwdETPSize),
             self.cast_uint64(fwdPPSize), self.cast_uint64(bwdPPSize),
             self.cast_uint64(dpSize),
             self.cast_uint64(fwd_ep_size), self.cast_uint64(bwd_ep_size),

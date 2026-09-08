@@ -45,11 +45,58 @@ class System:
 
     self.mem1 = Memory(cfg['mem1'])
     self.mem2 = Memory(cfg['mem2'])
+    # Optional independent CPU-optimizer microbenchmark. Older system files
+    # fall back to the offload-link bandwidth rather than a model-specific
+    # timing factor.
+    optimizer_cpu = cfg.get('optimizer_cpu') or {}
+    fallback_gbps = self.mem2.bandwidth / 1e9
+    self.optimizer_cpu_bandwidth = float(
+      optimizer_cpu.get('GBps', fallback_gbps)) * 1e9
+    self.torch_optimizer_cpu_bandwidth = float(
+      optimizer_cpu.get('torch_GBps',
+                        optimizer_cpu.get('GBps', fallback_gbps))) * 1e9
+    self.unpinned_offload_efficiency = float(
+      cfg.get('unpinned_offload_efficiency', 1.0))
+    if self.optimizer_cpu_bandwidth <= 0:
+      raise ValueError('optimizer_cpu.GBps must be positive')
+    if self.torch_optimizer_cpu_bandwidth <= 0:
+      raise ValueError('optimizer_cpu.torch_GBps must be positive')
+    if not 0 < self.unpinned_offload_efficiency <= 1:
+      raise ValueError('unpinned_offload_efficiency must be in (0, 1]')
 
     # Optional kernel launch floor (seconds) for matrix-engine ops.
     # Calibrated by test/calibrate_h20_matrix_efficiency.py; 0 disables.
-    self.matrix_launch_s = float(cfg.get('matrix_launch_s', 0.0) or 0.0)
+    self.matrix_launch_s_default = float(
+        cfg.get('matrix_launch_s', 0.0) or 0.0)
+    self.matrix_launch_s_by_dtype = {
+        str(dtype): float(value) for dtype, value in
+        (cfg.get('matrix_launch_s_by_dtype') or {}).items()
+    }
+    # Kept as a public scalar for existing layer code.  It is selected for the
+    # active matrix dtype in set_datatypes(), with the legacy value as fallback.
+    self.matrix_launch_s = self.matrix_launch_s_default
     self.vector_launch_s = float(cfg.get('vector_launch_s', 0.0) or 0.0)
+    # Host-side costs of the PyTorch/Megatron execution engine.  These are
+    # calibrated independently of any model and remain disabled unless a system
+    # JSON explicitly opts in.  They model queueing/autograd bookkeeping, not
+    # device FLOPs or a workload-specific correction factor.
+    runtime = cfg.get('framework_runtime') or {}
+    self.framework_runtime_enabled = bool(runtime.get('enabled', False))
+    self.framework_kernel_dispatch_s = float(
+      runtime.get('kernel_dispatch_s', 0.0) or 0.0)
+    self.framework_autograd_node_s = float(
+      runtime.get('autograd_node_s', 0.0) or 0.0)
+    self.framework_checkpoint_node_s = float(
+      runtime.get('checkpoint_node_s', 0.0) or 0.0)
+    self.framework_scalar_sync_s = float(
+      runtime.get('scalar_sync_s', 0.0) or 0.0)
+    self.framework_optimizer_bucket_bytes = int(
+      runtime.get('optimizer_bucket_bytes', 0) or 0)
+    self.framework_optimizer_bucket_dispatch_s = float(
+      runtime.get('optimizer_bucket_dispatch_s', 0.0) or 0.0)
+    # Optional CUDA-kernel multiplicities from a standalone framework probe.
+    # This is a GPU/software-stack capability, never a model or topology table.
+    self.framework_operator_events = runtime.get("operator_events") or {}
     # Phase2 operator correction for reduction-shaped RMSNorm.  Keys are the
     # exact reduction width; values scale the generic vector compute time.
     # This stays separate from vector.gflops_efficiency because ordinary
@@ -122,6 +169,37 @@ class System:
 
     self.networks = [Network(n, log) for n in cfg['networks']]
 
+  def get_framework_runtime_time(self, kernels=0, autograd_nodes=0,
+                                 checkpoint_nodes=0, scalar_syncs=0,
+                                 optimizer_bytes=0):
+    """Return host critical-path time for a graph-derived runtime event count."""
+    if not self.framework_runtime_enabled:
+      return 0.0
+    buckets = 0
+    if optimizer_bytes and self.framework_optimizer_bucket_bytes:
+      buckets = ((int(optimizer_bytes) +
+                  self.framework_optimizer_bucket_bytes - 1) //
+                 self.framework_optimizer_bucket_bytes)
+    return (kernels * self.framework_kernel_dispatch_s +
+            autograd_nodes * self.framework_autograd_node_s +
+            checkpoint_nodes * self.framework_checkpoint_node_s +
+            scalar_syncs * self.framework_scalar_sync_s +
+            buckets * self.framework_optimizer_bucket_dispatch_s)
+
+  def get_framework_operator_events(self, operator, stage, fallback):
+    """Return calibrated physical CUDA events, retaining logical autograd."""
+    profile = self.framework_operator_events.get(operator, {})
+    value = profile.get(stage)
+    if value is None:
+      return fallback
+    if isinstance(value, dict):
+      result = {"kernels": int(value.get("kernels", fallback["kernels"])),
+                "autograd_nodes": int(value.get("autograd_nodes", fallback["autograd_nodes"]))}
+      if "host_s" in value:
+        result["host_s"] = float(value["host_s"])
+      return result
+    return {"kernels": int(value), "autograd_nodes": fallback["autograd_nodes"]}
+
   def get_bmm_dtype(self):
     """Dtype used for BatchMatMul matrix throughput (and BMM mem width).
 
@@ -189,6 +267,8 @@ class System:
     self.matrix_dtype = matrix_dtype
     self.vector_dtype = vector_dtype
     self.datatype = matrix_dtype
+    self.matrix_launch_s = self.matrix_launch_s_by_dtype.get(
+        matrix_dtype, self.matrix_launch_s_default)
 
   def get_matrix_throughput(self, flops):
     return self.matrix.throughput(self.matrix_dtype, flops)
@@ -200,9 +280,16 @@ class System:
     generic matrix model, preserving safe behaviour for arbitrary networks.
     """
     model = self.linear_shape
-    if not model or int(k) != int(model.get('reference_k', -1)):
+    if not model:
       return 0.0
-    curves = model.get('latency_s', {}).get(self.matrix_dtype, {})
+    # New model-aware layout supports several hidden sizes in one system JSON.
+    by_k = model.get('latency_s_by_k', {}).get(self.matrix_dtype, {})
+    curves = by_k.get(str(int(k))) if isinstance(by_k, dict) else None
+    # Backwards compatibility with BW1100's original single-reference-K table.
+    if curves is None:
+      if int(k) != int(model.get('reference_k', -1)):
+        return 0.0
+      curves = model.get('latency_s', {}).get(self.matrix_dtype, {})
     if not isinstance(curves, dict):
       return 0.0
     bucket = str(int(n))
@@ -213,6 +300,10 @@ class System:
       if m >= int(min_m):
         return float(latency_s)
     return float(points[-1][1]) if points else 0.0
+
+  def get_linear_small_n_time(self, m, k, n):
+    """Backward-compatible alias for legacy calibration/tests."""
+    return self.get_linear_shape_time(m, k, n)
 
   def get_parametric_linear_time(self, m, k, n):
     model = (self.parametric_shapes.get('linear', {})
@@ -258,6 +349,18 @@ class System:
 
   def get_vector_throughput(self, flops):
     return self.vector.throughput(self.vector_dtype, flops)
+
+  def get_optimizer_throughput(self, flops):
+    """Return vector throughput for the Adam update precision.
+
+    Megatron keeps Adam's master parameters and moments in FP32 even when the
+    transformer forward/backward path is FP16 or BF16.  A system that does not
+    expose FP32 vector data falls back to the configured vector precision.
+    """
+    dtype = 'float32'
+    if dtype not in self.vector.supported_datatypes():
+      dtype = self.vector_dtype
+    return self.vector.throughput(dtype, flops)
 
   def get_rmsnorm_time_scale(self, width):
     return self.rmsnorm_time_scale.get(
@@ -391,8 +494,16 @@ class System:
   def get_mem2_throughput(self, size):
     return self.mem2.throughput(size)
 
-  def compute_offload_time(self, size):
-    return size / self.mem2.throughput(size)
+  def compute_offload_time(self, size, pinned=True):
+    throughput = self.mem2.throughput(size)
+    if not pinned:
+      throughput *= self.unpinned_offload_efficiency
+    return size / throughput
+
+  def compute_optimizer_cpu_time(self, size, use_torch=False):
+    bandwidth = (self.torch_optimizer_cpu_bandwidth if use_torch
+                 else self.optimizer_cpu_bandwidth)
+    return size / bandwidth
 
   def get_processing_time(self, flops_time, mem_time):
     if self.proc_mode == 'roofline':

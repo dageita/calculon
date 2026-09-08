@@ -4,5 +4,17 @@
   "seq_size": 1024,
   "attn_heads": 16,
   "attn_size": 64,
-  "num_blocks": 24
+  "num_blocks": 24,
+  "model_family": "decoder",
+  "hf_model_id": "openai-community/gpt2-medium",
+  "max_position_embeddings": 1024,
+  "kv_heads": 16,
+  "vocab_size": 50257,
+  "position_embedding_type": "learned_absolute",
+  "rms_norm": false,
+  "ffn_type": "gelu",
+  "untied_embeddings": false,
+  "attention_bias": true,
+  "mlp_bias": true,
+  "parallel_block": false
 }

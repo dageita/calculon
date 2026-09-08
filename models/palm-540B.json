@@ -4,5 +4,20 @@
   "seq_size": 2048,
   "attn_heads": 48,
   "attn_size": 256,
-  "num_blocks": 118
+  "num_blocks": 118,
+  "model_family": "decoder",
+  "config_source": "https://arxiv.org/abs/2204.02311",
+  "max_position_embeddings": 2048,
+  "kv_heads": 1,
+  "vocab_size": 256000,
+  "position_embedding_type": "rope",
+  "rope_theta": 10000.0,
+  "rms_norm": true,
+  "ffn_type": "swiglu",
+  "untied_embeddings": false,
+  "attention_bias": false,
+  "mlp_bias": false,
+  "parallel_block": true,
+  "architecture_approximation": true,
+  "architecture_notes": "Paper preset: MQA, SwiGLU, RoPE and parallel block are represented; branch concurrency remains an approximation."
 }

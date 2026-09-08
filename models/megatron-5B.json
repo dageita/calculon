@@ -4,5 +4,18 @@
   "seq_size": 2048,
   "attn_heads": 32,
   "attn_size": 128,
-  "num_blocks": 24
+  "num_blocks": 24,
+  "model_family": "decoder",
+  "max_position_embeddings": 2048,
+  "kv_heads": 32,
+  "vocab_size": 51200,
+  "position_embedding_type": "learned_absolute",
+  "rms_norm": false,
+  "ffn_type": "gelu",
+  "untied_embeddings": false,
+  "attention_bias": true,
+  "mlp_bias": true,
+  "parallel_block": false,
+  "architecture_approximation": true,
+  "architecture_notes": "Synthetic Megatron scaling preset, not a Hugging Face checkpoint architecture."
 }

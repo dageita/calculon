@@ -1,0 +1,21 @@
+{
+  "hidden": 4096,
+  "feedforward": 12288,
+  "seq_size": 1024,
+  "attn_heads": 32,
+  "num_blocks": 36,
+  "vocab_size": 151936,
+  "model_family": "decoder",
+  "max_position_embeddings": 40960,
+  "rope_theta": 1000000.0,
+  "position_embedding_type": "rope",
+  "rms_norm": true,
+  "norm_epsilon": 1e-06,
+  "ffn_type": "swiglu",
+  "untied_embeddings": true,
+  "attention_bias": false,
+  "mlp_bias": false,
+  "kv_heads": 8,
+  "attn_size": 128,
+  "qk_norm": true
+}

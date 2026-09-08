@@ -105,15 +105,15 @@ def generate_5d_parallelisms(app: Llm.Application, num_procs: int,
             if pp > app.num_blocks or app.num_blocks % pp:
                 continue
             after_pp = after_tp // pp
-            ep_values = factors(after_pp) if app.is_moe else (1,)
-            for ep in ep_values:
-                if app.is_moe and app.num_experts % ep:
+            for cp in factors(after_pp):
+                if app.seq_size % cp:
                     continue
-                after_ep = after_pp // ep
-                for cp in factors(after_ep):
-                    if app.seq_size % cp:
+                dp = after_pp // cp
+                # EP is a subgroup of model-DP, not a world-size multiplier.
+                ep_values = factors(dp) if app.is_moe else (1,)
+                for ep in ep_values:
+                    if app.is_moe and app.num_experts % ep:
                         continue
-                    dp = after_ep // cp
                     batch_values = (range(dp, global_batch_size + 1, dp)
                                     if search_up_to else (global_batch_size,))
                     for batch_size in batch_values:
@@ -293,7 +293,9 @@ def expand_software_candidates(app: Llm.Application, config,
         for (recompute, sharding, comm_type, tp_overlap, dp_overlap,
              weight_offload, activations_offload,
              optimizer_offload) in options:
-            if sharding and base["dp"] <= 1:
+            # Distributed optimizer is valid at DP=1 and is required by the
+            # precision-aware CPU-offload path.
+            if optimizer_offload and not sharding:
                 continue
             if dp_overlap and base["dp"] <= 1:
                 continue
@@ -401,6 +403,17 @@ def make_execution_json(app: Llm.Application, config, candidate: Dict,
         "activations_offload": candidate["activations_offload"],
         "optimizer_offload": candidate["optimizer_offload"],
         "training": True,
+        "use_precision_aware_optimizer": candidate["optimizer_offload"],
+        "main_grads_dtype": "fp32",
+        "main_params_dtype": "fp32",
+        "exp_avg_dtype": "fp32",
+        "exp_avg_sq_dtype": "fp32",
+        "grad_reduce_in_bf16": False,
+        "optimizer_offload_fraction": 1.0,
+        "use_torch_optimizer_for_cpu_offload": False,
+        "overlap_cpu_optimizer_d2h_h2d": False,
+        "pin_cpu_grads": True,
+        "pin_cpu_params": True,
     }
 
 

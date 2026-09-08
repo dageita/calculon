@@ -1,6 +1,14 @@
 import argparse
 import logging
+import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+# Avoid combining this source backend with a stale site-packages Calculon when
+# the service is launched as ``python backend/main.py``.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import uvicorn
 from fastapi import FastAPI

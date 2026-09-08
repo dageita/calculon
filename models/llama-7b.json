@@ -1,0 +1,22 @@
+{
+  "hidden": 4096,
+  "feedforward": 11008,
+  "seq_size": 2048,
+  "attn_heads": 32,
+  "kv_heads": 32,
+  "attn_size": 128,
+  "num_blocks": 32,
+  "vocab_size": 32000,
+  "model_family": "decoder",
+  "hf_model_id": "huggyllama/llama-7b",
+  "max_position_embeddings": 2048,
+  "rope_theta": 10000.0,
+  "position_embedding_type": "rope",
+  "rms_norm": true,
+  "qk_norm": false,
+  "ffn_type": "swiglu",
+  "untied_embeddings": true,
+  "attention_bias": false,
+  "mlp_bias": false,
+  "parallel_block": false
+}

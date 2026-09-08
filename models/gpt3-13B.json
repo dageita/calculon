@@ -1,8 +1,20 @@
 {
-  "hidden": 5140,
-  "feedforward": 20560,
+  "hidden": 5120,
+  "feedforward": 20480,
   "seq_size": 2048,
   "attn_heads": 40,
   "attn_size": 128,
-  "num_blocks": 40
+  "num_blocks": 40,
+  "model_family": "decoder",
+  "hf_model_id": "TurkuNLP/gpt3-finnish-13B",
+  "max_position_embeddings": 2048,
+  "kv_heads": 40,
+  "vocab_size": 131072,
+  "position_embedding_type": "alibi",
+  "rms_norm": false,
+  "ffn_type": "gelu",
+  "untied_embeddings": false,
+  "attention_bias": true,
+  "mlp_bias": true,
+  "parallel_block": false
 }

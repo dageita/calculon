@@ -5,10 +5,24 @@ const ProjectModel = ({ set, get }: any = {}) => ({
   curModel: null as any, // 当前选择的Model
   modelMetrics: null as any, // Model Metrics，根据所选择的model和minibatch size计算而来
   otherConfig: {
-    activation_recompute: 'full',
-    optimization_strategy: 'Full recomputation',
+    activation_recompute: 'none',
+    optimization_strategy: 'None recomputation',
     optimizer_sharding: false,
+    use_precision_aware_optimizer: false,
+    main_grads_dtype: 'fp32',
+    main_params_dtype: 'fp32',
+    exp_avg_dtype: 'fp32',
+    exp_avg_sq_dtype: 'fp32',
+    grad_reduce_in_bf16: false,
+    optimizer_offload: false,
+    optimizer_offload_fraction: 1.0,
+    use_torch_optimizer_for_cpu_offload: false,
+    overlap_cpu_optimizer_d2h_h2d: false,
+    pin_cpu_grads: true,
+    pin_cpu_params: true,
     expert_par: 1,
+    expert_tensor_par: 1,
+    expert_data_par: 1,
     context_par: 1,
   } as any, // 其他配置
   totalConfig: {

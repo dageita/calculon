@@ -1,8 +1,21 @@
 {
-    "hidden": 5120,
-    "feedforward": 20480,
-    "seq_size": 1024,
-    "attn_heads": 40,
-    "attn_size": 128,
-    "num_blocks": 48
+  "hidden": 5120,
+  "feedforward": 20480,
+  "seq_size": 1024,
+  "attn_heads": 40,
+  "attn_size": 128,
+  "num_blocks": 48,
+  "model_family": "encoder",
+  "max_position_embeddings": 1024,
+  "kv_heads": 40,
+  "vocab_size": 30522,
+  "position_embedding_type": "learned_absolute",
+  "rms_norm": false,
+  "ffn_type": "gelu",
+  "untied_embeddings": false,
+  "attention_bias": true,
+  "mlp_bias": true,
+  "parallel_block": false,
+  "architecture_approximation": true,
+  "architecture_notes": "Synthetic scaled BERT preset; encoder/MLM details are approximated by the common transformer block."
 }

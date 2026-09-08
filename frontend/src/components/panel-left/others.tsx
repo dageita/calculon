@@ -62,6 +62,16 @@ const PARAMS_LIST = [
     step: 1,
   },
   {
+    title: 'Expert tensor parallel degree (ETP)',
+    key: 'expert_tensor_par',
+    min: 1, max: 10000, precision: 0, step: 1,
+  },
+  {
+    title: 'Expert data parallel degree (EDP)',
+    key: 'expert_data_par',
+    min: 1, max: 10000, precision: 0, step: 1,
+  },
+  {
     title: 'Context parallel degree',
     key: 'context_par',
     min: 1,
@@ -91,9 +101,20 @@ const OtherPanel = (props) => {
     lastGpuValue: null,
   });
 
-  const dpDegree = otherConfig?.data_par || 0;
-  const optimizerShardingEnabled = dpDegree > 1;
   const expertParallelEnabled = Boolean(curModel?.num_experts);
+  const denseWorld = Number(curGpu?.num_procs || 0);
+  const expertFactor = Number(otherConfig?.expert_tensor_par || 1) *
+    Number(otherConfig?.expert_par || 1) *
+    Number(otherConfig?.pipeline_par || 1);
+  const expertGridValid = expertFactor > 0 &&
+    expertFactor * Number(otherConfig?.expert_data_par || 1) === denseWorld;
+
+  useEffect(() => {
+    if (!expertParallelEnabled) {
+      setOtherConfig({ expert_par: 1, expert_tensor_par: 1,
+        expert_data_par: 1, context_par: 1 });
+    }
+  }, [expertParallelEnabled]);
 
   // 设置参数值并记录变更日志
   const setParamValue = (key, val, title) => {
@@ -113,16 +134,24 @@ const OtherPanel = (props) => {
     });
   };
 
-  const setOptimizerSharding = (val: boolean) => {
-    if (!optimizerShardingEnabled && val) {
-      return;
+  const setOptimizerBoolean = (key: string, val: boolean) => {
+    setChangeLog(key, String(val), String(otherConfig?.[key]));
+    const update: any = { [key]: val };
+    if (key === 'use_precision_aware_optimizer' && val) {
+      update.optimizer_sharding = true;
     }
-    setChangeLog(
-      'Optimizer sharding',
-      String(val),
-      String(otherConfig?.optimizer_sharding),
-    );
-    setOtherConfig({ optimizer_sharding: val });
+    if (key === 'optimizer_offload' && val) {
+      update.optimizer_sharding = true;
+      update.use_precision_aware_optimizer = true;
+    }
+    if (key === 'optimizer_sharding' && !val) {
+      update.use_precision_aware_optimizer = false;
+      update.optimizer_offload = false;
+    }
+    if (key === 'use_precision_aware_optimizer' && !val) {
+      update.optimizer_offload = false;
+    }
+    setOtherConfig(update);
   };
 
   // 计算最小值
@@ -179,12 +208,14 @@ const OtherPanel = (props) => {
     loadDataTypes(gpuName);
   }, [curGpu?.value, curGpu?.name]);
 
-  // DP<=1 时强制关闭 optimizer sharding
   useEffect(() => {
-    if (!optimizerShardingEnabled && otherConfig?.optimizer_sharding) {
-      setOtherConfig({ optimizer_sharding: false });
+    if (
+      otherConfig?.vector_dtype !== 'bfloat16' &&
+      otherConfig?.grad_reduce_in_bf16
+    ) {
+      setOtherConfig({ grad_reduce_in_bf16: false });
     }
-  }, [optimizerShardingEnabled, otherConfig?.optimizer_sharding]);
+  }, [otherConfig?.vector_dtype, otherConfig?.grad_reduce_in_bf16]);
 
   // 渲染微批次大小设置组件
   const renderMicrobatchSize = () => (
@@ -259,6 +290,25 @@ const OtherPanel = (props) => {
     </div>
   );
 
+  const renderBooleanOption = (
+    key: string,
+    disabled = false,
+  ) => (
+    <>
+      <p className={styles.section_title} style={{ marginTop: 8 }}>
+        {t(key)}
+      </p>
+      <div className={styles['group-content']}>
+        <Select
+          options={OPTIMIZER_SHARDING_OPTIONS}
+          value={otherConfig[key] ? 'true' : 'false'}
+          disabled={disabled}
+          onChange={(val) => setOptimizerBoolean(key, val === 'true')}
+        />
+      </div>
+    </>
+  );
+
   return (
     <div className={styles.nest}>
       <p className={styles.section_title}>{t('optimization strategy')}</p>
@@ -275,27 +325,68 @@ const OtherPanel = (props) => {
         />
       </div>
 
-      <p className={styles.section_title} style={{ marginTop: 8 }}>
-        {t('optimizer_sharding')}
-      </p>
+      {renderBooleanOption('optimizer_sharding')}
       <div className={styles.slider_tip}>
-        <span
-          style={{ color: optimizerShardingEnabled ? undefined : '#ff4d4f' }}
-        >
-          {optimizerShardingEnabled
-            ? t('optimizer_sharding_tip')
-            : t('optimizer_sharding_dp_tip')}
-        </span>
+        {t('optimizer_sharding_tip')}
       </div>
-      <div className={styles['group-content']}>
-        <Select
-          options={OPTIMIZER_SHARDING_OPTIONS}
-          placeholder={t('Please select')}
-          value={otherConfig['optimizer_sharding'] ? 'true' : 'false'}
-          disabled={!optimizerShardingEnabled}
-          onChange={(val) => setOptimizerSharding(val === 'true')}
-        />
-      </div>
+
+      {renderBooleanOption('use_precision_aware_optimizer')}
+      {otherConfig['use_precision_aware_optimizer'] && (
+        <>
+          {[
+            ['main_grads_dtype', ['fp32', 'bf16']],
+            ['main_params_dtype', ['fp32', 'fp16']],
+            ['exp_avg_dtype', ['fp32', 'fp16', 'fp8']],
+            ['exp_avg_sq_dtype', ['fp32', 'fp16', 'fp8']],
+          ].map(([key, values]: any) => (
+            <div key={key}>
+              <p className={styles.section_title} style={{ marginTop: 8 }}>
+                {t(key)}
+              </p>
+              <div className={styles['group-content']}>
+                <Select
+                  options={values.map((value: string) => ({
+                    key: value, label: value, value,
+                  }))}
+                  value={otherConfig[key]}
+                  onChange={(value) => setParamValue(key, value, key)}
+                />
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {renderBooleanOption(
+        'grad_reduce_in_bf16',
+        otherConfig['vector_dtype'] !== 'bfloat16',
+      )}
+      {renderBooleanOption('optimizer_offload')}
+      {otherConfig['optimizer_offload'] && (
+        <>
+          <p className={styles.section_title} style={{ marginTop: 8 }}>
+            {t('optimizer_offload_fraction')}
+          </p>
+          <InputNumber
+            className={styles.number_item}
+            min={0}
+            max={1}
+            step={0.1}
+            value={otherConfig['optimizer_offload_fraction']}
+            onChange={(value) =>
+              setParamValue(
+                'optimizer_offload_fraction',
+                value,
+                'optimizer_offload_fraction',
+              )
+            }
+          />
+          {renderBooleanOption('use_torch_optimizer_for_cpu_offload')}
+          {renderBooleanOption('overlap_cpu_optimizer_d2h_h2d')}
+          {renderBooleanOption('pin_cpu_grads')}
+          {renderBooleanOption('pin_cpu_params')}
+        </>
+      )}
 
       <div className={styles.slider_tip}>
         <span
@@ -304,7 +395,6 @@ const OtherPanel = (props) => {
               otherConfig['tensor_par'] *
                 otherConfig['pipeline_par'] *
                 otherConfig['data_par'] *
-                (otherConfig['expert_par'] || 1) *
                 (otherConfig['context_par'] || 1) ==
               curGpu.num_procs
                 ? ''
@@ -314,6 +404,15 @@ const OtherPanel = (props) => {
           {t('pp_dp_tp_recommend', { value: curGpu.num_procs })}
         </span>
       </div>
+
+      {expertParallelEnabled && (
+        <div className={expertGridValid ? styles.slider_tip : styles.error_tip}>
+          {t('expert_parallel_folding_tip', {
+            world: denseWorld,
+            edp: otherConfig?.expert_data_par || 1,
+          })}
+        </div>
+      )}
 
       <div className={styles['group_slider']}>
         {PARAMS_LIST.map((cf) => (
@@ -327,8 +426,8 @@ const OtherPanel = (props) => {
                 max={calcMax()}
                 value={otherConfig[cf.key]}
                 disabled={
-                  ['expert_par', 'context_par'].includes(cf.key) &&
-                  !expertParallelEnabled
+                  (['expert_par', 'expert_tensor_par', 'expert_data_par', 'context_par'].includes(cf.key) &&
+                    !expertParallelEnabled)
                 }
                 onChange={(val) => setParamValue(cf.key, val, cf.title)}
               />
@@ -340,8 +439,8 @@ const OtherPanel = (props) => {
               onChange={(val) => setParamValue(cf.key, val, cf.title)}
               value={otherConfig[cf.key]}
               disabled={
-                ['expert_par', 'context_par'].includes(cf.key) &&
-                !expertParallelEnabled
+                (['expert_par', 'expert_tensor_par', 'expert_data_par', 'context_par'].includes(cf.key) &&
+                  !expertParallelEnabled)
               }
               step={cf.step}
             />

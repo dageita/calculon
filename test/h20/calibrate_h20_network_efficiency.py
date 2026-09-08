@@ -270,16 +270,39 @@ def recommend_efficiency(
 
 
 def update_json(path: str, tier: str, efficiency: float,
-                peak_gbps: Optional[float] = None) -> None:
+                peak_gbps: Optional[float] = None,
+                collective: Optional[str] = None,
+                per_size: Optional[Sequence[Tuple[int, float]]] = None) -> None:
     with open(path) as f:
         cfg = json.load(f)
     nets = cfg.setdefault('networks', [])
     idx = 0 if tier == 'intra' else 1
     while len(nets) <= idx:
         nets.append({})
-    nets[idx]['efficiency'] = round(float(efficiency), 6)
+    # all_reduce is the baseline fabric curve used by dense DP. Other
+    # collectives are relative scales and must not overwrite that baseline.
+    if collective in (None, 'all_reduce'):
+        nets[idx]['efficiency'] = round(float(efficiency), 6)
     if peak_gbps is not None:
         nets[idx]['bandwidth'] = float(peak_gbps)
+    if collective:
+        base_eff = float(nets[idx].get('efficiency', efficiency))
+        params = nets[idx].setdefault('collective_parameters', {}).setdefault(
+            collective, {})
+        params['algorithm'] = ('ring' if collective == 'all_reduce'
+                               else 'pairwise')
+        params['bandwidth_scale'] = round(float(efficiency) / base_eff, 6)
+        if per_size:
+            params['bandwidth_scale_curve'] = [
+                [int(nbytes), round(float(eff) / base_eff, 6)]
+                for nbytes, eff in per_size
+            ]
+        if collective == 'all_to_all' and peak_gbps is not None:
+            flow = nets[idx].setdefault('flow_parameters', {})
+            flow['ep'] = {
+                'bandwidth': round(float(peak_gbps) * float(efficiency), 6),
+                'latency': float(nets[idx].get('latency', 0.0)),
+            }
     write_system_json(path, cfg)
     print(f'\nUpdated networks[{idx}] ({tier}) efficiency={efficiency:.6f}'
           f'{f" bandwidth={peak_gbps}" if peak_gbps is not None else ""} '
@@ -466,7 +489,8 @@ def main() -> None:
                         path = alt
             update_json(
                 path, args.tier, eff,
-                peak_gbps=peak if args.write_peak else None,
+                peak_gbps=peak if args.write_peak else peak,
+                collective=args.collective, per_size=per_size,
             )
 
     dist.barrier()

@@ -24,16 +24,21 @@ const PARAMS_LIST = [
     key: 'name',
   },
   {
-    title: 'Token length',
+    title: 'Sequence size (training workload)',
     key: 'seq_size',
   },
   {
+    title: 'Maximum context length',
+    key: 'max_position_embeddings',
+  },
+  { title: 'Position embedding type', key: 'position_embedding_type' },
+  {
     title: 'Number of attention heads',
-    key: 'attn_size',
+    key: 'attn_heads',
   },
   {
     title: 'Attention head size',
-    key: 'attn_heads',
+    key: 'attn_size',
   },
   {
     title: 'Number of KV heads (GQA)',
@@ -95,6 +100,12 @@ const PARAMS_LIST = [
     title: 'MoE layer frequency',
     key: 'moe_layer_freq',
   },
+  { title: 'Router score function', key: 'router_score_func' },
+  { title: 'Router Top-K method', key: 'router_topk_method' },
+  { title: 'Router groups', key: 'router_n_groups' },
+  { title: 'Selected router groups', key: 'router_topk_groups' },
+  { title: 'Routed score scaling factor', key: 'routed_scaling_factor' },
+  { title: 'Router correction bias', key: 'router_has_bias' },
   {
     title: 'Per-token KV size (CP)',
     key: 'kv_size',
@@ -124,6 +135,8 @@ const PARAMS_LIST = [
 
 // MoE 字段对 dense 模型可选，不参与必填校验
 const MOE_KEYS = [
+  'max_position_embeddings',
+  'position_embedding_type',
   'num_experts',
   'moe_topk',
   'norm_topk_prob',
@@ -132,6 +145,12 @@ const MOE_KEYS = [
   'moe_feedforward',
   'first_k_dense',
   'moe_layer_freq',
+  'router_score_func',
+  'router_topk_method',
+  'router_n_groups',
+  'router_topk_groups',
+  'routed_scaling_factor',
+  'router_has_bias',
   'kv_size',
   'kv_heads',
   'rope_theta',
