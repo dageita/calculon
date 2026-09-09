@@ -48,6 +48,9 @@ def main():
     parser.add_argument("--launches", type=int, default=2000)
     parser.add_argument("--repeats", type=int, default=9)
     parser.add_argument("--checkpoint-nodes", type=int, default=64)
+    parser.add_argument("--norm-backend",
+                        choices=("torch", "transformer_engine"), default="torch",
+                        help="Megatron norm backend on this software stack; TE transformer layers may still use Torch Norm when Apex is absent")
     parser.add_argument("--output")
     args = parser.parse_args()
     if not torch.cuda.is_available():
@@ -150,6 +153,7 @@ def main():
 
     result = {
         "framework_runtime": {
+            "norm_backend": args.norm_backend,
             "enabled": True,
             "kernel_dispatch_s": kernel_dispatch_s,
             "autograd_node_s": autograd_node_s,

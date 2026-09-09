@@ -79,7 +79,8 @@ class AllExecutions(calculon.CommandLine):
       'main_params_dtype', 'exp_avg_dtype', 'exp_avg_sq_dtype',
       'grad_reduce_in_bf16', 'optimizer_offload_fraction',
       'use_torch_optimizer_for_cpu_offload',
-      'overlap_cpu_optimizer_d2h_h2d', 'pin_cpu_grads', 'pin_cpu_params')
+      'overlap_cpu_optimizer_d2h_h2d', 'pin_cpu_grads', 'pin_cpu_params',
+      'clip_grad')
 
   @staticmethod
   def get_batch_size(data_par, max_batch_size):
@@ -142,7 +143,7 @@ class AllExecutions(calculon.CommandLine):
                                              True,
                                              optimizer_offload,
                                              'fp32', 'fp32', 'fp32', 'fp32',
-                                             False, 1.0, False, False, True, True)
+                                             False, 1.0, False, False, True, True, 1.0)
                                       count += 1
 
   @staticmethod

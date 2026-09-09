@@ -10,7 +10,9 @@ for timeline / batch communication times it is enough to calibrate
 ``efficiency`` (bandwidth stays the vendor peak in GB/s).
 
 This script measures NCCL collective bus bandwidth via ``torch.distributed``
-across message sizes, then sets:
+across message sizes.  AllToAll results are stored by participant count because
+NCCL throughput can change sharply with EP group cardinality; other collectives
+then set:
 
     efficiency = clamp(busbw_GBps / peak_GBps, floor, 1.0)
 
@@ -75,6 +77,9 @@ DEFAULT_SIZES_BYTES: List[int] = [
     1 << 26,  # 64 MiB
     1 << 27,  # 128 MiB
     1 << 28,  # 256 MiB
+    1 << 29,  # 512 MiB
+    1 << 30,  # 1 GiB
+    1 << 31,  # 2 GiB (large DDP gradient buffers)
 ]
 
 
@@ -130,12 +135,12 @@ def _alloc_tensors(
         chunk = nelem // world_size
         inp = torch.empty(chunk, dtype=torch.uint8, device=device)
         out = torch.empty(nelem, dtype=torch.uint8, device=device)
-        return inp, out, chunk  # nccl-tests size = sendbytes per rank
+        return inp, out, nelem  # logical full tensor gathered on every rank
 
     if collective == 'reduce_scatter':
         inp = torch.empty(nelem, dtype=torch.uint8, device=device)
         out = torch.empty(nelem // world_size, dtype=torch.uint8, device=device)
-        return inp, out, nelem // world_size
+        return inp, out, nelem
 
     if collective == 'all_to_all':
         # full buffer exchanged; size = nbytes per rank
@@ -272,7 +277,8 @@ def recommend_efficiency(
 def update_json(path: str, tier: str, efficiency: float,
                 peak_gbps: Optional[float] = None,
                 collective: Optional[str] = None,
-                per_size: Optional[Sequence[Tuple[int, float]]] = None) -> None:
+                per_size: Optional[Sequence[Tuple[int, float]]] = None,
+                participants: Optional[int] = None) -> None:
     with open(path) as f:
         cfg = json.load(f)
     nets = cfg.setdefault('networks', [])
@@ -291,18 +297,34 @@ def update_json(path: str, tier: str, efficiency: float,
             collective, {})
         params['algorithm'] = ('ring' if collective == 'all_reduce'
                                else 'pairwise')
-        params['bandwidth_scale'] = round(float(efficiency) / base_eff, 6)
-        if per_size:
-            params['bandwidth_scale_curve'] = [
-                [int(nbytes), round(float(eff) / base_eff, 6)]
-                for nbytes, eff in per_size
-            ]
+        scale = round(float(efficiency) / base_eff, 6)
+        curve = ([
+            [int(nbytes), round(float(eff) / base_eff, 6)]
+            for nbytes, eff in per_size
+        ] if per_size else None)
+        if collective == 'all_to_all' and participants is not None:
+            pkey = str(int(participants))
+            params.setdefault('participant_bandwidth_scale', {})[pkey] = scale
+            if curve:
+                params.setdefault(
+                    'bandwidth_scale_curve_by_participants', {})[pkey] = curve
+        else:
+            params['bandwidth_scale'] = scale
+            if curve:
+                params['bandwidth_scale_curve'] = curve
         if collective == 'all_to_all' and peak_gbps is not None:
             flow = nets[idx].setdefault('flow_parameters', {})
-            flow['ep'] = {
-                'bandwidth': round(float(peak_gbps) * float(efficiency), 6),
-                'latency': float(nets[idx].get('latency', 0.0)),
-            }
+            ep_flow = flow.setdefault('ep', {})
+            measured_bandwidth = round(
+                float(peak_gbps) * float(efficiency), 6)
+            ep_flow.setdefault('bandwidth', measured_bandwidth)
+            ep_flow.setdefault(
+                'latency', float(nets[idx].get('latency', 0.0)))
+            if participants is not None:
+                ep_flow.setdefault('participant_bandwidth', {})[
+                    str(int(participants))] = measured_bandwidth
+            else:
+                ep_flow['bandwidth'] = measured_bandwidth
     write_system_json(path, cfg)
     print(f'\nUpdated networks[{idx}] ({tier}) efficiency={efficiency:.6f}'
           f'{f" bandwidth={peak_gbps}" if peak_gbps is not None else ""} '
@@ -491,6 +513,7 @@ def main() -> None:
                 path, args.tier, eff,
                 peak_gbps=peak if args.write_peak else peak,
                 collective=args.collective, per_size=per_size,
+                participants=world,
             )
 
     dist.barrier()

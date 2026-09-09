@@ -276,7 +276,8 @@ class Llm:
         'main_params_dtype', 'exp_avg_dtype', 'exp_avg_sq_dtype',
         'grad_reduce_in_bf16', 'optimizer_offload_fraction',
         'use_torch_optimizer_for_cpu_offload',
-        'overlap_cpu_optimizer_d2h_h2d', 'pin_cpu_grads', 'pin_cpu_params')
+        'overlap_cpu_optimizer_d2h_h2d', 'pin_cpu_grads', 'pin_cpu_params',
+        'clip_grad')
 
     @staticmethod
     def from_json(cfg):
@@ -312,6 +313,11 @@ class Llm:
       cfg.setdefault('overlap_cpu_optimizer_d2h_h2d', False)
       cfg.setdefault('pin_cpu_grads', True)
       cfg.setdefault('pin_cpu_params', True)
+      # Megatron's training default is --clip-grad 1.0. It executes a full
+      # gradient norm reduction and, when the threshold is exceeded, an in-place
+      # gradient scaling pass before Adam. Keep this in the execution contract
+      # because the work is data-volume dependent and belongs in the runtime DAG.
+      cfg.setdefault('clip_grad', 1.0)
       assert set(cfg.keys()) == set(Llm.Execution.fields())
       values = [cfg[field] for field in Llm.Execution.fields()]
       execution = Llm.Execution(*values)
@@ -334,7 +340,7 @@ class Llm:
                  optimizer_offload_fraction=1.0,
                  use_torch_optimizer_for_cpu_offload=False,
                  overlap_cpu_optimizer_d2h_h2d=False,
-                 pin_cpu_grads=True, pin_cpu_params=True):
+                 pin_cpu_grads=True, pin_cpu_params=True, clip_grad=1.0):
       self.training = training
       self.num_procs = num_procs
       assert self.num_procs > 0
@@ -448,6 +454,9 @@ class Llm:
       self.overlap_cpu_optimizer_d2h_h2d = overlap_cpu_optimizer_d2h_h2d
       self.pin_cpu_grads = pin_cpu_grads
       self.pin_cpu_params = pin_cpu_params
+      self.clip_grad = float(clip_grad)
+      if self.clip_grad < 0:
+        raise Llm.Error('clip_grad must be non-negative')
       if self.main_grads_dtype not in ('fp32', 'bf16'):
         raise Llm.Error('main_grads_dtype must be fp32 or bf16')
       if self.main_params_dtype not in ('fp32', 'fp16'):
@@ -495,7 +504,7 @@ class Llm:
         self.grad_reduce_in_bf16, self.optimizer_offload_fraction,
         self.use_torch_optimizer_for_cpu_offload,
         self.overlap_cpu_optimizer_d2h_h2d, self.pin_cpu_grads,
-        self.pin_cpu_params
+        self.pin_cpu_params, self.clip_grad
       ]
       assert len(keys) == len(values)
       result = dict(zip(keys, values))
@@ -701,6 +710,7 @@ class Llm:
 
     self._block_weight_space = None
     self._block_expert_weight_space = None
+    self._block_expert_weight_grad_space_no_sharding = None
     self._block_act_working_space = None
     self._block_act_storage_space = None
     self._block_act_checkpoint_size = None
@@ -1751,17 +1761,25 @@ class Llm:
       needs_recomm=recompute_flag, activation_stored=False))
 
   def _build_moe_swiglu_ffn(self, recompute_flag, recompute_ag_flag):
-    """MoE SwiGLU: EP-sharded expert weights, activated FLOPs = topk/EP + shared."""
+    """Build Megatron's separate shared and routed expert MLP graphs."""
     app = self.app
     ep = self.exe.expert_par
     assert app.num_experts % ep == 0, (
       f"num_experts={app.num_experts} must divide by EP={ep}")
-    experts_stored = app.num_experts // ep + app.num_shared_experts
+    experts_stored = app.num_experts // ep
     # All-to-all balances aggregate source tokens over EP destinations.
     # Each destination processes local_tokens * topk; dividing by EP again
-    # undercounts both ordinary EP and folded ETP/EDP rank layouts. Shared
-    # experts remain local, one pass per shared expert.
-    active_equiv = app.moe_topk + app.num_shared_experts
+    # undercounts both ordinary EP and folded ETP/EDP rank layouts.
+    active_equiv = app.moe_topk
+
+    # Megatron's SharedExpertMLP is a dense MLP with one concatenated
+    # intermediate width, executed before routing when overlap is disabled.
+    # It is replicated over EP and therefore belongs to model-DP, not EDP.
+    if app.num_shared_experts > 0:
+      self._build_swiglu_ffn(
+        app.moe_feedforward * app.num_shared_experts,
+        recompute_flag, recompute_ag_flag,
+        name_prefix='MlpBlock_SharedExpert')
 
     # Router is typically replicated on each EP rank (gate then dispatch).
     self._llm_block.append(Linear(
@@ -2069,7 +2087,7 @@ class Llm:
     self._flow_net.flow_network_init(
       tp_bw=self._tp_net.flow_bandwidth('tp'),
       cp_bw=self._cp_net.flow_bandwidth('cp'),
-      ep_bw=self._ep_net.flow_bandwidth('ep'),
+      ep_bw=self._ep_net.flow_bandwidth('ep', self.exe.expert_par),
       pp_bw=self._pp_net.flow_bandwidth('pp'),
       dp_bw=self._dp_net.flow_bandwidth('dp'),
       topology=topo_net._topology,
@@ -2082,7 +2100,7 @@ class Llm:
       'flow BW assignment: TP=%.3e CP=%.3e EP=%.3e PP=%.3e DP=%.3e topo=%s; '
       'tiers TP=%d PP=%d DP=%d EP=%d CP=%d',
       self._tp_net.flow_bandwidth('tp'), self._cp_net.flow_bandwidth('cp'),
-      self._ep_net.flow_bandwidth('ep'), self._pp_net.flow_bandwidth('pp'),
+      self._ep_net.flow_bandwidth('ep', self.exe.expert_par), self._pp_net.flow_bandwidth('pp'),
       self._dp_net.flow_bandwidth('dp'),
       topo_net._topology,
       self.exe.tensor_par_net, self.exe.pipeline_par_net,
@@ -2106,7 +2124,8 @@ class Llm:
     '_baseblock_fw_tp_size', '_edgeblock_fw_tp_size',
     '_baseblock_fw_tp_time', '_edgeblock_fw_tp_time',
     '_baseblock_fw_tp_time_exposed', '_edgeblock_fw_tp_time_exposed',
-    '_block_weight_space', '_block_act_working_space', '_block_act_storage_space',
+    '_block_weight_space', '_block_expert_weight_space',
+    '_block_act_working_space', '_block_act_storage_space',
     '_block_re_flops', '_block_re_flops_time', '_block_re_mem_accessed',
     '_block_re_mem_time', '_block_re_time',
     '_baseblock_recomm_size', '_edgeblock_recomm_size',
@@ -2126,6 +2145,7 @@ class Llm:
     '_block_framework_re_kernels', '_block_framework_re_nodes',
     '_block_framework_checkpoint_nodes',
     '_block_weight_grad_space', '_block_weight_grad_space_no_sharding',
+    '_block_expert_weight_grad_space_no_sharding',
     '_block_act_grad_space', '_block_optimizer_space',
     '_tp_bw_overlap_req', '_block_act_checkpoint_size',
   )
@@ -2194,6 +2214,7 @@ class Llm:
     # EP-sharded routed-expert parameters synchronize over EDP; attention,
     # router and shared-expert parameters synchronize over model-DP.
     self._block_expert_weight_space = 0
+    self._block_expert_weight_grad_space_no_sharding = 0
     self._block_act_working_space = 0
     self._block_act_storage_space = 0
     # We use this block for self.exe.training, but initialize anyway
@@ -2362,11 +2383,7 @@ class Llm:
       self._block_weight_space += layer.get_weight()
       if (self.app.is_moe and lname.startswith('MlpBlock_MoE') and
           hasattr(layer, 'weight_multiplier')):
-        local_routed = self.app.num_experts / self.exe.expert_par
-        local_total = local_routed + self.app.num_shared_experts
-        if local_total > 0:
-          self._block_expert_weight_space += (
-            layer.get_weight() * local_routed / local_total)
+        self._block_expert_weight_space += layer.get_weight()
       if not layer.reuses_activation():
         self._block_act_working_space += layer.get_activation()
       self._block_act_storage_space += layer.get_activation()
@@ -2376,8 +2393,11 @@ class Llm:
         if not layer.stores_activation():
           self._block_act_storage_space -= layer.get_activation()
         self._block_weight_grad_space += layer.get_weight_grad()
-        self._block_weight_grad_space_no_sharding += layer.get_weight_grad(
-          sharded=False)
+        unsharded_grad = layer.get_weight_grad(sharded=False)
+        self._block_weight_grad_space_no_sharding += unsharded_grad
+        if (self.app.is_moe and lname.startswith('MlpBlock_MoE') and
+            hasattr(layer, 'weight_multiplier')):
+          self._block_expert_weight_grad_space_no_sharding += unsharded_grad
         self._block_act_grad_space += layer.get_activation_grad()
         self._block_optimizer_space += layer.get_optimizer()
 
@@ -2596,11 +2616,16 @@ class Llm:
       tokens = self.exe.microbatch_size * self.app.seq_size
       locality = (self.exe.expert_par - 1) / self.exe.expert_par
       moe_blocks_per_proc = self.app.num_moe_blocks / self.exe.pipeline_par
-      # Per phase (dispatch or combine): tokens * topk * hidden * bpe * locality
-      ep_phase = tokens * self.app.moe_topk * self.app.hidden * \
+      # Megatron dispatches both hidden states and selected routing
+      # probabilities with distinct AllToAll calls.  Backward mirrors both
+      # calls.  Combine communicates hidden states only.  Keep their payloads
+      # explicit here instead of hiding them in a topology/model factor.
+      hidden_phase = tokens * self.app.moe_topk * self.app.hidden * \
         self._bytes_per_element * locality * moe_blocks_per_proc
-      self._ep_fw_dispatch_size = int(ep_phase)
-      self._ep_fw_combine_size = int(ep_phase)
+      probability_phase = tokens * self.app.moe_topk * \
+        self._bytes_per_element * locality * moe_blocks_per_proc
+      self._ep_fw_dispatch_size = int(hidden_phase + probability_phase)
+      self._ep_fw_combine_size = int(hidden_phase)
       self._ep_fw_comm_size = self._ep_fw_dispatch_size + self._ep_fw_combine_size
       # Bwd of combine ≈ dispatch volume; bwd of dispatch ≈ combine volume.
       self._ep_bw_dispatch_size = self._ep_fw_dispatch_size
@@ -2844,15 +2869,22 @@ class Llm:
 
     # Determines how long it takes to perform the DP per block
     # This assumes no DP communication overlap (will be adjusted later).
-    if self.exe.data_par > 1 and self.exe.training:
+    # Dense gradients use model-DP; routed experts can still require EDP
+    # synchronization when model-DP is one under Megatron parallel folding.
+    has_dense_dp = self.exe.data_par > 1
+    has_expert_dp = (self.app.is_moe and self.exe.expert_par > 1 and
+                     self.exe.expert_data_par > 1)
+    if self.exe.training and (has_dense_dp or has_expert_dp):
       self._block_dense_dp_size = (
-        self._block_weight_space - self._block_expert_weight_space)
-      self._block_expert_dp_size = self._block_expert_weight_space
+        self._block_weight_grad_space_no_sharding -
+        self._block_expert_weight_grad_space_no_sharding)
+      self._block_expert_dp_size = (
+        self._block_expert_weight_grad_space_no_sharding)
       # The C++ DP dimension is EDP when EP>1. Keep routed expert gradients in
       # that graph; dense/shared gradients are emitted as model-DP tail events.
       self._block_dp_size = (self._block_expert_dp_size
                              if self.exe.expert_par > 1
-                             else self._block_weight_space)
+                             else self._block_weight_grad_space_no_sharding)
       dp_participants = (self.exe.expert_data_par
                          if self.exe.expert_par > 1 else self.exe.data_par)
       if dp_participants <= 1:
@@ -3294,7 +3326,9 @@ class Llm:
     traffic = self._optim_mem_accessed * resident
     if traffic <= 0:
       return 0.0
-    return traffic / self.sys.get_mem1_throughput(traffic)
+    profile = ('precision_aware' if self.exe.use_precision_aware_optimizer
+               else 'default')
+    return traffic / self.sys.get_optimizer_gpu_throughput(traffic, profile)
 
   def get_optimizer_cpu_time(self):
     if not self.exe.optimizer_offload:
@@ -3392,10 +3426,29 @@ class Llm:
         for layer in layers:
           label = getattr(layer, "name", layer.__class__.__name__)
           events = layer.get_framework_events("fw")
+          # Modern Megatron TEGroupedMLP converts tokens_per_expert to a host
+          # list immediately before Grouped FC1. This is distinct from the
+          # variable-split metadata read in the AllToAll dispatcher and forces
+          # the host to observe the current GPU stream before launching GEMM.
+          if (isinstance(layer, Linear) and
+              label.endswith('_GroupedFC1')):
+            dag.synchronize(
+              f"{label}:tokens-per-expert:{block_index}",
+              self.sys.framework_scalar_sync_s)
           dag.enqueue(f"{label}:fw:{block_index}",
                       Layer.compute_processing_time(layer, "fw"),
                       events["kernels"], events["autograd_nodes"],
                       events.get("host_s"))
+          # Megatron`s variable-size MoE AllToAll dispatcher copies routing
+          # split metadata to the CPU before launching EP communication.  The
+          # resulting stream synchronization is an operator semantic, not a
+          # model calibration factor; every MoE block using this dispatcher
+          # must expose the already-enqueued router work at this boundary.
+          if (isinstance(layer, RouterPermutation) and
+              self.exe.expert_par > 1):
+            dag.synchronize(
+              f"{label}:moe-dispatch-metadata:{block_index}",
+              self.sys.framework_scalar_sync_s)
         continue
 
       source = layers if recompute_layers is None else recompute_layers
@@ -3405,6 +3458,13 @@ class Llm:
       for layer in recomputed:
         label = getattr(layer, "name", layer.__class__.__name__)
         events = layer.get_framework_events("fw")
+        # Full activation recompute invokes TEGroupedMLP.forward again and
+        # therefore repeats its tokens_per_expert GPU-to-host conversion.
+        if (isinstance(layer, Linear) and
+            label.endswith('_GroupedFC1')):
+          dag.synchronize(
+            f"{label}:recompute-tokens-per-expert:{block_index}",
+            self.sys.framework_scalar_sync_s)
         dag.enqueue(f"{label}:recompute:{block_index}",
                     Layer.compute_processing_time(layer, "fw"),
                     events["kernels"], events["autograd_nodes"],
@@ -3478,15 +3538,27 @@ class Llm:
       bucket = max(1, self.sys.framework_optimizer_bucket_bytes)
       buckets = max(1, (int(optimizer_bytes) + bucket - 1) // bucket)
       submit = buckets * self.sys.framework_optimizer_bucket_dispatch_s
-      unscale_bytes = 2 * optimizer_bytes
-      unscale_time = (unscale_bytes /
-                      self.sys.get_mem1_throughput(unscale_bytes))
-      optimizer.enqueue("unscale-found-inf", unscale_time, buckets, 0, submit)
-      optimizer.synchronize("found-inf", self.sys.framework_scalar_sync_s)
-      grad_norm_time = (optimizer_bytes /
-                        self.sys.get_mem1_throughput(optimizer_bytes))
-      optimizer.enqueue("grad-norm", grad_norm_time, buckets, 0, submit)
-      optimizer.synchronize("grad-norm", self.sys.framework_scalar_sync_s)
+      # BF16 uses no grad scaler in Megatron.  Only FP16 executes the
+      # non-finite/unscale kernel, distributed found-inf reduction and .item().
+      if self.exe.datatype == 'float16':
+        unscale_bytes = 2 * optimizer_bytes
+        unscale_time = (unscale_bytes /
+                        self.sys.get_mem1_throughput(unscale_bytes))
+        optimizer.enqueue(
+          "unscale-found-inf", unscale_time, buckets, 0, submit)
+        optimizer.synchronize(
+          "found-inf", self.sys.framework_scalar_sync_s)
+      if self.exe.clip_grad > 0:
+        # The norm kernel reads each gradient; active clipping then adds an
+        # in-place read+write scale pass. The outcome is data dependent, so a
+        # positive clip setting represents Megatron's clipped-training path.
+        grad_clip_bytes = 3 * optimizer_bytes
+        grad_clip_time = (grad_clip_bytes /
+                          self.sys.get_mem1_throughput(grad_clip_bytes))
+        optimizer.enqueue("grad-norm-and-clip", grad_clip_time,
+                          2 * buckets, 0, 2 * submit)
+        # The scalar reduction is read by the host before scaling is submitted.
+        optimizer.synchronize("grad-norm", self.sys.framework_scalar_sync_s)
       if not self.exe.optimizer_offload:
         optimizer.enqueue(
           "optimizer", self.get_optimizer_gpu_time(), buckets, 0, submit)

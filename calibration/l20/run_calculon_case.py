@@ -118,7 +118,8 @@ exe = dict(
     use_torch_optimizer_for_cpu_offload=(
         a.use_torch_optimizer_for_cpu_offload),
     overlap_cpu_optimizer_d2h_h2d=a.overlap_cpu_optimizer_d2h_h2d,
-    pin_cpu_grads=a.pin_cpu_grads, pin_cpu_params=a.pin_cpu_params)
+    pin_cpu_grads=a.pin_cpu_grads, pin_cpu_params=a.pin_cpu_params,
+    clip_grad=a.clip_grad)
 log = logging.getLogger('l20-case')
 model = Llm(Llm.Application(app), log)
 system_path = a.system or ROOT / f'systems/L20_{a.num_procs}GPU.json'

@@ -149,6 +149,14 @@ def data_prefix(path):
  p=Path(path)
  if p.suffix in (".bin",".idx"):p=p.with_suffix("")
  return p if p.with_suffix(".bin").is_file() and p.with_suffix(".idx").is_file() else None
+def proc_vmstat_counter(name):
+ try:
+  for line in Path("/proc/vmstat").read_text().splitlines():
+   if line.startswith(name + " "):
+    return int(line.split()[1])
+ except (OSError, ValueError):
+  pass
+ return None
 def main():
  p=argparse.ArgumentParser(description=__doc__)
  p.add_argument("--case",choices=CASE_CHOICES,required=True,help="architecture adapter; --model-path supplies the corresponding local model directory")
@@ -228,7 +236,20 @@ def main():
  prefix=data_prefix(a.dataset_path)
  if prefix:env["DATA_PATH"]=str(prefix);dataset_mode="preprocessed"
  else:env.pop("DATA_PATH",None);dataset_mode="mock; raw dataset retained as provenance"
- run(["bash",str(HERE/"run_megatron_case.sh"),a.case],env,out/"megatron-driver.log")
+ oom_before=proc_vmstat_counter("oom_kill")
+ megatron_error=None
+ try:
+  run(["bash",str(HERE/"run_megatron_case.sh"),a.case],env,out/"megatron-driver.log")
+ except SystemExit as exc:
+  megatron_error=exc
+ oom_after=proc_vmstat_counter("oom_kill")
+ oom_delta=(oom_after-oom_before if None not in (oom_before,oom_after) else None)
+ health={"host_oom_kills_before":oom_before,"host_oom_kills_after":oom_after,"host_oom_kills_during_run":oom_delta,"valid":None if oom_delta is None else oom_delta == 0}
+ (out/"measurement-health.json").write_text(json.dumps(health,indent=2)+"\n")
+ if oom_delta:
+  raise SystemExit(f"invalid benchmark: host oom_kill increased by {oom_delta} during Megatron execution; see {out/'measurement-health.json'}")
+ if megatron_error is not None:
+  raise megatron_error
  sim=out/"simulator-baseline.json"
  calc=[sys.executable,str(HERE/"run_calculon_case.py"),"--case",a.case,"--model-path",str(a.model_path),"--num-procs",str(world),"--tp",str(a.tp),"--pp",str(a.pp),"--dp",str(a.dp),"--ep",str(a.ep),"--etp",str(a.etp),"--edp",str(a.edp),"--cp",str(a.cp),"--optimization-strategy",a.optimization_strategy,"--lr",str(a.lr),"--min-lr",str(a.min_lr),"--warmup-fraction",str(a.warmup_fraction),"--weight-decay",str(a.weight_decay),"--clip-grad",str(a.clip_grad),"--precision",a.precision,"--system",str(a.system),"--seq-length",str(a.seq_length),"--global-batch",str(a.global_batch),"--micro-batch",str(a.micro_batch),"--output",str(sim)] + (["--sequence-parallel"] if a.sequence_parallel else []) + optimizer_calculon_args(a)
  run(calc,env,out/"simulator.log")
@@ -241,10 +262,19 @@ def main():
   raise RuntimeError("Megatron and Calculon training-hyperparameter contracts differ")
  measured=out/f"{a.case}.log"
  def compare(simulator_json, destination):
-  subprocess.run([sys.executable,str(HERE/"compare_iteration_logs.py"),"--model",a.case,"--log",str(measured),"--simulator-json",str(simulator_json),"--warmup",str(a.warmup_samples),"--output",str(destination)],cwd=ROOT,env=env,check=True)
-  return json.loads(destination.read_text())
+  destination.unlink(missing_ok=True)
+  completed=subprocess.run([sys.executable,str(HERE/"compare_iteration_logs.py"),"--model",a.case,"--log",str(measured),"--simulator-json",str(simulator_json),"--warmup",str(a.warmup_samples),"--output",str(destination)],cwd=ROOT,env=env,check=False)
+  if not destination.is_file():
+   raise SystemExit(f"comparison failed before producing {destination}")
+  comparison=json.loads(destination.read_text())
+  if completed.returncode and comparison.get("comparison_valid") is not False:
+   raise SystemExit(f"comparison failed with exit code {completed.returncode}; see {destination}")
+  return comparison
  prediction=compare(sim,out/"prediction-error.json")
  contract={"case":a.case,"model_path":str(a.model_path),"dataset_path":str(a.dataset_path),"dataset_mode":dataset_mode,"simulator_system":str(a.system),"simulator_gpu":a.system.stem,"world_size":world,"tp":a.tp,"pp":a.pp,"dp":a.dp,"ep":a.ep,"etp":a.etp,"edp":a.edp,"cp":a.cp,"optimization_strategy":a.optimization_strategy,"precision":a.precision,"iterations":a.iterations,"seq_length":a.seq_length,"global_batch":a.global_batch,"micro_batch":a.micro_batch,"lr":a.lr,"min_lr":a.min_lr,"warmup_fraction":a.warmup_fraction,"weight_decay":a.weight_decay,"clip_grad":a.clip_grad,"optimizer":optimizer_contract(a),"extra_megatron_args":a.extra_megatron_arg}
  report={"contract":contract,"prediction":prediction}
  (out/"summary.json").write_text(json.dumps(report,indent=2)+"\n");print(json.dumps(report,indent=2))
+ if not prediction.get("comparison_valid", False):
+  reasons="; ".join(prediction.get("measurement_invalid_reasons", []))
+  raise SystemExit(f"comparison report generated, but measurement is not stable enough for accuracy evaluation: {reasons}; see {out/'summary.json'}")
 if __name__=="__main__":main()

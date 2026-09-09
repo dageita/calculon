@@ -63,6 +63,26 @@ class OptimizerStrategyTest(unittest.TestCase):
             Llm.Execution.from_json(execution_config(
                 use_precision_aware_optimizer=True))
 
+    def test_ep_flow_bandwidth_depends_on_participant_count(self):
+        system = System(json.loads((ROOT / "systems/L20.json").read_text()),
+                        logging.getLogger())
+        network = system.get_network(0)
+        self.assertAlmostEqual(network.flow_bandwidth("ep", 4), 20.361e9)
+        self.assertAlmostEqual(network.flow_bandwidth("ep", 8), 10.88e9)
+        self.assertNotEqual(network.flow_bandwidth("ep", 4),
+                            network.flow_bandwidth("ep", 8))
+
+    def test_gpu_optimizer_uses_independent_capability_curve(self):
+        system = System(json.loads((ROOT / "systems/L20.json").read_text()),
+                        logging.getLogger())
+        large = system.get_optimizer_gpu_throughput(5e9, "precision_aware")
+        small = system.get_optimizer_gpu_throughput(3e8, "precision_aware")
+        self.assertAlmostEqual(large, 142.933374e9)
+        self.assertLess(small, large)
+        self.assertAlmostEqual(
+            system.get_optimizer_gpu_throughput(5e9, "default"),
+            643.407532e9 * 0.979527)
+
     def test_precision_aware_state_sizes_drive_capacity_and_traffic(self):
         system = System(json.loads((ROOT / 'systems/L20.json').read_text()),
                         logging.getLogger())

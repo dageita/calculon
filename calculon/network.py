@@ -158,12 +158,17 @@ class Network:
     assert set(self._flow_parameters) <= Network.kFlowGroups, \
       f'Invalid flow group(s): {set(self._flow_parameters) - Network.kFlowGroups}'
     for group, params in self._flow_parameters.items():
-      assert set(params) == {'bandwidth', 'latency'}, \
-        f'flow_parameters.{group} requires bandwidth and latency'
+      assert {'bandwidth', 'latency'} <= set(params) <= {
+        'bandwidth', 'latency', 'participant_bandwidth'}, \
+        f'flow_parameters.{group} has invalid fields or misses bandwidth/latency'
       assert float(params['bandwidth']) > 0, \
         f'flow_parameters.{group}.bandwidth must be positive'
       assert float(params['latency']) >= 0, \
         f'flow_parameters.{group}.latency must be non-negative'
+      participant_bw = params.get('participant_bandwidth') or {}
+      assert all(int(p) >= 2 and float(bw) > 0
+                 for p, bw in participant_bw.items()), \
+        f'flow_parameters.{group}.participant_bandwidth is invalid'
     # Keep physical-link parameters separate from collective software and
     # participant-count overhead.  A bandwidth/latency pair measured with
     # RCCL must not silently become a different "link" when P changes.
@@ -176,7 +181,8 @@ class Network:
        f'{set(self._collective_parameters) - allowed_collective}')
     allowed_fields = {
       'software_latency', 'step_latency', 'bandwidth_scale', 'algorithm',
-      'bandwidth_scale_curve',
+      'bandwidth_scale_curve', 'participant_bandwidth_scale',
+      'bandwidth_scale_curve_by_participants',
     }
     for op, params in self._collective_parameters.items():
       assert set(params) <= allowed_fields, \
@@ -188,6 +194,15 @@ class Network:
       assert all(len(point) == 2 and float(point[0]) >= 0
                  and float(point[1]) > 0 for point in curve), \
         f'collective_parameters.{op}.bandwidth_scale_curve is invalid'
+      participant_scales = params.get('participant_bandwidth_scale') or {}
+      assert all(int(p) >= 2 and float(scale) > 0
+                 for p, scale in participant_scales.items())
+      participant_curves = (
+        params.get('bandwidth_scale_curve_by_participants') or {})
+      assert all(
+        int(p) >= 2 and all(len(point) == 2 and float(point[0]) >= 0
+                            and float(point[1]) > 0 for point in pcurve)
+        for p, pcurve in participant_curves.items())
     self._topology = cfg.get('topology', 'default')  # Default to 'default' if not specified
     self._ops = {}
     for op in cfg['ops']:
@@ -221,11 +236,16 @@ class Network:
     # Keeps the flow-level simulator on the same bandwidth basis as time().
     return self._bw * self._eff
 
-  def flow_bandwidth(self, group):
-    """Effective Flow capacity in B/s for a parallelism group."""
+  def flow_bandwidth(self, group, participants=None):
+    """Effective Flow capacity in B/s, optionally keyed by group size."""
     params = self._flow_parameters.get(group.lower())
-    return (float(params['bandwidth']) * 1e9 if params
-            else self.effective_bandwidth)
+    if not params:
+      return self.effective_bandwidth
+    bandwidth = float(params['bandwidth'])
+    if participants is not None:
+      by_participants = params.get('participant_bandwidth') or {}
+      bandwidth = float(by_participants.get(str(int(participants)), bandwidth))
+    return bandwidth * 1e9
 
   def flow_latency(self, group):
     """Flow startup latency in seconds for a parallelism group."""
@@ -256,10 +276,18 @@ class Network:
             + float(params.get('software_latency', 0.0))
             + rounds * float(params.get('step_latency', 0.0)))
 
-  def collective_bandwidth(self, op, payload_bytes=None):
+  def collective_bandwidth(self, op, payload_bytes=None, participants=None):
     params = self._collective_parameters.get(op, {})
     scale = float(params.get('bandwidth_scale', 1.0))
-    curve = sorted(params.get('bandwidth_scale_curve') or [],
+    curve = params.get('bandwidth_scale_curve') or []
+    if participants is not None:
+      pkey = str(int(participants))
+      scale = float((params.get('participant_bandwidth_scale') or {}).get(
+        pkey, scale))
+      curve = (params.get(
+        'bandwidth_scale_curve_by_participants') or {}).get(
+          pkey, curve)
+    curve = sorted(curve,
                    key=lambda point: float(point[0]))
     if curve and payload_bytes is not None:
       import math
@@ -297,7 +325,7 @@ class Network:
     else:
       wire = max(0.0, float(bottleneck_bytes))
     return (self.collective_latency(op, participants)
-            + wire / self.collective_bandwidth(op, wire))
+            + wire / self.collective_bandwidth(op, wire, participants))
 
   def time(self, op, op_size, comm_size):
     """ Computes the time taken for a network operation.

@@ -55,6 +55,23 @@ class System:
     self.torch_optimizer_cpu_bandwidth = float(
       optimizer_cpu.get('torch_GBps',
                         optimizer_cpu.get('GBps', fallback_gbps))) * 1e9
+    # GPU Adam is a fused multi-tensor kernel, not a memcpy. Profiles are
+    # independent microbenchmarks keyed by implementation/state layout.
+    optimizer_gpu = cfg.get('optimizer_gpu') or {}
+    if 'GBps' in optimizer_gpu:  # backward-compatible single profile
+      optimizer_gpu = {'default': optimizer_gpu}
+    self.optimizer_gpu_profiles = {}
+    for profile_name, profile in optimizer_gpu.items():
+      bandwidth = float(profile.get('GBps', 0.0) or 0.0) * 1e9
+      curve = []
+      for mbytes, efficiency in profile.get('MB_efficiency', []):
+        if not 0 < float(efficiency) <= 1.0:
+          raise ValueError(
+            'optimizer_gpu efficiency must be in (0, 1]')
+        curve.append((float(mbytes) * 1e6, float(efficiency)))
+      curve.sort(reverse=True)
+      if bandwidth > 0:
+        self.optimizer_gpu_profiles[str(profile_name)] = (bandwidth, curve)
     self.unpinned_offload_efficiency = float(
       cfg.get('unpinned_offload_efficiency', 1.0))
     if self.optimizer_cpu_bandwidth <= 0:
@@ -97,6 +114,14 @@ class System:
     # Optional CUDA-kernel multiplicities from a standalone framework probe.
     # This is a GPU/software-stack capability, never a model or topology table.
     self.framework_operator_events = runtime.get("operator_events") or {}
+    # Norm modules are selected by Megatron backend capability independently of
+    # Transformer Engine.  TE layers can still fall back to Torch RMSNorm when
+    # Apex is absent, so TE module submission costs must not leak into Torch Norm.
+    self.framework_norm_backend = str(
+      runtime.get("norm_backend", "torch")).lower()
+    if self.framework_norm_backend not in ("torch", "transformer_engine"):
+      raise ValueError("framework_runtime.norm_backend must be torch or "
+                       "transformer_engine")
     # Phase2 operator correction for reduction-shaped RMSNorm.  Keys are the
     # exact reduction width; values scale the generic vector compute time.
     # This stays separate from vector.gflops_efficiency because ordinary
@@ -188,6 +213,10 @@ class System:
 
   def get_framework_operator_events(self, operator, stage, fallback):
     """Return calibrated physical CUDA events, retaining logical autograd."""
+    if (operator == "RMSNorm" and
+        self.framework_norm_backend != "transformer_engine"):
+      # Retain logical events; Torch Norm uses generic host dispatch costs.
+      return fallback
     profile = self.framework_operator_events.get(operator, {})
     value = profile.get(stage)
     if value is None:
@@ -490,6 +519,20 @@ class System:
 
   def get_mem1_throughput(self, size):
     return self.mem1.throughput(size)
+
+  def get_optimizer_gpu_throughput(self, size, profile='default'):
+    """Effective fused-optimizer bandwidth from an independent GPU probe."""
+    capability = self.optimizer_gpu_profiles.get(profile)
+    if capability is None:
+      return self.get_mem1_throughput(size)
+    bandwidth, curve = capability
+    for threshold, efficiency in curve:
+      if size >= threshold:
+        return bandwidth * efficiency
+    if curve:
+      raise ValueError(
+        f'optimizer_gpu.{profile}.MB_efficiency must cover zero bytes')
+    return bandwidth
 
   def get_mem2_throughput(self, size):
     return self.mem2.throughput(size)

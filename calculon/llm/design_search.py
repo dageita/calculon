@@ -657,7 +657,8 @@ def _simulate_cached_profile(system: System, execution: Dict,
     flow.flow_network_init(
         tp_bw=fabrics["tp"].flow_bandwidth("tp"),
         cp_bw=fabrics["cp"].flow_bandwidth("cp"),
-        ep_bw=fabrics["ep"].flow_bandwidth("ep"),
+        ep_bw=fabrics["ep"].flow_bandwidth(
+            "ep", execution["expert_par"]),
         pp_bw=fabrics["pp"].flow_bandwidth("pp"),
         dp_bw=fabrics["dp"].flow_bandwidth("dp"),
         topology=topology_fabric._topology,

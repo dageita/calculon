@@ -67,6 +67,8 @@ if steady:
       "stddev": pstdev(steady),
       "coefficient_of_variation": pstdev(steady) / mean(steady),
       "trimmed_mean_10pct": mean(trimmed),
+      "trimmed_stddev": pstdev(trimmed),
+      "trimmed_coefficient_of_variation": pstdev(trimmed) / mean(trimmed),
       "trimmed_samples": len(trimmed)}
   result["completed_iterations"] = [r["iteration"] for r in completed_records]
   names = sorted({n for r in completed_records for n in r.get("timers_s", {})})
@@ -86,9 +88,19 @@ if steady:
     "not be summed. Enabling detailed timers synchronizes CUDA and perturbs "
     "execution; the default reference run uses timing-log-level 0.")
 if args.simulator_json:
+  cv = result.get("iteration_distribution_s", {}).get(
+      "trimmed_coefficient_of_variation")
+  invalid_reasons = []
+  if len(steady) < 3:
+    invalid_reasons.append("fewer than three completed post-warmup iterations")
+  if cv is not None and cv > 0.1:
+    invalid_reasons.append("10% trimmed iteration coefficient of variation exceeds 10%")
+  result["accuracy_stability_metric"] = "10pct_trimmed_coefficient_of_variation"
+  result["measurement_valid_for_accuracy"] = not invalid_reasons
+  result["measurement_invalid_reasons"] = invalid_reasons
   sim = json.loads(args.simulator_json.read_text())
   predicted = sim["summary"]["batch_total_time"]
-  measured = result["megatron_iteration_time_s"]
+  measured = result["iteration_distribution_s"]["trimmed_mean_10pct"]
   if measured is None or measured <= 0:
     raise SystemExit("Megatron iteration time is missing or non-positive")
   error_s = predicted - measured
@@ -100,6 +112,8 @@ if args.simulator_json:
   measured_trimmed = result["iteration_distribution_s"]["trimmed_mean_10pct"]
   result.update(
       simulator_batch_total_time_s=predicted,
+      comparison_megatron_iteration_time_s=measured,
+      comparison_statistic="10% trimmed mean of completed post-warmup iterations",
       error_s=error_s,
       relative_error=signed,
       relative_error_fraction=signed,
@@ -107,12 +121,30 @@ if args.simulator_json:
       absolute_percentage_error=abs(signed_percent),
       median_relative_error_percent=(predicted / measured_median - 1) * 100,
       trimmed_mean_relative_error_percent=(predicted / measured_trimmed - 1) * 100,
-      error_formula="(simulator_batch_total_time_s - megatron_iteration_time_s) / megatron_iteration_time_s",
+      error_formula="(simulator_batch_total_time_s - comparison_megatron_iteration_time_s) / comparison_megatron_iteration_time_s",
       error_input_consistent=abs(
           signed - (predicted - measured) / measured) < 1e-12,
   )
+if args.simulator_json and not result.get("measurement_valid_for_accuracy", False):
+  result.update(
+      comparison_valid=False,
+      error_s=None,
+      relative_error=None,
+      relative_error_fraction=None,
+      relative_error_percent=None,
+      absolute_percentage_error=None,
+      median_relative_error_percent=None,
+      trimmed_mean_relative_error_percent=None,
+      error_formula=None,
+      error_input_consistent=None,
+  )
+elif args.simulator_json:
+  result["comparison_valid"] = True
 rendered = json.dumps(result, indent=2)
 print(rendered)
 if args.output:
   args.output.parent.mkdir(parents=True, exist_ok=True)
   args.output.write_text(rendered + "\n")
+if args.simulator_json and not result.get("measurement_valid_for_accuracy", False):
+  raise SystemExit("Megatron measurement is not stable enough for an accuracy comparison: "
+                   + "; ".join(result.get("measurement_invalid_reasons", [])))
