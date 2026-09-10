@@ -46,22 +46,21 @@ class OptimizerStrategyTest(unittest.TestCase):
         self.assertTrue(exe.pin_cpu_grads)
         self.assertTrue(exe.pin_cpu_params)
 
-    def test_distributed_optimizer_is_valid_at_dp_one(self):
+    def test_precision_aware_optimizer_is_a_distributed_bf16_preset(self):
         exe = Llm.Execution.from_json(execution_config(
-            optimizer_sharding=True,
             use_precision_aware_optimizer=True,
-            main_grads_dtype='bf16',
-            main_params_dtype='fp16',
-            exp_avg_dtype='fp16',
-            exp_avg_sq_dtype='fp8',
+            # Deliberately conflicting legacy values must not escape the preset.
+            main_grads_dtype='fp32', main_params_dtype='fp32',
+            exp_avg_dtype='fp8', exp_avg_sq_dtype='fp16',
         ))
         self.assertEqual(exe.data_par, 1)
         self.assertTrue(exe.optimizer_sharding)
-
-    def test_precision_aware_requires_distributed_optimizer(self):
-        with self.assertRaises(Llm.Error):
-            Llm.Execution.from_json(execution_config(
-                use_precision_aware_optimizer=True))
+        self.assertTrue(exe.use_precision_aware_optimizer)
+        self.assertEqual(exe.main_grads_dtype, 'bf16')
+        self.assertEqual(exe.main_params_dtype, 'fp16')
+        self.assertEqual(exe.exp_avg_dtype, 'bf16')
+        self.assertEqual(exe.exp_avg_sq_dtype, 'bf16')
+        self.assertTrue(exe.grad_reduce_in_bf16)
 
     def test_ep_flow_bandwidth_depends_on_participant_count(self):
         system = System(json.loads((ROOT / "systems/L20.json").read_text()),

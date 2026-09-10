@@ -45,6 +45,7 @@ class Model(BaseModel):
     rope_theta: Optional[float] = None      # RoPE frequency base
     position_embedding_type: Optional[str] = None
     rms_norm: Optional[bool] = None
+    norm_epsilon: Optional[float] = None
     qk_norm: Optional[bool] = None
     ffn_type: Optional[str] = None          # gelu | relu | swiglu | geglu
     untied_embeddings: Optional[bool] = None
@@ -90,11 +91,14 @@ class TrainningConfig(BaseModel):
     activation_recompute: Optional[str] = None  # full | attn_only | none
     optimizer_sharding: bool = False  # Megatron --use-distributed-optimizer
     use_precision_aware_optimizer: bool = False
+    # Precision-aware optimizer is a single preset, not independently tunable
+    # state dtypes: BF16 main grads/moments, FP16 main params, and BF16 reduce.
     main_grads_dtype: Literal["fp32", "bf16"] = "fp32"
     main_params_dtype: Literal["fp32", "fp16"] = "fp32"
-    exp_avg_dtype: Literal["fp32", "fp16", "fp8"] = "fp32"
-    exp_avg_sq_dtype: Literal["fp32", "fp16", "fp8"] = "fp32"
+    exp_avg_dtype: Literal["fp32", "fp16", "bf16", "fp8"] = "fp32"
+    exp_avg_sq_dtype: Literal["fp32", "fp16", "bf16", "fp8"] = "fp32"
     grad_reduce_in_bf16: bool = False
+    sequence_parallel: bool = False
     optimizer_offload: bool = False
     optimizer_offload_fraction: float = 1.0
     use_torch_optimizer_for_cpu_offload: bool = False

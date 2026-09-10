@@ -43,6 +43,21 @@ class BackendImportPathTest(unittest.TestCase):
             {"network_topology": "Single machine"})
         self.assertEqual(execution.attention_type, "mla")
 
+    def test_dense_frontend_expert_placeholders_are_canonicalized(self):
+        repo = CalculateRepository()
+        gpu = {"name": "L20", "num_procs": 8, "network_bandwidth": 32.0}
+        training = {
+            "tensor_par": 2, "pipeline_par": 4, "data_par": 1,
+            "expert_par": 1, "expert_tensor_par": 2, "expert_data_par": 0,
+            "context_par": 1, "batch_size": 4, "microbatch_size": 1,
+            "matrix_dtype": "bfloat16", "vector_dtype": "bfloat16",
+        }
+        execution = repo.build_exe(
+            gpu, training, {}, {"network_topology": "Single machine"})
+        self.assertEqual(execution.expert_par, 1)
+        self.assertEqual(execution.expert_tensor_par, 1)
+        self.assertEqual(execution.expert_data_par, 2)
+
     def test_script_entrypoint_prefers_checkout_over_stale_install(self):
         with tempfile.TemporaryDirectory() as directory:
             fake = Path(directory) / "calculon"

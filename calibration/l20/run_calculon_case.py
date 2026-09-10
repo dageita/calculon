@@ -41,11 +41,17 @@ p.add_argument('--clip-grad', type=float, default=1.)
 p.add_argument('--precision', choices=('bf16', 'fp16'), default='bf16')
 p.add_argument('--use-distributed-optimizer', action='store_true')
 p.add_argument('--use-precision-aware-optimizer', action='store_true')
-p.add_argument('--main-grads-dtype', choices=('fp32', 'bf16'), default='fp32')
-p.add_argument('--main-params-dtype', choices=('fp32', 'fp16'), default='fp32')
-p.add_argument('--exp-avg-dtype', choices=('fp32', 'fp16', 'fp8'), default='fp32')
-p.add_argument('--exp-avg-sq-dtype', choices=('fp32', 'fp16', 'fp8'), default='fp32')
-p.add_argument('--grad-reduce-in-bf16', action='store_true')
+# These hidden compatibility flags are canonicalized by the shared preset.
+p.add_argument('--main-grads-dtype', choices=('fp32', 'bf16'), default='fp32',
+               help=argparse.SUPPRESS)
+p.add_argument('--main-params-dtype', choices=('fp32', 'fp16'), default='fp32',
+               help=argparse.SUPPRESS)
+p.add_argument('--exp-avg-dtype', choices=('fp32', 'fp16', 'bf16', 'fp8'),
+               default='fp32', help=argparse.SUPPRESS)
+p.add_argument('--exp-avg-sq-dtype', choices=('fp32', 'fp16', 'bf16', 'fp8'),
+               default='fp32', help=argparse.SUPPRESS)
+p.add_argument('--grad-reduce-in-bf16', action='store_true',
+               help=argparse.SUPPRESS)
 p.add_argument('--optimizer-cpu-offload', action='store_true')
 p.add_argument('--optimizer-offload-fraction', type=float, default=1.0)
 p.add_argument('--use-torch-optimizer-for-cpu-offload', action='store_true')
@@ -59,8 +65,16 @@ p.add_argument('--output', type=Path, required=True)
 a = p.parse_args()
 if not 0 <= a.optimizer_offload_fraction <= 1:
     p.error('--optimizer-offload-fraction must be in [0, 1]')
-if a.use_precision_aware_optimizer and not a.use_distributed_optimizer:
-    p.error('--use-precision-aware-optimizer requires --use-distributed-optimizer')
+if a.use_precision_aware_optimizer:
+    # Keep the simulator invocation identical to the Megatron comparison path.
+    a.use_distributed_optimizer = True
+    a.main_grads_dtype = 'bf16'
+    a.main_params_dtype = 'fp16'
+    a.exp_avg_dtype = 'bf16'
+    a.exp_avg_sq_dtype = 'bf16'
+    a.grad_reduce_in_bf16 = True
+    if a.precision != 'bf16':
+        p.error('precision-aware optimizer preset requires --precision bf16')
 if a.optimizer_cpu_offload and not a.use_precision_aware_optimizer:
     p.error('--optimizer-cpu-offload requires --use-precision-aware-optimizer')
 if a.grad_reduce_in_bf16 and a.precision != 'bf16':
@@ -80,6 +94,10 @@ if a.num_procs != a.tp * a.pp * a.cp * dp:
     raise SystemExit('num_procs must equal tp*pp*cp*dp')
 if a.cp < 1:
     raise SystemExit('cp must be positive')
+# Keep direct simulator invocations on the same Megatron-required MoE path as
+# run_megatron_sim_compare.py, even when callers omit this convenience flag.
+if is_moe and a.tp > 1:
+    a.sequence_parallel = True
 if not is_moe:
     # Dense execution has no expert rank generator. EP/ETP/EDP are accepted as
     # inert compatibility arguments; use a neutral internal shape for Execution.

@@ -12,6 +12,7 @@ from app.models.calculator_input import OtherConfig, InputConfig
 from app.models.calculator_result import MemoryUsage, Computation, Communication, Timeline, TotalTime, CalculatorResult, \
     Parameter, RecommendedConfig
 
+import inspect
 import logging
 import json
 import os
@@ -275,16 +276,54 @@ class CalculateRepository:
                 raise Llm.Error(
                     "EP must be 1 for a dense model; use data_par to scale "
                     "across replicas")
-            # Expert coordinates are internal/inert for dense models, but the
-            # dual generator still has to cover the same physical ranks.
-            expert_tensor_par = trainning_config_dict.get("tensor_par") or 1
-            expert_data_par = 0
+            # Dense models have no expert rank-generator dimensions. Canonicalize
+            # ETP to one and retain EDP only as a rank-coverage placeholder
+            # (world/PP), matching the comparison script's canonical contract.
+            expert_tensor_par = 1
+            expert_data_par = ((gpu_dict.get("num_procs") or 1) //
+                               (trainning_config_dict.get("pipeline_par") or 1))
         # Megatron permits distributed optimizer at DP=1. Although it gives no
         # memory reduction, it is the required execution path for the
         # precision-aware optimizer and optimizer CPU offload.
+        precision_aware_optimizer = bool(
+            trainning_config_dict.get("use_precision_aware_optimizer", False)
+        )
+        # This is intentionally a single Megatron-compatible preset. Do not
+        # accept stale UI state dtypes after the user turns the switch on.
+        # Transformer Engine permits FP16 main parameters but not BF16 ones.
         optimizer_sharding = bool(
             trainning_config_dict.get("optimizer_sharding", False)
+        ) or precision_aware_optimizer
+        optimizer_state_dtypes = (
+            {
+                "main_grads_dtype": "bf16",
+                "main_params_dtype": "fp16",
+                "exp_avg_dtype": "bf16",
+                "exp_avg_sq_dtype": "bf16",
+                "grad_reduce_in_bf16": True,
+            }
+            if precision_aware_optimizer else
+            {
+                "main_grads_dtype": trainning_config_dict.get(
+                    "main_grads_dtype", "fp32"),
+                "main_params_dtype": trainning_config_dict.get(
+                    "main_params_dtype", "fp32"),
+                "exp_avg_dtype": trainning_config_dict.get(
+                    "exp_avg_dtype", "fp32"),
+                "exp_avg_sq_dtype": trainning_config_dict.get(
+                    "exp_avg_sq_dtype", "fp32"),
+                "grad_reduce_in_bf16": bool(trainning_config_dict.get(
+                    "grad_reduce_in_bf16", False)),
+            }
         )
+        sequence_parallel = bool(
+            trainning_config_dict.get("sequence_parallel", False)
+        )
+        # Current Megatron requires SP for routed MoE with TP > 1. Force the
+        # same execution path even when an older frontend omitted the field.
+        if (model_dict or {}).get("num_experts") and \
+                (trainning_config_dict.get("tensor_par") or 1) > 1:
+            sequence_parallel = True
 
         # KV-LoRA defines MLA. DeepSeek-V2-Lite has a direct Q projection
         # (q_lora_rank=0) and must still use the MLA operator graph.
@@ -358,7 +397,7 @@ class CalculateRepository:
             "activation_recompute": activation_recompute,
             "pipeline_interleaving": 1,
             "optimizer_sharding": optimizer_sharding,
-            "tensor_par_comm_type": "ar",
+            "tensor_par_comm_type": "rs_ag" if sequence_parallel else "ar",
             "tensor_par_overlap": "none",
             "seq_par_ag_redo": False,
             "data_par_overlap": False,
@@ -368,26 +407,8 @@ class CalculateRepository:
                 trainning_config_dict.get("optimizer_offload", False)
             ),
             "training": True,
-            "use_precision_aware_optimizer": bool(
-                trainning_config_dict.get(
-                    "use_precision_aware_optimizer", False
-                )
-            ),
-            "main_grads_dtype": trainning_config_dict.get(
-                "main_grads_dtype", "fp32"
-            ),
-            "main_params_dtype": trainning_config_dict.get(
-                "main_params_dtype", "fp32"
-            ),
-            "exp_avg_dtype": trainning_config_dict.get(
-                "exp_avg_dtype", "fp32"
-            ),
-            "exp_avg_sq_dtype": trainning_config_dict.get(
-                "exp_avg_sq_dtype", "fp32"
-            ),
-            "grad_reduce_in_bf16": bool(
-                trainning_config_dict.get("grad_reduce_in_bf16", False)
-            ),
+            "use_precision_aware_optimizer": precision_aware_optimizer,
+            **optimizer_state_dtypes,
             "optimizer_offload_fraction": float(
                 trainning_config_dict.get("optimizer_offload_fraction", 1.0)
             ),
@@ -487,6 +508,9 @@ class CalculateRepository:
 
     def calculate(self, gpu: Gpu, network: Network, model: Model, trainning_config: TrainningConfig):
         self.logger.info("Starting calculation...")
+        self.logger.info(
+            "Simulator runtime provenance: Llm=%s Runner=%s",
+            inspect.getfile(Llm), inspect.getfile(Runner))
 
         gpu_dict = gpu.dict()
         network_dict = network.dict()

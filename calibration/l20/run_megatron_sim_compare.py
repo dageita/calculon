@@ -25,13 +25,21 @@ OPTIMIZER_FLAGS = {
 }
 
 def add_optimizer_arguments(parser):
- parser.add_argument("--use-distributed-optimizer",action="store_true")
- parser.add_argument("--use-precision-aware-optimizer",action="store_true")
- parser.add_argument("--main-grads-dtype",choices=("fp32","bf16"),default="fp32")
- parser.add_argument("--main-params-dtype",choices=("fp32","fp16"),default="fp32")
- parser.add_argument("--exp-avg-dtype",choices=("fp32","fp16","fp8"),default="fp32")
- parser.add_argument("--exp-avg-sq-dtype",choices=("fp32","fp16","fp8"),default="fp32")
- parser.add_argument("--grad-reduce-in-bf16",action="store_true")
+ parser.add_argument("--use-distributed-optimizer", action="store_true")
+ parser.add_argument("--use-precision-aware-optimizer", action="store_true",
+                     help="enable the fixed BF16 precision-aware optimizer preset")
+ # Backward-compatible but intentionally hidden: the preset below owns these
+ # values so that Megatron and Calculon always receive the same optimizer path.
+ parser.add_argument("--main-grads-dtype", choices=("fp32", "bf16"),
+                     default="fp32", help=argparse.SUPPRESS)
+ parser.add_argument("--main-params-dtype", choices=("fp32", "fp16"),
+                     default="fp32", help=argparse.SUPPRESS)
+ parser.add_argument("--exp-avg-dtype", choices=("fp32", "fp16", "bf16", "fp8"),
+                     default="fp32", help=argparse.SUPPRESS)
+ parser.add_argument("--exp-avg-sq-dtype", choices=("fp32", "fp16", "bf16", "fp8"),
+                     default="fp32", help=argparse.SUPPRESS)
+ parser.add_argument("--grad-reduce-in-bf16", action="store_true",
+                     help=argparse.SUPPRESS)
  parser.add_argument("--optimizer-cpu-offload",action="store_true")
  parser.add_argument("--optimizer-offload-fraction",type=float,default=1.0)
  parser.add_argument("--use-torch-optimizer-for-cpu-offload",action="store_true")
@@ -180,8 +188,17 @@ def main():
  a=p.parse_args()
  if not 0 <= a.optimizer_offload_fraction <= 1:
   p.error("--optimizer-offload-fraction must be in [0, 1]")
- if a.use_precision_aware_optimizer and not a.use_distributed_optimizer:
-  p.error("--use-precision-aware-optimizer requires --use-distributed-optimizer")
+ if a.use_precision_aware_optimizer:
+  # One public preset shared by Megatron and Calculon. Transformer Engine
+  # accepts FP16 main params, while gradients and Adam moments use BF16.
+  a.use_distributed_optimizer = True
+  a.main_grads_dtype = "bf16"
+  a.main_params_dtype = "fp16"
+  a.exp_avg_dtype = "bf16"
+  a.exp_avg_sq_dtype = "bf16"
+  a.grad_reduce_in_bf16 = True
+  if a.precision != "bf16":
+   p.error("precision-aware optimizer preset requires --precision bf16")
  if a.optimizer_cpu_offload and not a.use_precision_aware_optimizer:
   p.error("--optimizer-cpu-offload requires --use-precision-aware-optimizer")
  if a.grad_reduce_in_bf16 and a.precision != "bf16":

@@ -516,35 +516,6 @@ class Network:
     self.log.debug("  microbatchPpBwComm: %f", microbatchPpBwComm.value)
     self.log.debug("  totalCommTime: %f", totalCommTime.value)
     
-    # 只在启用timeline时打印timeline相关数据
-    if enable_timeline:
-        self.log.debug("Timeline data:")
-        self.log.debug("  Event count: %d", timelineEventCount.value)
-        self.log.debug("  First 5 ranks: %s", list(timelineRanks[:5]))
-        self.log.debug("  First 5 microbatches: %s", list(timelineMicrobatches[:5]))
-        self.log.debug("  First 5 start times: %s", list(timelineStartTimes[:5]))
-        self.log.debug("  First 5 end times: %s", list(timelineEndTimes[:5]))
-        
-        # 打印字符串缓冲区状态
-        self.log.debug("String buffers status:")
-        for i in range(min(5, timelineEventCount.value)):
-            if i < len(timelineEventTypes) and timelineEventTypes[i]:
-                try:
-                    # 直接使用timelineEventTypes[i]，它已经是bytes对象
-                    buffer_content = timelineEventTypes[i]
-                    self.log.debug("  Buffer %d: %s", i, buffer_content)
-                    if buffer_content:
-                        try:
-                            decoded = buffer_content.decode('utf-8')
-                        except UnicodeDecodeError as e:
-                            self.log.debug("    Decode error: %s", e)
-                    else:
-                        self.log.debug("    Empty buffer")
-                except Exception as e:
-                    self.log.debug("    Error accessing buffer %d: %s", i, e)
-            else:
-                self.log.debug("  Buffer %d: None or invalid", i)
-    
     # 始终返回相同格式的结果，包含timeline数据
     # 当enable_timeline=False时，timeline相关数据为空或默认值
     return (globalTime.value, batchTpFwComm.value, batchTpBwComm.value,

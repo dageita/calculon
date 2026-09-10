@@ -14,6 +14,7 @@ const ProjectModel = ({ set, get }: any = {}) => ({
     exp_avg_dtype: 'fp32',
     exp_avg_sq_dtype: 'fp32',
     grad_reduce_in_bf16: false,
+    sequence_parallel: false,
     optimizer_offload: false,
     optimizer_offload_fraction: 1.0,
     use_torch_optimizer_for_cpu_offload: false,

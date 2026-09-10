@@ -7,8 +7,13 @@ from pathlib import Path
 # Avoid combining this source backend with a stale site-packages Calculon when
 # the service is launched as ``python backend/main.py``.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# A development container also has the image copy at /app/calculon installed.
+# Always put this checkout first, even when PYTHONPATH already mentions it at a
+# lower priority, so the API and command-line simulator cannot run different
+# revisions in the same container.
+_project_root = str(PROJECT_ROOT)
+sys.path[:] = [entry for entry in sys.path if entry != _project_root]
+sys.path.insert(0, _project_root)
 
 import uvicorn
 from fastapi import FastAPI

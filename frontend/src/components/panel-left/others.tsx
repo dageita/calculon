@@ -102,6 +102,8 @@ const OtherPanel = (props) => {
   });
 
   const expertParallelEnabled = Boolean(curModel?.num_experts);
+  const sequenceParallelRequired = expertParallelEnabled &&
+    Number(otherConfig?.tensor_par || 1) > 1;
   const denseWorld = Number(curGpu?.num_procs || 0);
   const expertFactor = Number(otherConfig?.expert_tensor_par || 1) *
     Number(otherConfig?.expert_par || 1) *
@@ -115,6 +117,13 @@ const OtherPanel = (props) => {
         expert_data_par: 1, context_par: 1 });
     }
   }, [expertParallelEnabled]);
+
+  useEffect(() => {
+    // Megatron requires sequence parallelism for routed MoE with TP > 1.
+    if (sequenceParallelRequired && !otherConfig?.sequence_parallel) {
+      setOtherConfig({ sequence_parallel: true });
+    }
+  }, [sequenceParallelRequired, otherConfig?.sequence_parallel]);
 
   // 设置参数值并记录变更日志
   const setParamValue = (key, val, title) => {
@@ -138,18 +147,39 @@ const OtherPanel = (props) => {
     setChangeLog(key, String(val), String(otherConfig?.[key]));
     const update: any = { [key]: val };
     if (key === 'use_precision_aware_optimizer' && val) {
-      update.optimizer_sharding = true;
+      // Precision-aware optimizer is one Megatron preset: its state dtypes
+      // are not user-tunable in the UI. TE only permits FP16 main params.
+      Object.assign(update, {
+        optimizer_sharding: true, main_grads_dtype: 'bf16',
+        main_params_dtype: 'fp16', exp_avg_dtype: 'bf16',
+        exp_avg_sq_dtype: 'bf16', grad_reduce_in_bf16: true,
+      });
     }
     if (key === 'optimizer_offload' && val) {
       update.optimizer_sharding = true;
       update.use_precision_aware_optimizer = true;
+      Object.assign(update, {
+        main_grads_dtype: 'bf16', main_params_dtype: 'fp16',
+        exp_avg_dtype: 'bf16', exp_avg_sq_dtype: 'bf16',
+        grad_reduce_in_bf16: true,
+      });
     }
     if (key === 'optimizer_sharding' && !val) {
       update.use_precision_aware_optimizer = false;
       update.optimizer_offload = false;
+      Object.assign(update, {
+        main_grads_dtype: 'fp32', main_params_dtype: 'fp32',
+        exp_avg_dtype: 'fp32', exp_avg_sq_dtype: 'fp32',
+        grad_reduce_in_bf16: false,
+      });
     }
     if (key === 'use_precision_aware_optimizer' && !val) {
-      update.optimizer_offload = false;
+      // Avoid submitting hidden low-precision values after this preset is off.
+      Object.assign(update, {
+        optimizer_offload: false, main_grads_dtype: 'fp32',
+        main_params_dtype: 'fp32', exp_avg_dtype: 'fp32',
+        exp_avg_sq_dtype: 'fp32', grad_reduce_in_bf16: false,
+      });
     }
     setOtherConfig(update);
   };
@@ -330,36 +360,16 @@ const OtherPanel = (props) => {
         {t('optimizer_sharding_tip')}
       </div>
 
+      {renderBooleanOption('sequence_parallel', sequenceParallelRequired)}
+      <div className={styles.slider_tip}>
+        {t('sequence_parallel_tip')}
+      </div>
+
       {renderBooleanOption('use_precision_aware_optimizer')}
       {otherConfig['use_precision_aware_optimizer'] && (
-        <>
-          {[
-            ['main_grads_dtype', ['fp32', 'bf16']],
-            ['main_params_dtype', ['fp32', 'fp16']],
-            ['exp_avg_dtype', ['fp32', 'fp16', 'fp8']],
-            ['exp_avg_sq_dtype', ['fp32', 'fp16', 'fp8']],
-          ].map(([key, values]: any) => (
-            <div key={key}>
-              <p className={styles.section_title} style={{ marginTop: 8 }}>
-                {t(key)}
-              </p>
-              <div className={styles['group-content']}>
-                <Select
-                  options={values.map((value: string) => ({
-                    key: value, label: value, value,
-                  }))}
-                  value={otherConfig[key]}
-                  onChange={(value) => setParamValue(key, value, key)}
-                />
-              </div>
-            </div>
-          ))}
-        </>
-      )}
-
-      {renderBooleanOption(
-        'grad_reduce_in_bf16',
-        otherConfig['vector_dtype'] !== 'bfloat16',
+        <div className={styles.slider_tip}>
+          {t('precision_aware_optimizer_preset_tip')}
+        </div>
       )}
       {renderBooleanOption('optimizer_offload')}
       {otherConfig['optimizer_offload'] && (

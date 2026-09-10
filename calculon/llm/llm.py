@@ -461,10 +461,10 @@ class Llm:
         raise Llm.Error('main_grads_dtype must be fp32 or bf16')
       if self.main_params_dtype not in ('fp32', 'fp16'):
         raise Llm.Error('main_params_dtype must be fp32 or fp16')
-      if self.exp_avg_dtype not in ('fp32', 'fp16', 'fp8'):
-        raise Llm.Error('exp_avg_dtype must be fp32, fp16, or fp8')
-      if self.exp_avg_sq_dtype not in ('fp32', 'fp16', 'fp8'):
-        raise Llm.Error('exp_avg_sq_dtype must be fp32, fp16, or fp8')
+      if self.exp_avg_dtype not in ('fp32', 'fp16', 'bf16', 'fp8'):
+        raise Llm.Error('exp_avg_dtype must be fp32, fp16, bf16, or fp8')
+      if self.exp_avg_sq_dtype not in ('fp32', 'fp16', 'bf16', 'fp8'):
+        raise Llm.Error('exp_avg_sq_dtype must be fp32, fp16, bf16, or fp8')
       if not 0 <= self.optimizer_offload_fraction <= 1:
         raise Llm.Error('optimizer_offload_fraction must be in [0, 1]')
       non_default_state_dtype = any((
@@ -472,9 +472,17 @@ class Llm:
         self.main_params_dtype != 'fp32',
         self.exp_avg_dtype != 'fp32',
         self.exp_avg_sq_dtype != 'fp32'))
-      if self.use_precision_aware_optimizer and not self.optimizer_sharding:
-        raise Llm.Error(
-          'precision-aware optimizer requires distributed optimizer')
+      if self.use_precision_aware_optimizer:
+        # The public simulator exposes precision-aware optimizer as one
+        # Megatron preset. Keep direct API callers on the identical path as
+        # the frontend and comparison runner; TE does not accept BF16 main
+        # parameters, hence the FP16 exception below.
+        self.optimizer_sharding = True
+        self.main_grads_dtype = 'bf16'
+        self.main_params_dtype = 'fp16'
+        self.exp_avg_dtype = 'bf16'
+        self.exp_avg_sq_dtype = 'bf16'
+        self.grad_reduce_in_bf16 = True
       if non_default_state_dtype and not self.use_precision_aware_optimizer:
         raise Llm.Error(
           'low-precision optimizer states require precision-aware optimizer')
@@ -1848,6 +1856,13 @@ class Llm:
     assert not self._compiled
     assert isinstance(exe, self.Execution)
     self.exe = exe
+    # ETP/EP/EDP do not exist in a dense Megatron model.  Canonicalize their
+    # inert rank-generator representation so zero-byte expert collectives cannot
+    # perturb TP/PP scheduling when callers supplied different placeholder values.
+    if not self.app.is_moe:
+      self.exe.expert_par = 1
+      self.exe.expert_tensor_par = 1
+      self.exe.expert_data_par = self.exe.num_procs // self.exe.pipeline_par
     assert isinstance(sys, System)
     self.sys = sys
     self._check_network_assignments()
